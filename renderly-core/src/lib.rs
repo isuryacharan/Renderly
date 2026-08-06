@@ -28,6 +28,8 @@ pub mod packs;
 pub mod perceive;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod plugins;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod proc;
 pub mod project;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod segmentation;

@@ -698,7 +698,7 @@ fn bake_wasm_audio_effects(
         let raw_path = temp_dir.join(format!("raw_{i}.f32"));
         let wav_path = temp_dir.join(format!("proc_{i}.wav"));
 
-        let status = std::process::Command::new(&ffmpeg)
+        let status = crate::proc::command(&ffmpeg)
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -754,7 +754,7 @@ fn bake_wasm_audio_effects(
         }
         std::fs::write(&raw_path, &out_bytes).map_err(FfmpegCliError::Io)?;
 
-        let status = std::process::Command::new(&ffmpeg)
+        let status = crate::proc::command(&ffmpeg)
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -973,14 +973,13 @@ fn resolve_background_removal_mask(
 mod tests {
     use super::*;
     use crate::project::{Project, Settings};
-    use std::process::Command;
 
     fn ffmpeg_available() -> bool {
         crate::media::ffmpeg_available()
     }
 
     fn generate_test_video(path: &Path) {
-        let status = Command::new(crate::media::ffmpeg_path().unwrap())
+        let status = crate::proc::command(crate::media::ffmpeg_path().unwrap())
             .args([
                 "-hide_banner",
                 "-loglevel",

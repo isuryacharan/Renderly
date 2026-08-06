@@ -8,7 +8,6 @@ use crate::mask::generate_heuristic_matte;
 use crate::media::RgbaFrame;
 use crate::project::BackgroundRemoval;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -52,7 +51,7 @@ pub fn bake_frame_matte(
                 image::ColorType::Rgba8,
             )
             .map_err(|e| SegmentationError::Cli(e.to_string()))?;
-            let status = Command::new(cli)
+            let status = crate::proc::command(cli)
                 .arg(&input)
                 .arg(&out)
                 .status()

@@ -13,7 +13,6 @@ use crate::project::{Clip, MediaKind, Project, TrackKind};
 use image::ImageEncoder;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::process::Command;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -133,7 +132,7 @@ pub fn transcribe_media(project: &Project, media_id: Uuid) -> Result<Transcript,
     let wav = dir.join("audio.wav");
     let out_prefix = dir.join("out");
 
-    let status = Command::new(ffmpeg_path()?)
+    let status = crate::proc::command(ffmpeg_path()?)
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(&media.path)
         .args(["-vn", "-ar", "16000", "-ac", "1", "-f", "wav"])
@@ -149,7 +148,7 @@ pub fn transcribe_media(project: &Project, media_id: Uuid) -> Result<Transcript,
         ));
     }
 
-    let status = Command::new(&whisper)
+    let status = crate::proc::command(&whisper)
         .args(["-m", &model, "-f"])
         .arg(&wav)
         .args(["-oj", "-of"])

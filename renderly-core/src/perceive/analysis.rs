@@ -3,7 +3,6 @@
 use crate::media::{ffmpeg_available, ffmpeg_path, FfmpegCliError};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::process::Command;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -44,7 +43,7 @@ pub fn detect_silence(
     }
 
     let filter = format!("silencedetect=noise={noise_db}dB:d={min_duration_secs}");
-    let output = Command::new(ffmpeg_path()?)
+    let output = crate::proc::command(ffmpeg_path()?)
         .args(["-hide_banner", "-i"])
         .arg(path)
         .args(["-af", &filter, "-f", "null", "-"])
@@ -88,7 +87,7 @@ pub fn detect_scenes(path: &Path, threshold: f64) -> Result<Vec<SceneCut>, Analy
     }
 
     let filter = format!("select='gt(scene,{threshold})',showinfo");
-    let output = Command::new(ffmpeg_path()?)
+    let output = crate::proc::command(ffmpeg_path()?)
         .args(["-hide_banner", "-i"])
         .arg(path)
         .args(["-vf", &filter, "-f", "null", "-"])
@@ -170,7 +169,7 @@ pub fn audio_peaks(path: &Path, buckets: u32) -> Result<AudioPeaks, AnalysisErro
     let target_samples = (buckets as f64 * 6.0).max(buckets as f64);
     let sample_rate = ((target_samples / duration).ceil() as u32).clamp(50, 4_000);
 
-    let output = Command::new(ffmpeg_path()?)
+    let output = crate::proc::command(ffmpeg_path()?)
         .args(["-hide_banner", "-loglevel", "error", "-i"])
         .arg(path)
         .args([

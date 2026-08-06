@@ -2,7 +2,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::OnceLock;
 use thiserror::Error;
 
@@ -54,7 +54,7 @@ fn synthesize_piper(text: &str, output_wav: &Path) -> Result<(), TtsError> {
     let input_txt = dir.join("input.txt");
     std::fs::write(&input_txt, text)?;
 
-    let mut cmd = Command::new(&piper);
+    let mut cmd = crate::proc::command(&piper);
     cmd.args(["--model", &model, "--output_file"])
         .arg(output_wav)
         .args(["--input_file"])

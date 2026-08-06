@@ -79,7 +79,7 @@ pub struct ProbedVideo {
 }
 
 pub fn probe_video(path: &Path) -> Result<ProbedVideo, FfmpegCliError> {
-    let output = Command::new(ffprobe_path()?)
+    let output = crate::proc::command(ffprobe_path()?)
         .args([
             "-v",
             "error",
@@ -153,7 +153,7 @@ pub fn probe_video(path: &Path) -> Result<ProbedVideo, FfmpegCliError> {
 /// True if `path` has at least one audio stream (cheap ffprobe). Used to skip waveform
 /// generation for silent videos instead of letting ffmpeg fail with a cryptic exit code.
 pub fn has_audio_stream(path: &Path) -> Result<bool, FfmpegCliError> {
-    let output = Command::new(ffprobe_path()?)
+    let output = crate::proc::command(ffprobe_path()?)
         .args([
             "-v",
             "error",
@@ -312,7 +312,7 @@ pub fn generate_thumbnail_strip(
                         // Keyframe seeks into H.264 often emit `mmco: unref short failure`
                         // at loglevel=error even when the extracted frame is fine — silence
                         // stderr so import doesn't spam the app console.
-                        let mut cmd = Command::new(ffmpeg);
+                        let mut cmd = crate::proc::command(ffmpeg);
                         cmd.args([
                             "-hide_banner",
                             "-loglevel",
@@ -365,7 +365,7 @@ pub fn generate_thumbnail_strip(
     }
 
     // Assemble the grid from the numbered frame sequence.
-    let mut tile_cmd = Command::new(&ffmpeg);
+    let mut tile_cmd = crate::proc::command(&ffmpeg);
     tile_cmd
         .args([
             "-hide_banner",
@@ -426,7 +426,7 @@ fn compiled_hwaccels() -> &'static [String] {
         let Ok(ffmpeg) = ffmpeg_path() else {
             return Vec::new();
         };
-        let Ok(output) = Command::new(ffmpeg)
+        let Ok(output) = crate::proc::command(ffmpeg)
             .args(["-hide_banner", "-hwaccels"])
             .output()
         else {
@@ -541,7 +541,7 @@ impl VideoReader {
         let probed = probe_video(path)?;
         let (width, height) = scaled_dimensions(probed.width, probed.height, opts.target_height);
 
-        let mut cmd = Command::new(ffmpeg_path()?);
+        let mut cmd = crate::proc::command(ffmpeg_path()?);
         cmd.args([
             "-hide_banner",
             // `error` still prints H.264 `mmco: unref short failure` on many game
@@ -677,7 +677,7 @@ fn compiled_encoders() -> &'static [String] {
         let Ok(ffmpeg) = ffmpeg_path() else {
             return Vec::new();
         };
-        let Ok(output) = Command::new(ffmpeg)
+        let Ok(output) = crate::proc::command(ffmpeg)
             .args(["-hide_banner", "-encoders"])
             .output()
         else {
@@ -890,7 +890,7 @@ impl VideoEncoder {
             .map(|s| (*s).to_string()),
         );
 
-        let mut child = Command::new(ffmpeg_path()?)
+        let mut child = crate::proc::command(ffmpeg_path()?)
             .args(&args)
             .arg(output_path)
             .stdin(Stdio::piped())
@@ -954,7 +954,7 @@ pub fn mux_video_audio(
     audio_bitrate_k: u32,
 ) -> Result<(), FfmpegCliError> {
     let bitrate = format!("{}k", audio_bitrate_k.max(32));
-    let status = Command::new(ffmpeg_path()?)
+    let status = crate::proc::command(ffmpeg_path()?)
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(video_path)
         .args(["-i"])
@@ -1040,7 +1040,7 @@ pub fn mix_timeline_audio(
             let filter =
                 "[0:a][1:a]sidechaincompress=threshold=0.02:ratio=8:attack=200:release=1000[out]"
                     .to_string();
-            let status = Command::new(ffmpeg_path()?)
+            let status = crate::proc::command(ffmpeg_path()?)
                 .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
                 .arg(&music_wav)
                 .args(["-i"])
@@ -1125,7 +1125,7 @@ fn mix_clip_bus(
         }
         let af = build_audio_filter(clip, seg_duration);
 
-        let status = Command::new(ffmpeg_path()?)
+        let status = crate::proc::command(ffmpeg_path()?)
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -1173,7 +1173,7 @@ fn mix_clip_bus(
         mix_labels,
     );
 
-    let mut cmd = Command::new(ffmpeg_path()?);
+    let mut cmd = crate::proc::command(ffmpeg_path()?);
     cmd.args(["-hide_banner", "-loglevel", "error", "-y"]);
     for seg in &segment_paths {
         cmd.args(["-i"]).arg(seg);
@@ -1322,7 +1322,6 @@ mod scaling_tests {
 #[cfg(test)]
 mod video_reader_tests {
     use super::{ffmpeg_path, ReaderOptions, VideoReader};
-    use std::process::Command;
 
     fn ffmpeg_available() -> bool {
         super::is_available()
@@ -1349,7 +1348,7 @@ mod video_reader_tests {
 
         let duration_secs = 2u32;
         let rate = 10u32;
-        let status = Command::new(ffmpeg_path().unwrap())
+        let status = crate::proc::command(ffmpeg_path().unwrap())
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -1431,7 +1430,7 @@ mod video_reader_tests {
         let dir = std::env::temp_dir().join(format!("renderly-hwaccel-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let video_path = dir.join("src.mp4");
-        let status = Command::new(ffmpeg_path().unwrap())
+        let status = crate::proc::command(ffmpeg_path().unwrap())
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -1501,14 +1500,13 @@ mod video_reader_tests {
 #[cfg(test)]
 mod thumbnail_strip_tests {
     use super::{ffmpeg_path, generate_thumbnail_strip};
-    use std::process::Command;
 
     fn ffmpeg_available() -> bool {
         super::is_available()
     }
 
     fn generate_test_video(path: &std::path::Path, duration_secs: u32) {
-        let status = Command::new(ffmpeg_path().unwrap())
+        let status = crate::proc::command(ffmpeg_path().unwrap())
             .args([
                 "-hide_banner",
                 "-loglevel",
