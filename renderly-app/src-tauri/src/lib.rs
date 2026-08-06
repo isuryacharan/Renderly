@@ -1436,6 +1436,23 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::new())
         .setup(|app| {
+            // Point renderly-core at the ffmpeg/ffprobe bundled beside the app (fetched at
+            // build time into the Tauri resource dir — see scripts/fetch-ffmpeg.mjs and
+            // ffmpeg_cli.rs's `which_tool`). Absent in `tauri dev` (resources aren't fetched
+            // for dev), where core falls back to PATH. Set only when the binaries exist so a
+            // dev machine's PATH ffmpeg still wins if the resource dir is empty.
+            if let Ok(res_dir) = app.path().resource_dir() {
+                let ffmpeg_dir = res_dir.join("ffmpeg");
+                let exe = if cfg!(windows) {
+                    "ffmpeg.exe"
+                } else {
+                    "ffmpeg"
+                };
+                if ffmpeg_dir.join(exe).is_file() {
+                    // SAFETY: single-threaded setup, before any worker spawns ffmpeg.
+                    std::env::set_var("RENDERLY_FFMPEG_DIR", &ffmpeg_dir);
+                }
+            }
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 match bridge::run_bridge(handle.clone()).await {

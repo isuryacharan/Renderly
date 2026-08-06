@@ -42,6 +42,15 @@ fn which_tool(name: &str) -> Option<PathBuf> {
     } else {
         name.to_string()
     };
+    // A bundled build ships ffmpeg/ffprobe beside the app and points `RENDERLY_FFMPEG_DIR`
+    // at them (see the desktop app's startup), so a user needs nothing on PATH. Checked
+    // first; PATH is the fallback for dev and for CLI/MCP use outside the packaged app.
+    if let Some(dir) = std::env::var_os("RENDERLY_FFMPEG_DIR") {
+        let candidate = PathBuf::from(dir).join(&with_exe);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths).find_map(|dir| {
             let candidate = dir.join(&with_exe);
