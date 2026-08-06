@@ -4204,7 +4204,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "renderly-app"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "futures-util",
@@ -4226,7 +4226,7 @@ dependencies = [
 
 [[package]]
 name = "renderly-cli"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4238,7 +4238,7 @@ dependencies = [
 
 [[package]]
 name = "renderly-core"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "bytemuck",
@@ -4258,7 +4258,7 @@ dependencies = [
 
 [[package]]
 name = "renderly-mcp"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -4276,7 +4276,7 @@ dependencies = [
 
 [[package]]
 name = "renderly-wasm"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "js-sys",
  "renderly-core",

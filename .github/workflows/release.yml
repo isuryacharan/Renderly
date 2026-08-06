@@ -1,0 +1,81 @@
+name: Release
+
+# Push a version tag to build installers for every platform and draft a GitHub Release:
+#   git tag v0.1.0 && git push origin v0.1.0
+# The tag drives the release name; the installer version comes from the workspace
+# Cargo.toml / tauri.conf.json (keep them in sync with the tag). The release is created as a
+# draft prerelease — review the assets, then publish it from the GitHub UI.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+          - os: macos-latest
+          - os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # ffmpeg/ffprobe themselves are fetched by scripts/fetch-ffmpeg.mjs at build time; this
+      # only installs the Linux system libraries Tauri and the webview need to link.
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
+            patchelf libx11-dev libxfixes-dev libwayland-dev libxkbcommon-dev libssl-dev \
+            libasound2-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}-release
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: renderly-app/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: renderly-app
+
+      # tauri-action runs the config's beforeBuildCommand (fetch-ffmpeg → build:wasm →
+      # build), produces the .msi/.exe/.dmg/.AppImage/.deb, and uploads them to the release.
+      - name: Build installers and draft the release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: renderly-app
+          tagName: ${{ github.ref_name }}
+          releaseName: "Renderly ${{ github.ref_name }}"
+          releaseBody: |
+            Pre-alpha. Download the installer for your platform below.
+
+            FFmpeg is bundled — no separate install needed. Windows may warn about an
+            unknown publisher (the build is not code-signed yet); choose "More info → Run
+            anyway".
+          releaseDraft: true
+          prerelease: true
