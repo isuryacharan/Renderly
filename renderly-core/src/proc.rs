@@ -15,14 +15,18 @@ use std::process::Command;
 /// Identical to `Command::new` except that on Windows it sets `CREATE_NO_WINDOW` so the
 /// child never flashes a console window (see the module doc).
 pub(crate) fn command(program: impl AsRef<OsStr>) -> Command {
-    let mut cmd = Command::new(program);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         // winbase.h CREATE_NO_WINDOW — avoids linking the `windows`/`winapi` crates for a
         // single constant.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut cmd = Command::new(program);
         cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd
     }
-    cmd
+    #[cfg(not(windows))]
+    {
+        Command::new(program)
+    }
 }

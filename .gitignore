@@ -49,5 +49,7 @@ renderly-app/dev-assets/
 renderly-app/public/wasm-pkg/
 
 # Bundled ffmpeg binaries — fetched per build environment by
-# renderly-app/scripts/fetch-ffmpeg.mjs, never committed.
-renderly-app/src-tauri/ffmpeg/
+# renderly-app/scripts/fetch-ffmpeg.mjs, never committed. Keep the directory's
+# README tracked so Tauri's `ffmpeg/*` resource glob always matches.
+renderly-app/src-tauri/ffmpeg/**
+!renderly-app/src-tauri/ffmpeg/README.md
