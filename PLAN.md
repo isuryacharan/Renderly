@@ -1,6 +1,6 @@
 # Renderly — Open-Source, AI-Native Video Editor
 
-> Working name: **Renderly** — punchy, gaming-adjacent (fighting-game energy), with "cut" built right in.
+> Working name: **Renderly** (renamed from Uppercut in July 2026).
 > Alternates if it conflicts later: **Smashcut**, **Reelforge**, **Crosscut**.
 > Positioning: "The video editor built for AI agents — and the humans who finish the job."
 > Never market as a CapCut clone. Say: *an open-source alternative to paywalled editors*.
@@ -160,7 +160,31 @@ Registry strategy: start with a `renderly-registry` GitHub repo (PR to publish, 
 
 ## 8. Immediate next steps
 
-1. Scaffold the workspace: `renderly-core`, `renderly-cli`, `renderly-mcp`, `renderly-app` crates/packages.
-2. Define project schema v0 + first 10 commands (import, add-clip, split, trim, move, delete, add-caption, set-audio-gain, add-track, export).
-3. Spike the media spine: decode a gameplay MP4 → wgpu → re-encode. Everything depends on this working well on your machine (test NVENC).
-4. Write `AGENTS.md` so Claude Code can start driving the CLI the moment it exists.
+> **Status (2026-10):** the original four steps here (scaffold the workspace, schema v0 and
+> the first ten commands, the media-spine spike, `AGENTS.md`) are long done. The repo is
+> public and `v0.1.0` is out as a pre-release with installers for Windows, macOS and Linux,
+> but it has not been launched. The next steps are about getting it in front of people, not
+> about more features.
+
+1. **Prove the release on a clean machine.** Install `v0.1.0` from the GitHub release on a
+   machine that has never had the dev environment, and take one video from import to export.
+   Windows first; macOS and Linux runtime QA is still open on the
+   [parity board](docs/parity-board.md).
+2. **Fix what a stranger hits first.** The installers are unsigned and not notarized, so
+   Windows shows an unknown-publisher warning and macOS Gatekeeper blocks un-notarized
+   downloads by default. The macOS build is Apple Silicon only. Either sign and notarize, or
+   document the workaround next to the download link.
+3. **Clear the name.** Run the trademark check on "Renderly" that §7 requires before a public
+   launch.
+4. **Record the launch demo.** This is the Phase 1 milestone, upgraded by the live bridge:
+   hand Claude a script and a folder of gameplay recordings and let it build a finished Ultra
+   Bruno video in the open app, with the human doing the final touches. It is also the first
+   real dogfood of the release build. Put the recording at the top of the README.
+5. **Stock the repo, then launch.** Open the parity board's good first issues as real GitHub
+   issues (there are none yet), then post per §6: Show HN, r/rust, r/VideoEditing, X, the MCP
+   ecosystem lists.
+6. **Then return to the board.** Engineering work resumes from
+   [docs/parity-board.md](docs/parity-board.md), which is the live list; this section should
+   not duplicate it. The items that most protect a launch are the test gaps (no frontend
+   tests, no golden-frame check that preview and export match) and the effects that render
+   in export but not in the preview (generated mattes, pack `.cube` LUTs).

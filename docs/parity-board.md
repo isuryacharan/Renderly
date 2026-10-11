@@ -77,7 +77,7 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 | `renderly-core` tests | ✅ | 107 |
 | `renderly-app` (Rust) tests | ✅ | 16 |
 | `renderly-mcp` tests | 🟡 | 8 — thin for an agent-facing surface |
-| `renderly-cli` tests | ⬜ | **Zero.** Good first issue |
+| `renderly-cli` tests | 🟡 | 3 unit tests (load/save, apply) — nothing runs the binary end to end. Good first issue |
 | Frontend tests | ⬜ | Verification currently runs through the browser harness |
 | Export pixel-parity suite | ⬜ | Golden-frame comparisons, preview vs export |
 
