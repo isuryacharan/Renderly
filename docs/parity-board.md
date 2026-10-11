@@ -51,7 +51,7 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 | — | Whisper auto-captions | ✅ | Local; `RENDERLY_WHISPER_MODEL` |
 | — | TTS voiceover (local Piper / BYO cloud key) | ✅ | `GenerateVoiceover` |
 | — | Ducking, fades, mixing | ✅ | |
-| P4-2 | Audio denoise | 🟡 | `SetClipAudioDenoise` (`afftdn`); wants an RNNoise-class model |
+| P4-2 | Audio denoise | ✅ | `SetClipAudioDenoise`; `rnnoise` backend (`nnnoiseless`, in-process, cached per source) alongside `afftdn`. Weak on steady white hiss; strong on hum, rumble and noise between words |
 | P4-4 | Motion tracking | ✅ | `TrackMotion`; Shi–Tomasi corners + pyramidal Lucas–Kanade in `renderly-core/src/tracking.rs`, optional region and rotation/scale. Frame-to-frame, no template re-anchoring |
 | P4-5 | Stabilization | ✅ | `StabilizeClip`; RANSAC similarity per frame, smoothed camera path, auto-zoom capped at 1.4×. No rolling-shutter or parallax correction |
 | P4-4b | Auto-reframe | 🟡 | `AutoReframeClip`; wants subject detection |

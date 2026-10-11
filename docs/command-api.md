@@ -339,6 +339,24 @@ counter-clockwise on screen). The compositor rotates in NDC rather than pixel sp
 non-square canvases large rotation corrections are slightly anisotropic. Still images are a
 no-op. Errors as for `TrackMotion`, plus `Analysis` for a non-finite `strength`.
 
+### `SetClipAudioDenoise` (Phase 4)
+Sets (`Some`) or clears (`None`) `audio_denoise` on a clip of an **audio** track. `config` is
+`{ enabled, backend, strength }`; `strength` is clamped to `0..=1` (non-finite is an error).
+Backends:
+
+- `"afftdn"` — FFmpeg spectral denoise filter in the mix graph; `strength` maps to noise
+  reduction (0..20 dB). The serde default when `backend` is omitted, so older projects behave
+  exactly as before.
+- `"rnnoise"` — RNNoise network (`nnnoiseless`, BSD-3-Clause). `strength` is a wet/dry mix of
+  the denoised and original signal (1.0 = fully denoised, 0.0 = original). Mix/export
+  decode the clip's **whole source** to 48 kHz, run RNNoise in-process per channel, and cache
+  the result as a WAV in `<temp>/renderly-denoise-cache/`, keyed by source path + mtime +
+  size + backend + strength (edits invalidate; repeat runs reuse it). That file replaces the
+  source as the clip's mix input, so export, playback and scrub all share it. The GUI
+  creates new configs with `"rnnoise"`.
+
+Errors: `InvalidDenoise` (unknown backend, non-finite strength), track not an audio track.
+
 ### `Export`
 Renders the current `Project` timeline to `output_path` using `preset` (e.g.
 `TikTok9x16`, `Youtube16x9`, or a `Custom { width, height, fps }` variant). Muxes mixed
@@ -399,6 +417,9 @@ remain follow-ups on top of the Phase 4 command surface above.
   Lucas-Kanade feature tracking + RANSAC instead of a bright-pixel centroid; added optional
   `region` / `track_rotation_scale` (`TrackMotion`) and `strength` / `sample_count`
   (`StabilizeClip`); `PosX`/`PosY` are now NDC (previously an ad-hoc percent-like unit).
+
+- **RNNoise denoise** (non-breaking, schema stays v6): `SetClipAudioDenoise` also accepts
+  `backend: "rnnoise"`; `afftdn` unchanged.
 
 - **Phase 4 improvement push** (non-breaking): `MoveTrack` — drag-to-reorder tracks/layers;
   reorders `Project::tracks` (the compositing z-order) in place.

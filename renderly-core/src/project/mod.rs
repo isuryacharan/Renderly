@@ -587,10 +587,13 @@ fn default_bg_threshold() -> f64 {
 pub struct AudioDenoise {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// `afftdn` (FFmpeg builtin) or future model backends.
+    /// `afftdn` (FFmpeg builtin spectral filter) or `rnnoise` (RNNoise network via
+    /// `nnnoiseless`). A missing field in a saved project stays `afftdn`; the GUI picks
+    /// `rnnoise` for newly created configs.
     #[serde(default = "default_denoise_backend")]
     pub backend: String,
-    /// 0..=1 mapped into afftdn noise reduction strength.
+    /// 0..=1. `afftdn`: mapped into noise-reduction strength. `rnnoise`: wet/dry mix
+    /// (1.0 = fully denoised, 0.0 = original).
     #[serde(default = "default_denoise_strength")]
     pub strength: f64,
 }

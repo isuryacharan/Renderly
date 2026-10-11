@@ -40,7 +40,7 @@ extension `.renderly.json`.
   overlay + `SetClipMask` (live drag patches the Zustand store directly for the preview
   canvas's own redraw — no backend round trip; see docs/preview-webview.md P4). |
 | `background_removal` | Optional config (`model_id` `heuristic` or CLI-backed `rvm`/`birefnet`, threshold, feather, `matte_cache_dir`). |
-| `audio_denoise` | Optional `{ enabled, backend: "afftdn", strength }` — **audio tracks only** in v1. |
+| `audio_denoise` | Optional `{ enabled, backend, strength }` — **audio tracks only** in v1. `backend` is `"afftdn"` (FFmpeg filter; the default when the field is absent) or `"rnnoise"` (RNNoise via `nnnoiseless`; `strength` = wet/dry mix). Added without a schema bump. |
 | `multicam_group_id` | Optional link into `project.multicam_groups`. |
 
 ### Builtin effects (additions)

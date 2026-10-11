@@ -26,3 +26,14 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 
 renderly-core = { path = "renderly-core" }
+
+# RNNoise denoise (audio/denoise.rs) is a hot numeric loop; unoptimised it runs ~10x realtime,
+# which would make the first playback/export of a denoised clip wait noticeably in dev builds.
+[profile.dev.package.nnnoiseless]
+opt-level = 3
+[profile.dev.package.rustfft]
+opt-level = 3
+[profile.dev.package.realfft]
+opt-level = 3
+[profile.dev.package.easyfft]
+opt-level = 3

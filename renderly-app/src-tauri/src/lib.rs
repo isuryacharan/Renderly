@@ -263,6 +263,17 @@ impl AppState {
         let before_json = project_json(&before_arc)?;
         let mut project = (*before_arc).clone();
 
+        let denoise_prewarm = match &cmd {
+            Command::SetClipAudioDenoise {
+                track_id,
+                clip_id,
+                config: Some(cfg),
+            } if cfg.enabled && cfg.backend == "rnnoise" => {
+                Some((*track_id, *clip_id, cfg.strength))
+            }
+            _ => None,
+        };
+
         let (outcome, project) = tauri::async_runtime::spawn_blocking(move || {
             let outcome = apply_core_command(&mut project, cmd);
             (outcome, project)
@@ -270,6 +281,23 @@ impl AppState {
         .await
         .map_err(|e| e.to_string())?;
         let outcome = outcome.map_err(|e| e.to_string())?;
+
+        // RNNoise denoise is rendered into a cache the first time it is mixed; start that
+        // now, off the UI/command path, so the next playback or export finds it ready.
+        if let Some((track_id, clip_id, strength)) = denoise_prewarm {
+            let source = project
+                .find_track(track_id)
+                .and_then(|t| t.clips.iter().find(|c| c.id() == clip_id))
+                .and_then(|c| c.as_media())
+                .and_then(|c| project.find_media(c.media_id))
+                .map(|m| m.path.clone());
+            if let Some(path) = source {
+                let strength = strength.clamp(0.0, 1.0);
+                tauri::async_runtime::spawn_blocking(move || {
+                    let _ = renderly_core::audio::denoise::denoised_wav_cached(&path, strength);
+                });
+            }
+        }
 
         if let CommandOutcome::MediaImported { media_id } = &outcome {
             if let Some(item) = project.find_media(*media_id) {

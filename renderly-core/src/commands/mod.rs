@@ -1949,9 +1949,9 @@ fn set_clip_audio_denoise(
     let config = match config {
         None => None,
         Some(mut cfg) => {
-            if cfg.backend != "afftdn" {
+            if cfg.backend != "afftdn" && cfg.backend != "rnnoise" {
                 return Err(CommandError::InvalidDenoise(format!(
-                    "backend must be \"afftdn\", got \"{}\"",
+                    "backend must be \"afftdn\" or \"rnnoise\", got \"{}\"",
                     cfg.backend
                 )));
             }
@@ -4415,13 +4415,28 @@ mod tests {
                 clip_id,
                 config: Some(AudioDenoise {
                     enabled: true,
-                    backend: "rnnoise".into(),
+                    backend: "deepfilter".into(),
                     strength: 0.5,
                 }),
             },
         )
         .unwrap_err();
         assert!(matches!(err, CommandError::InvalidDenoise(_)));
+
+        // `rnnoise` is an accepted backend.
+        apply_command(
+            &mut project,
+            Command::SetClipAudioDenoise {
+                track_id,
+                clip_id,
+                config: Some(AudioDenoise {
+                    enabled: true,
+                    backend: "rnnoise".into(),
+                    strength: 0.7,
+                }),
+            },
+        )
+        .unwrap();
 
         // Reject on video tracks.
         let v_track = match apply_command(

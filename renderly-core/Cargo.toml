@@ -16,6 +16,7 @@ wgpu = "30.0.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 image = "0.25.10"
+nnnoiseless = { version = "0.5.2", default-features = false }
 pollster = "0.4.0"
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "rustls"] }
 wasmtime = "36.0.2"

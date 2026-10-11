@@ -73,6 +73,13 @@ function NumCell({
   );
 }
 
+/** New denoise configs from the GUI use RNNoise; saved `afftdn` projects keep their backend. */
+const DEFAULT_DENOISE_BACKEND = "rnnoise";
+const DENOISE_BACKENDS = [
+  { value: "rnnoise", label: "RNNoise (recommended)" },
+  { value: "afftdn", label: "Spectral (afftdn)" },
+];
+
 export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaClip }) {
   const dispatch = useEditorStore((s) => s.dispatch);
   const select = useEditorStore((s) => s.select);
@@ -88,7 +95,18 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
   const [speed, setSpeed] = useState(clip.speed ?? 1);
   const [linkScale, setLinkScale] = useState(true);
   const [maskFeather, setMaskFeather] = useState(clip.mask?.feather ?? 0);
+  const [denoiseStrength, setDenoiseStrength] = useState(clip.audio_denoise?.strength ?? 0.5);
   const setTool = useEditorStore((s) => s.setTool);
+
+  function commitDenoiseStrength() {
+    if (!clip.audio_denoise) return;
+    void dispatch(
+      setClipAudioDenoise(track.id, clip.id, {
+        ...clip.audio_denoise,
+        strength: denoiseStrength,
+      }),
+    );
+  }
 
   const showAudio = clip.type === "audio" || track.kind === "audio" || clip.type === "video";
   const showTransform = clip.type === "video" || track.kind === "video";
@@ -104,6 +122,7 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
     setTransform(clipTransform(clip));
     setSpeed(clip.speed ?? 1);
     setMaskFeather(clip.mask?.feather ?? 0);
+    setDenoiseStrength(clip.audio_denoise?.strength ?? 0.5);
   }, [
     clip.id,
     clip.gain_db,
@@ -114,6 +133,7 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
     clip.transform,
     clip.speed,
     clip.mask,
+    clip.audio_denoise?.strength,
   ]);
 
   async function commitTransform(next: ClipTransform) {
@@ -617,21 +637,59 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
         <details className="insp-disclosure" open>
           <summary>Denoise</summary>
           <div className="inspector-section insp-disclosure-body">
-            <button
-              type="button"
-              disabled={track.locked || track.kind !== "audio"}
-              onClick={() =>
-                void dispatch(
-                  setClipAudioDenoise(track.id, clip.id, {
-                    enabled: true,
-                    backend: "afftdn",
-                    strength: 0.5,
-                  }),
-                )
-              }
-            >
-              Enable afftdn
-            </button>
+            {!clip.audio_denoise && (
+              <button
+                type="button"
+                disabled={track.locked || track.kind !== "audio"}
+                onClick={() =>
+                  void dispatch(
+                    setClipAudioDenoise(track.id, clip.id, {
+                      enabled: true,
+                      backend: DEFAULT_DENOISE_BACKEND,
+                      strength: 0.8,
+                    }),
+                  )
+                }
+              >
+                Enable denoise
+              </button>
+            )}
+            {clip.audio_denoise && (
+              <>
+                <label className="insp-cell">
+                  <span>Method</span>
+                  <MenuSelect
+                    value={clip.audio_denoise.backend ?? "afftdn"}
+                    disabled={track.locked}
+                    options={DENOISE_BACKENDS}
+                    onChange={(backend) =>
+                      void dispatch(
+                        setClipAudioDenoise(track.id, clip.id, {
+                          ...clip.audio_denoise,
+                          backend,
+                          strength: denoiseStrength,
+                        }),
+                      )
+                    }
+                  />
+                </label>
+                <label className="insp-cell">
+                  <span>Strength · {Math.round(denoiseStrength * 100)}%</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={denoiseStrength}
+                    disabled={track.locked}
+                    onChange={(e) => setDenoiseStrength(parseFloat(e.target.value))}
+                    onMouseUp={commitDenoiseStrength}
+                    onTouchEnd={commitDenoiseStrength}
+                    onKeyUp={commitDenoiseStrength}
+                  />
+                </label>
+              </>
+            )}
             <button
               type="button"
               disabled={track.locked}

@@ -1133,6 +1133,16 @@ fn mix_clip_bus(
             )));
         }
         let af = build_audio_filter(clip, seg_duration);
+        // RNNoise denoise is materialised as a cached 48 kHz WAV of the whole source
+        // (timeline-aligned with it), substituted for the clip's input; `build_audio_filter`
+        // emits no denoise filter for that backend.
+        let input_path = match rnnoise_input(clip) {
+            Ok(p) => p,
+            Err(e) => {
+                std::fs::remove_dir_all(&temp_dir).ok();
+                return Err(e);
+            }
+        };
 
         let status = crate::proc::command(ffmpeg_path()?)
             .args([
@@ -1144,7 +1154,7 @@ fn mix_clip_bus(
                 &format!("{:.6}", clip.source_in_secs),
                 "-i",
             ])
-            .arg(&clip.path)
+            .arg(&input_path)
             .args([
                 "-t",
                 &format!("{seg_duration:.6}"),
@@ -1201,6 +1211,22 @@ fn mix_clip_bus(
         return Err(FfmpegCliError::NonZeroExit(status.code().unwrap_or(-1)));
     }
     Ok(())
+}
+
+/// The file the mix should read for `clip`: the cached RNNoise-denoised copy of its source
+/// when the clip has an enabled `"rnnoise"` denoise, otherwise the source itself.
+fn rnnoise_input(clip: &AudioMixClip) -> Result<PathBuf, FfmpegCliError> {
+    use crate::audio::denoise::{denoised_wav_cached, DenoiseError};
+    match clip.denoise.as_ref() {
+        Some(d) if d.enabled && d.backend == "rnnoise" => {
+            denoised_wav_cached(&clip.path, d.strength).map_err(|e| match e {
+                DenoiseError::Ffmpeg(e) => e,
+                DenoiseError::Io(e) => FfmpegCliError::Io(e),
+                other => FfmpegCliError::BadOutput(other.to_string()),
+            })
+        }
+        _ => Ok(clip.path.clone()),
+    }
 }
 
 fn build_audio_filter(clip: &AudioMixClip, seg_duration: f64) -> String {
@@ -1280,7 +1306,8 @@ pub struct AudioMixClip {
     pub speed: f64,
     /// Optional WASM audio effects applied after decode, before fades/volume in the bus.
     pub effects: Vec<crate::project::EffectInstance>,
-    /// Optional Phase 4 audio denoise (`afftdn`) applied before volume/fades.
+    /// Optional Phase 4 audio denoise (`afftdn` filter, or `rnnoise` via a cached WAV)
+    /// applied before volume/fades.
     pub denoise: Option<crate::project::AudioDenoise>,
 }
 

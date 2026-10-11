@@ -1,5 +1,6 @@
 //! Audio synthesis (TTS) for Phase 1 voiceover tracks.
 
+pub mod denoise;
 mod tts;
 
 pub use tts::{
