@@ -43,8 +43,10 @@ Before a release-minded PR, walk [docs/qa-checklist.md](docs/qa-checklist.md).
 
 ## Setup
 
-Prereqs: Rust (stable), Node 20+, `ffmpeg` and `ffprobe` on PATH, and
-`wasm-pack` (`cargo install wasm-pack`) if you're touching the preview compositor.
+Prereqs: Rust via [rustup](https://rustup.rs) (the version is pinned in
+`rust-toolchain.toml` and installs itself on the first `cargo` command), Node 20+,
+`ffmpeg` and `ffprobe` on PATH, and `wasm-pack` (`cargo install wasm-pack`) if you're
+touching the preview compositor.
 
 ```sh
 git clone https://github.com/mecharan14/renderly.git

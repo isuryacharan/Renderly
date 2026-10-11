@@ -2002,7 +2002,7 @@ fn write_generated_sticker_png(path: &std::path::Path, prompt: &str) -> Result<(
     let w = 512u32;
     let h = 512u32;
     let mut pixels = vec![0u8; (w * h * 4) as usize];
-    for px in pixels.chunks_exact_mut(4) {
+    for px in pixels.as_chunks_mut::<4>().0 {
         px[0] = r.max(40);
         px[1] = g.max(40);
         px[2] = b.max(40);

@@ -38,9 +38,11 @@ jobs:
             patchelf libx11-dev libxfixes-dev libwayland-dev libxkbcommon-dev libssl-dev \
             libasound2-dev
 
+      # Keep `toolchain` equal to `channel` in rust-toolchain.toml (see the note there).
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.99.0"
           targets: wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2

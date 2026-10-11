@@ -1,3 +1,9 @@
+# Pinned, not "stable": CI runs clippy with `-D warnings`, so a floating channel turns
+# every new Rust release's lints into a red main with no code change (1.99 did exactly
+# that). Bump deliberately, fix what the new clippy flags in the same change, and keep
+# the `toolchain:` inputs in .github/workflows/{ci,release}.yml on the same version.
 [toolchain]
-channel = "stable"
+channel = "1.99.0"
 components = ["rustfmt", "clippy"]
+# The preview compositor is renderly-core compiled to wasm32 (docs/preview-webview.md).
+targets = ["wasm32-unknown-unknown"]

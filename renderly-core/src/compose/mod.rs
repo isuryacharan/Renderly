@@ -811,7 +811,7 @@ mod tests {
 
     fn solid_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> RgbaFrame {
         let mut pixels = vec![0u8; (w * h * 4) as usize];
-        for px in pixels.chunks_exact_mut(4) {
+        for px in pixels.as_chunks_mut::<4>().0 {
             px[0] = r;
             px[1] = g;
             px[2] = b;
@@ -827,7 +827,7 @@ mod tests {
     fn mean_luma(rgba: &[u8]) -> f64 {
         let mut sum = 0.0f64;
         let mut n = 0usize;
-        for px in rgba.chunks_exact(4) {
+        for px in rgba.as_chunks::<4>().0 {
             sum += 0.2126 * px[0] as f64 + 0.7152 * px[1] as f64 + 0.0722 * px[2] as f64;
             n += 1;
         }

@@ -44,7 +44,7 @@ pub fn apply_chroma_effects(frame: &mut RgbaFrame, effects: &[EffectInstance]) {
 
 fn apply_chroma(frame: &mut RgbaFrame, key: [f32; 3], tolerance: f32, softness: f32) {
     let soft = softness.max(1e-4);
-    for px in frame.pixels.chunks_exact_mut(4) {
+    for px in frame.pixels.as_chunks_mut::<4>().0 {
         let r = px[0] as f32 / 255.0;
         let g = px[1] as f32 / 255.0;
         let b = px[2] as f32 / 255.0;

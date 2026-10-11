@@ -350,7 +350,7 @@ fn apply_cube(frame: &mut RgbaFrame, cube: &CubeLut, intensity: f32) {
     }
     let n = cube.size;
     let max_i = (n - 1) as f32;
-    for px in frame.pixels.chunks_exact_mut(4) {
+    for px in frame.pixels.as_chunks_mut::<4>().0 {
         let r = px[0] as f32 / 255.0;
         let g = px[1] as f32 / 255.0;
         let b = px[2] as f32 / 255.0;
