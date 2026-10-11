@@ -65,8 +65,8 @@ const samples: Record<string, unknown> = {
   GenerateSticker: c.generateSticker("cat", T, 1, "o.png"),
   CreateMulticamGroup: c.createMulticamGroup("g", ["a", "b"]),
   SetMulticamAngle: c.setMulticamAngle("g", 1),
-  TrackMotion: c.trackMotion(T, K),
-  StabilizeClip: c.stabilizeClip(T, K),
+  TrackMotion: c.trackMotion(T, K, 12, { region: { x: 0.1, y: 0.1, width: 0.5, height: 0.5 }, trackRotationScale: true }),
+  StabilizeClip: c.stabilizeClip(T, K, { strength: 0.5, sampleCount: 90 }),
   AutoReframeClip: c.autoReframeClip(T, K, 9 / 16),
 };
 

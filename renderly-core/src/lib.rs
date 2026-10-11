@@ -33,6 +33,8 @@ pub(crate) mod proc;
 pub mod project;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod segmentation;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod tracking;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use audio::{TtsError, VoiceoverProvider};

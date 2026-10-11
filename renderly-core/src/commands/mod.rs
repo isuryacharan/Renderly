@@ -5,12 +5,24 @@ use crate::audio::{synthesize_to_wav, VoiceoverProvider};
 use crate::media::{self, MediaError};
 use crate::project::{
     clone_effects_with_new_ids, split_keyframes, AnimProperty, AudioDenoise, BackgroundRemoval,
-    CaptionClip, Clip, ClipMask, ClipMaskKind, ClipTransform, ClipTransition, Easing,
-    EffectInstance, Id, Keyframe, KeyframeTrack, MediaClip, MulticamGroup, Project, Track,
-    TrackAudioRole, TrackKind, TransitionKind,
+    CaptionClip, Clip, ClipMask, ClipMaskKind, ClipTransform, ClipTransition, EffectInstance, Id,
+    KeyframeTrack, MediaClip, MulticamGroup, Project, Track, TrackAudioRole, TrackKind,
+    TransitionKind,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+mod motion;
+
+/// Normalised rectangle (0..1, origin top-left, y down) in the clip's video frame, before any
+/// cover-fit crop. Used to pick the area `TrackMotion` follows.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TrackRegion {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "PascalCase")]
@@ -250,16 +262,27 @@ pub enum Command {
         group_id: Id,
         active_angle: usize,
     },
-    /// Sample bright-pixel centroids and write PosX/PosY tracking keyframes (Phase 4).
+    /// Track a region of the clip with pyramidal Lucas-Kanade features + RANSAC and write
+    /// `PosX`/`PosY` keyframes (the tracked point's position in NDC); optionally also
+    /// `Rotation`/`ScaleX`/`ScaleY` (Phase 4).
     TrackMotion {
         track_id: Id,
         clip_id: Id,
         sample_count: u32,
+        #[serde(default)]
+        region: Option<TrackRegion>,
+        #[serde(default)]
+        track_rotation_scale: bool,
     },
-    /// Stabilize by counteracting sampled centroid motion with PosX/PosY keys (Phase 4).
+    /// Feature-based stabilization: estimate global similarity motion, smooth the camera path
+    /// and write compensating `PosX`/`PosY`/`Rotation`/`ScaleX`/`ScaleY` keyframes (Phase 4).
     StabilizeClip {
         track_id: Id,
         clip_id: Id,
+        #[serde(default)]
+        strength: Option<f64>,
+        #[serde(default)]
+        sample_count: Option<u32>,
     },
     /// Scale/offset transform to approximate a center-crop for `target_aspect` (Phase 4).
     AutoReframeClip {
@@ -579,8 +602,22 @@ pub fn apply_command(project: &mut Project, cmd: Command) -> Result<CommandOutco
             track_id,
             clip_id,
             sample_count,
-        } => track_motion(project, track_id, clip_id, sample_count),
-        Command::StabilizeClip { track_id, clip_id } => stabilize_clip(project, track_id, clip_id),
+            region,
+            track_rotation_scale,
+        } => motion::track_motion(
+            project,
+            track_id,
+            clip_id,
+            sample_count,
+            region,
+            track_rotation_scale,
+        ),
+        Command::StabilizeClip {
+            track_id,
+            clip_id,
+            strength,
+            sample_count,
+        } => motion::stabilize_clip(project, track_id, clip_id, strength, sample_count),
         Command::AutoReframeClip {
             track_id,
             clip_id,
@@ -2194,157 +2231,6 @@ fn set_multicam_angle(
         )));
     }
     group.active_angle = active_angle;
-    Ok(CommandOutcome::Applied)
-}
-
-fn bright_centroid(frame: &crate::media::RgbaFrame) -> (f64, f64) {
-    let mut sum_x = 0.0f64;
-    let mut sum_y = 0.0f64;
-    let mut sum_w = 0.0f64;
-    let w = frame.width as f64;
-    let h = frame.height as f64;
-    for y in 0..frame.height {
-        for x in 0..frame.width {
-            let i = ((y * frame.width + x) * 4) as usize;
-            let r = frame.pixels[i] as f64;
-            let g = frame.pixels[i + 1] as f64;
-            let b = frame.pixels[i + 2] as f64;
-            let lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0;
-            if lum < 0.55 {
-                continue;
-            }
-            let weight = lum * lum;
-            sum_x += (x as f64 + 0.5) * weight;
-            sum_y += (y as f64 + 0.5) * weight;
-            sum_w += weight;
-        }
-    }
-    if sum_w <= 1e-9 {
-        return (0.5, 0.5);
-    }
-    ((sum_x / sum_w) / w.max(1.0), (sum_y / sum_w) / h.max(1.0))
-}
-
-fn sample_motion_centroids(
-    project: &Project,
-    clip: &MediaClip,
-    sample_count: u32,
-) -> Result<Vec<(f64, f64, f64)>, CommandError> {
-    let n = sample_count.max(2) as usize;
-    let dur = clip.timeline_duration_secs().max(1e-6);
-    let mut samples = Vec::with_capacity(n);
-    for i in 0..n {
-        let t_local = if n == 1 {
-            0.0
-        } else {
-            dur * (i as f64) / ((n - 1) as f64)
-        };
-        let source_t = clip.source_time_at(clip.position_secs + t_local);
-        let frame = decode_clip_frame(project, clip, source_t)?;
-        let (cx, cy) = bright_centroid(&frame);
-        samples.push((t_local, cx, cy));
-    }
-    Ok(samples)
-}
-
-fn replace_pos_keyframes(clip: &mut MediaClip, samples: &[(f64, f64, f64)]) {
-    clip.keyframes
-        .retain(|t| t.property != AnimProperty::PosX && t.property != AnimProperty::PosY);
-    let mut x_keys = Vec::with_capacity(samples.len());
-    let mut y_keys = Vec::with_capacity(samples.len());
-    for &(t, cx, cy) in samples {
-        x_keys.push(Keyframe {
-            time_secs: t,
-            value: (cx - 0.5) * 100.0,
-            easing: Easing::Linear,
-            handle_left: None,
-            handle_right: None,
-        });
-        y_keys.push(Keyframe {
-            time_secs: t,
-            value: (cy - 0.5) * 100.0,
-            easing: Easing::Linear,
-            handle_left: None,
-            handle_right: None,
-        });
-    }
-    clip.keyframes.push(KeyframeTrack {
-        property: AnimProperty::PosX,
-        keys: x_keys,
-    });
-    clip.keyframes.push(KeyframeTrack {
-        property: AnimProperty::PosY,
-        keys: y_keys,
-    });
-}
-
-fn track_motion(
-    project: &mut Project,
-    track_id: Id,
-    clip_id: Id,
-    sample_count: u32,
-) -> Result<CommandOutcome, CommandError> {
-    let track = project
-        .find_track(track_id)
-        .ok_or(CommandError::TrackNotFound(track_id))?;
-    if track.kind != TrackKind::Video {
-        return Err(CommandError::TrackKindMismatch(
-            track_id,
-            track.kind,
-            TrackKind::Video,
-        ));
-    }
-    let clip = track
-        .clips
-        .iter()
-        .find(|c| c.id() == clip_id)
-        .ok_or(CommandError::ClipNotFound(clip_id, track_id))?
-        .as_media()
-        .ok_or(CommandError::NotMediaClip(clip_id))?
-        .clone();
-    let samples = sample_motion_centroids(project, &clip, sample_count)?;
-    let clip = media_clip_mut(project, track_id, clip_id)?;
-    replace_pos_keyframes(clip, &samples);
-    Ok(CommandOutcome::Applied)
-}
-
-fn stabilize_clip(
-    project: &mut Project,
-    track_id: Id,
-    clip_id: Id,
-) -> Result<CommandOutcome, CommandError> {
-    let track = project
-        .find_track(track_id)
-        .ok_or(CommandError::TrackNotFound(track_id))?;
-    if track.kind != TrackKind::Video {
-        return Err(CommandError::TrackKindMismatch(
-            track_id,
-            track.kind,
-            TrackKind::Video,
-        ));
-    }
-    let clip = track
-        .clips
-        .iter()
-        .find(|c| c.id() == clip_id)
-        .ok_or(CommandError::ClipNotFound(clip_id, track_id))?
-        .as_media()
-        .ok_or(CommandError::NotMediaClip(clip_id))?
-        .clone();
-    let raw = sample_motion_centroids(project, &clip, 8)?;
-    let (t0, cx0, cy0) = raw[0];
-    let mut samples = Vec::with_capacity(raw.len());
-    // Identity at first sample; counteract drift relative to the first-frame centroid.
-    samples.push((t0, 0.5, 0.5));
-    for &(t, cx, cy) in raw.iter().skip(1) {
-        // Negative offset of motion relative to first frame, expressed in centroid space
-        // so replace_pos_keyframes maps (c-0.5)*100 → -(cx-cx0)*100.
-        samples.push((t, 0.5 - (cx - cx0), 0.5 - (cy - cy0)));
-    }
-    // Also rewrite first key explicitly as identity (0 offset).
-    samples[0] = (t0, 0.5, 0.5);
-    let clip = media_clip_mut(project, track_id, clip_id)?;
-    replace_pos_keyframes(clip, &samples);
     Ok(CommandOutcome::Applied)
 }
 

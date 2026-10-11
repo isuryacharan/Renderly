@@ -52,8 +52,8 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 | — | TTS voiceover (local Piper / BYO cloud key) | ✅ | `GenerateVoiceover` |
 | — | Ducking, fades, mixing | ✅ | |
 | P4-2 | Audio denoise | 🟡 | `SetClipAudioDenoise` (`afftdn`); wants an RNNoise-class model |
-| P4-4 | Motion tracking | 🟡 | `TrackMotion`; centroid heuristic, wants feature tracking |
-| P4-5 | Stabilization | 🟡 | `StabilizeClip`; centroid-smoothed keyframes |
+| P4-4 | Motion tracking | ✅ | `TrackMotion`; Shi–Tomasi corners + pyramidal Lucas–Kanade in `renderly-core/src/tracking.rs`, optional region and rotation/scale. Frame-to-frame, no template re-anchoring |
+| P4-5 | Stabilization | ✅ | `StabilizeClip`; RANSAC similarity per frame, smoothed camera path, auto-zoom capped at 1.4×. No rolling-shutter or parallax correction |
 | P4-4b | Auto-reframe | 🟡 | `AutoReframeClip`; wants subject detection |
 | P4-6b | Text-to-sticker | 🟡 | `GenerateSticker`; locally generated PNG, not an image model |
 | P4-6 | Templates | ✅ | Pack `templates[]` + `ApplyTemplate` |

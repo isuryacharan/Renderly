@@ -47,6 +47,14 @@ export interface KeyframeTrack {
   keys: Keyframe[];
 }
 
+/** Normalised (0..1, origin top-left) rectangle in the clip's video frame, for `TrackMotion`. */
+export interface TrackRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface EffectInstance {
   id: string;
   effect_id: string;

@@ -47,8 +47,8 @@ pub enum Command {
     GenerateSticker { prompt: String, track_id: Id, position_secs: f64, output_path: String },
     CreateMulticamGroup { name: String, clip_ids: Vec<Id> },
     SetMulticamAngle { group_id: Id, active_angle: usize },
-    TrackMotion { track_id: Id, clip_id: Id, sample_count: u32 },
-    StabilizeClip { track_id: Id, clip_id: Id },
+    TrackMotion { track_id: Id, clip_id: Id, sample_count: u32, region: Option<TrackRegion>, track_rotation_scale: bool },
+    StabilizeClip { track_id: Id, clip_id: Id, strength: Option<f64>, sample_count: Option<u32> },
     AutoReframeClip { track_id: Id, clip_id: Id, target_aspect: f64 },
     Export { output_path: String, preset: ExportPreset },
 }
@@ -281,6 +281,64 @@ Load or unload a WASM plugin directory (`plugin.json` + `.wasm`). Plugins may ex
 Import a pack sticker (image → video track) or SFX (audio → audio track) and place a clip
 at `position_secs`. Requires the pack to be loaded.
 
+### `TrackMotion` (Phase 4)
+Tracks a region of a video clip and writes keyframes describing where it goes.
+
+- `sample_count`: number of keyframes written (clamped to `2..=analysed frames`). Tracking
+  itself always uses every source frame (<= 30 fps, <= 900 frames) so large inter-frame motion
+  never breaks the tracker; the keyframes are samples of that dense path.
+- `region` (optional `TrackRegion { x: f64, y: f64, width: f64, height: f64 }`, default
+  `{ x: 0.25, y: 0.25, width: 0.5, height: 0.5 }`): normalised
+  rectangle (0..1, origin top-left, y down) in the clip's video frame, *before* the compositor's
+  cover-fit crop, defined on the first frame of the clip. It must lie inside the frame with
+  positive size.
+- `track_rotation_scale` (default `false`): fit a 4-DOF similarity instead of a translation and
+  also write `Rotation`, `ScaleX` and `ScaleY` keyframes (cumulative rotation/scale of the
+  region relative to the first frame).
+
+Algorithm: Shi-Tomasi corners inside the region (grid-distributed), pyramidal Lucas-Kanade
+flow with a forward-backward consistency check, RANSAC fit of translation (or similarity) per
+frame pair so features on a different-moving foreground are rejected, region carried along with
+the estimate, features re-detected when fewer than half survive. Frames are decoded
+sequentially at <= 360 px tall via one `VideoReader`; clip `speed`, `source_in_secs` and Speed
+keyframes are honoured when mapping timeline time to source frames.
+
+Output convention (matches the compositor): `PosX`/`PosY` are the tracked point's position as
+an NDC offset from the canvas centre (+x right, **+y up**), after the cover-fit mapping to the
+project canvas, so a layer with these keyframes sits on the tracked point. Previously written
+`PosX`/`PosY` (and, when `track_rotation_scale`, `Rotation`/`ScaleX`/`ScaleY`) tracks are
+replaced; other keyframe tracks are untouched. `Rotation` is degrees, counter-clockwise on
+screen. Still images are a no-op (`Applied`, nothing written).
+
+Errors: `TrackNotFound`, `ClipNotFound`, `NotMediaClip`, `TrackKindMismatch` (not a video
+track), `MediaNotFound`, `Analysis` (audio-only media, zero-length clip, invalid `region`, no
+trackable features in the region, decode failure). Old JSON without `region` /
+`track_rotation_scale` still deserialises.
+
+### `StabilizeClip` (Phase 4)
+Estimates the camera's global motion and writes compensating transform keyframes.
+
+- `strength` (optional, default `0.6`, clamped to `0..=1`): smoothing amount. The camera path
+  is low-passed with a Gaussian of `0.05 + 1.5 * strength` seconds; `0` only removes
+  frame-to-frame noise, `1` gives a very steady, heavily smoothed path.
+- `sample_count` (optional): number of frames to analyse. Default is one per native source
+  frame (<= 30 fps), capped at 900; smaller values skip frames and track larger motions.
+
+Algorithm: whole-frame corner features, pyramidal LK with forward-backward check, RANSAC
+similarity (translation + rotation + uniform scale) per frame pair, accumulation into a camera
+path, Gaussian smoothing of its translation/angle/log-scale (linear-trend padding at the ends
+so a steady pan is preserved), and per-frame correction `smoothed * path^-1`. A constant zoom
+(`<= 1.4`) is added to the scale keyframes so borders are not exposed; if the corrections
+need more, edges can still show. The corrections are composed with the clip's static
+`transform` (keyframes override static values), and keys are simplified (Ramer-Douglas-Peucker,
+sub-pixel tolerance).
+
+Writes `PosX`, `PosY`, `Rotation`, `ScaleX`, `ScaleY` tracks (existing tracks for those
+properties are replaced). Values use the compositor's conventions (NDC y-up positions, degrees
+counter-clockwise on screen). The compositor rotates in NDC rather than pixel space, so on
+non-square canvases large rotation corrections are slightly anisotropic. Still images are a
+no-op. Errors as for `TrackMotion`, plus `Analysis` for a non-finite `strength`.
+
 ### `Export`
 Renders the current `Project` timeline to `output_path` using `preset` (e.g.
 `TikTok9x16`, `Youtube16x9`, or a `Custom { width, height, fps }` variant). Muxes mixed
@@ -336,6 +394,11 @@ remain follow-ups on top of the Phase 4 command surface above.
   `GenerateBackgroundMatte`, `SetClipAudioDenoise`, `ApplyTemplate`, `GenerateSticker`,
   `CreateMulticamGroup`, `SetMulticamAngle`, `TrackMotion`, `StabilizeClip`,
   `AutoReframeClip`; pack `templates`; export multicam angle filter; afftdn denoise mix.
+
+- **Phase 4 feature tracking** (non-breaking): `TrackMotion` and `StabilizeClip` now use
+  Lucas-Kanade feature tracking + RANSAC instead of a bright-pixel centroid; added optional
+  `region` / `track_rotation_scale` (`TrackMotion`) and `strength` / `sample_count`
+  (`StabilizeClip`); `PosX`/`PosY` are now NDC (previously an ad-hoc percent-like unit).
 
 - **Phase 4 improvement push** (non-breaking): `MoveTrack` — drag-to-reorder tracks/layers;
   reorders `Project::tracks` (the compositing z-order) in place.

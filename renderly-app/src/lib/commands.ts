@@ -9,6 +9,7 @@ import type {
   TrackAudioRole,
   TrackKind,
   ClipTransition,
+  TrackRegion,
 } from "./types";
 
 export function importMedia(path: string) {
@@ -322,17 +323,34 @@ export function setMulticamAngle(groupId: string, activeAngle: number) {
   return { command: "SetMulticamAngle", group_id: groupId, active_angle: activeAngle };
 }
 
-export function trackMotion(trackId: string, clipId: string, sampleCount = 12) {
+export function trackMotion(
+  trackId: string,
+  clipId: string,
+  sampleCount = 12,
+  opts: { region?: TrackRegion | null; trackRotationScale?: boolean } = {},
+) {
   return {
     command: "TrackMotion",
     track_id: trackId,
     clip_id: clipId,
     sample_count: sampleCount,
+    region: opts.region ?? null,
+    track_rotation_scale: opts.trackRotationScale ?? false,
   };
 }
 
-export function stabilizeClip(trackId: string, clipId: string) {
-  return { command: "StabilizeClip", track_id: trackId, clip_id: clipId };
+export function stabilizeClip(
+  trackId: string,
+  clipId: string,
+  opts: { strength?: number | null; sampleCount?: number | null } = {},
+) {
+  return {
+    command: "StabilizeClip",
+    track_id: trackId,
+    clip_id: clipId,
+    strength: opts.strength ?? null,
+    sample_count: opts.sampleCount ?? null,
+  };
 }
 
 export function autoReframeClip(trackId: string, clipId: string, targetAspect: number) {
