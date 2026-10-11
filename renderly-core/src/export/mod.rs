@@ -120,6 +120,8 @@ struct DecoderState {
     path: PathBuf,
     reader_opts: ReaderOptions,
     reader: Option<VideoReader>,
+    /// A still image (`MediaKind::Image`), decoded once and returned for every source time.
+    still: Option<RgbaFrame>,
     last_source_time: f64,
     /// A5: LRU of recently decoded frames keyed by quantized source time. Avoids
     /// respawning FFmpeg on every backward scrub / small seek within the window.
@@ -177,12 +179,32 @@ impl DecoderState {
             path,
             reader_opts,
             reader: None,
+            still: None,
             last_source_time: f64::NAN,
             cache: FrameLru::default(),
         }
     }
 
     fn frame_at(&mut self, source_time: f64) -> Result<Option<RgbaFrame>, FfmpegCliError> {
+        if crate::media::is_still_image(&self.path) {
+            if self.still.is_none() {
+                let img = image::open(&self.path)
+                    .map_err(|e| {
+                        FfmpegCliError::BadOutput(format!(
+                            "decoding image {}: {e}",
+                            self.path.display()
+                        ))
+                    })?
+                    .to_rgba8();
+                self.still = Some(RgbaFrame {
+                    width: img.width(),
+                    height: img.height(),
+                    pixels: img.into_raw(),
+                });
+            }
+            return Ok(self.still.clone());
+        }
+
         let key = quantize_source_time_ms(source_time);
         if let Some(cached) = self.cache.get(key) {
             self.last_source_time = source_time;

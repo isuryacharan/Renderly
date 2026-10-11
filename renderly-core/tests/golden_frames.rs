@@ -39,9 +39,8 @@
 //! Sources are small images generated in-test from integer math. They go through ffmpeg
 //! because `FrameRenderer` decodes everything via the ffmpeg CLI, but as **FFV1 (lossless)
 //! Matroska** looped from the PNG - bit-exact by spec, so no lossy codec (x264) version can
-//! move a pixel. A guard test asserts the decoded frame equals the source PNG exactly. A raw
-//! `.png` still cannot be used at all today: see
-//! `bug_still_image_media_cannot_be_rendered_by_export`.
+//! move a pixel. A guard test asserts the decoded frame equals the source PNG exactly. Raw `.png`
+//! stills are covered separately by `still_image_media_renders_for_its_whole_span`.
 //!
 //! Captions use the bundled Roboto Bold (`renderly-wasm/assets`) via `RENDERLY_FONT_PATH`, so
 //! the glyphs are identical on every OS (and are the very font the preview embeds).
@@ -1719,18 +1718,12 @@ fn parity_gap_pack_cube_lut() {
     assert_gap_scenes_match(&["fx_pack_cube_lut"]);
 }
 
-/// REAL BUG (export/headless path, not a documented gap): `FrameRenderer` decodes every
-/// media item - including `MediaKind::Image` - through `VideoReader`, which first runs
-/// `probe_video` and requires a `duration`. ffprobe reports none for a PNG/JPG, so
-/// `render()` fails with `Ffmpeg(BadOutput("missing duration"))` and any export or
-/// `render_frame` of a project containing an image clip errors out (the webview preview is
-/// unaffected: it draws the `<img>`). Even with that fixed, `ffmpeg -ss <t> -i still.png`
-/// yields zero frames for any t beyond one 1/25 s frame, so the still would still vanish
-/// after the first frame. Fix idea: decode `MediaKind::Image` once via `image::open` in
-/// `DecoderState` instead of spawning ffmpeg.
+/// Regression: `FrameRenderer` used to push `MediaKind::Image` through the ffmpeg
+/// `VideoReader`, which failed on `probe_video` ("missing duration") so any export or
+/// `render_frame` of a project with an image clip errored. Stills are now decoded once with
+/// the `image` crate and held for the clip's whole span.
 #[test]
-#[ignore = "BUG: export/render_frame cannot render MediaKind::Image clips (probe_video: 'missing duration'; and ffmpeg -ss past a 1-frame PNG yields no frame); see doc comment"]
-fn bug_still_image_media_cannot_be_rendered_by_export() {
+fn still_image_media_renders_for_its_whole_span() {
     let Some(env) = env() else { return };
     let Some(mut preview) = PreviewPipeline::new() else {
         return;

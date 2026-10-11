@@ -42,6 +42,15 @@ const VIDEO_EXTS: &[&str] = &["mp4", "mov", "mkv", "avi", "webm"];
 const AUDIO_EXTS: &[&str] = &["wav", "mp3", "aac", "flac", "ogg", "m4a"];
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "bmp"];
 
+/// True when `path` has a still-image extension. Stills are decoded once with the `image`
+/// crate rather than through the ffmpeg video reader (they have no duration to probe and
+/// no frame to seek to).
+pub fn is_still_image(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| IMAGE_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
 pub fn probe(path: &Path) -> Result<ProbedMedia, MediaError> {
     if !path.is_file() {
         return Err(MediaError::NotFound(path.display().to_string()));
