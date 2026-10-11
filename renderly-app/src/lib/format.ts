@@ -1,7 +1,10 @@
 export function formatTimecode(secs: number): string {
-  const m = Math.floor(secs / 60);
-  const s = Math.floor(secs % 60);
-  const f = Math.floor((secs % 1) * 100);
+  // Truncate on whole centiseconds; the epsilon absorbs binary float error so e.g. 0.29
+  // (0.29 % 1 * 100 = 28.999...) reads .29 rather than .28.
+  const cs = Math.floor(secs * 100 + 1e-6);
+  const m = Math.floor(cs / 6000);
+  const s = Math.floor(cs / 100) % 60;
+  const f = cs % 100;
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(f).padStart(2, "0")}`;
 }
 

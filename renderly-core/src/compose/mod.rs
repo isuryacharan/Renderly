@@ -86,6 +86,56 @@ pub struct ComposeLayer {
     pub transition: Option<LayerTransition>,
 }
 
+impl ComposeLayer {
+    /// The single place an evaluated [`ActiveLayer`] plus its pixels becomes a
+    /// [`ComposeLayer`]. Shared by the native export path (`export::FrameRenderer`, with a
+    /// decoded `LayerSource::Frame`) and the wasm preview (`renderly-wasm`, with a
+    /// `LayerSource::Texture` filled from a browser element), so transform / effects /
+    /// transition can never be wired differently in the two. `mask` is passed in because
+    /// each path legitimately resolves it differently: export may replace it with a
+    /// background-removal matte, the preview drops mattes it cannot load
+    /// ([`preview_supported_mask`]).
+    pub fn from_active(layer: &ActiveLayer, source: LayerSource, mask: Option<ClipMask>) -> Self {
+        Self {
+            source,
+            transform: layer.transform,
+            effects: layer.effects.clone(),
+            mask,
+            transition: layer.transition,
+        }
+    }
+
+    /// A burned-in caption layer: the bitmap is already output-sized, so it uses the identity
+    /// transform (cover-fit is then a no-op), no effects, no mask, no transition. Shared by
+    /// export and the wasm preview.
+    pub fn caption(source: LayerSource) -> Self {
+        Self {
+            source,
+            transform: ClipTransform::default(),
+            effects: Vec::new(),
+            mask: None,
+            transition: None,
+        }
+    }
+}
+
+/// The mask the wasm preview can honour: shape masks (rect / ellipse) and in-memory `Luma`
+/// mattes pass through; `Raster` / `Generated` mattes (filesystem `image::open`) are dropped.
+/// This is a documented preview-only gap (docs/parity-board.md "Raster / generated mattes in
+/// preview"); keeping it here, next to [`ComposeLayer::from_active`], makes the gap a single
+/// named function that the golden suite exercises natively
+/// (`renderly-core/tests/golden_frames.rs`).
+pub fn preview_supported_mask(mask: Option<&ClipMask>) -> Option<ClipMask> {
+    mask.filter(|m| {
+        !matches!(
+            m.kind,
+            crate::project::ClipMaskKind::Raster { .. }
+                | crate::project::ClipMaskKind::Generated { .. }
+        )
+    })
+    .cloned()
+}
+
 impl From<RgbaFrame> for ComposeLayer {
     fn from(frame: RgbaFrame) -> Self {
         Self {

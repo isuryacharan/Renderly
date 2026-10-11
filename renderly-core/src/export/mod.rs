@@ -10,7 +10,7 @@ use crate::media::{
 };
 #[cfg(test)]
 use crate::project::MediaKind;
-use crate::project::{evaluate_volume_db, Clip, ClipTransform, Project, TrackAudioRole, TrackKind};
+use crate::project::{evaluate_volume_db, Clip, Project, TrackAudioRole, TrackKind};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -376,30 +376,24 @@ impl FrameRenderer {
                     layer.mask.clone()
                 };
 
-                compose_layers.push(ComposeLayer {
-                    source: LayerSource::Frame(frame),
-                    transform: layer.transform,
-                    effects: layer.effects.clone(),
+                compose_layers.push(ComposeLayer::from_active(
+                    layer,
+                    LayerSource::Frame(frame),
                     mask,
-                    transition: layer.transition,
-                });
+                ));
             }
         }
 
         for cap in eval::active_captions(project, time_secs) {
-            compose_layers.push(ComposeLayer {
-                source: LayerSource::Frame(crate::captions::render_caption_for_project(
+            compose_layers.push(ComposeLayer::caption(LayerSource::Frame(
+                crate::captions::render_caption_for_project(
                     project,
                     &cap.text,
                     &cap.style_id,
                     self.settings.width,
                     self.settings.height,
-                )?),
-                transform: ClipTransform::default(),
-                effects: Vec::new(),
-                mask: None,
-                transition: None,
-            });
+                )?,
+            )));
         }
 
         let compose_start = Instant::now();

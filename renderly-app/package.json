@@ -9,7 +9,9 @@
     "build:wasm": "wasm-pack build ../renderly-wasm --target web --release --out-dir ../renderly-app/public/wasm-pkg --no-pack",
     "fetch-ffmpeg": "node scripts/fetch-ffmpeg.mjs",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@fontsource/source-sans-3": "^5.2.9",
@@ -27,6 +29,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.7.0",
     "typescript": "^5.8.3",
-    "vite": "^6.3.5"
+    "vite": "^6.3.5",
+    "vitest": "^3.2.7"
   }
 }

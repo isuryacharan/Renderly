@@ -21,7 +21,15 @@ pub struct BridgeDiscovery {
     pub project_path: Option<String>,
 }
 
+/// Environment variable that overrides the discovery-file location. Exists so tests (and
+/// sandboxed setups) can point the MCP server at a fake bridge — or at "no bridge" — instead
+/// of whatever real desktop app happens to be running on the machine. Unset in normal use.
+pub const DISCOVERY_ENV: &str = "RENDERLY_BRIDGE_DISCOVERY";
+
 pub fn discovery_path() -> PathBuf {
+    if let Some(over) = std::env::var_os(DISCOVERY_ENV) {
+        return PathBuf::from(over);
+    }
     let base = if cfg!(windows) {
         std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
@@ -43,7 +51,10 @@ pub fn discovery_path() -> PathBuf {
 }
 
 pub fn read_discovery() -> Option<BridgeDiscovery> {
-    let path = discovery_path();
+    read_discovery_from(&discovery_path())
+}
+
+pub fn read_discovery_from(path: &Path) -> Option<BridgeDiscovery> {
     let data = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&data).ok()
 }
@@ -192,7 +203,14 @@ impl BridgeClient {
 pub async fn try_live_bridge(
     session_path: Option<&Path>,
 ) -> Option<(BridgeDiscovery, BridgeClient)> {
-    let disc = read_discovery()?;
+    try_live_bridge_with(read_discovery()?, session_path).await
+}
+
+/// [`try_live_bridge`] with an explicit discovery record (the seam tests drive directly).
+pub async fn try_live_bridge_with(
+    disc: BridgeDiscovery,
+    session_path: Option<&Path>,
+) -> Option<(BridgeDiscovery, BridgeClient)> {
     if !pid_alive(disc.pid) {
         return None;
     }
@@ -279,5 +297,264 @@ mod tests {
         assert!(!pid_alive(0));
         // Our own pid is definitionally alive.
         assert!(pid_alive(std::process::id()));
+    }
+
+    use std::sync::{Arc, Mutex};
+    use tokio::net::TcpListener;
+
+    const TOKEN: &str = "secret-token";
+
+    #[derive(Clone, Copy)]
+    enum Mode {
+        /// Validate the token and answer a handful of canned methods.
+        Normal,
+        /// Read one request, then drop the connection without answering.
+        DropAfterRequest,
+    }
+
+    /// Loopback fake of the desktop app's bridge (docs/bridge-protocol.md). Accepts a single
+    /// connection on an ephemeral port; returns the port and the log of requests received.
+    async fn fake_bridge(mode: Mode) -> (u16, Arc<Mutex<Vec<Value>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let log: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let log2 = log.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(Ok(msg)) = ws.next().await {
+                let Message::Text(text) = msg else { continue };
+                let req: Value = serde_json::from_str(&text).unwrap();
+                log2.lock().unwrap().push(req.clone());
+                if matches!(mode, Mode::DropAfterRequest) {
+                    return;
+                }
+                let id = req["id"].clone();
+                let method = req["method"].as_str().unwrap_or("").to_string();
+                let params = &req["params"];
+                let reply = if params["token"] != json!(TOKEN) {
+                    json!({"jsonrpc":"2.0","id":id,"error":{"code":-32001,"message":"invalid token"}})
+                } else {
+                    match method.as_str() {
+                        "echo" => {
+                            let mut p = params.clone();
+                            p.as_object_mut().unwrap().remove("token");
+                            // A stray non-text frame first: the client must skip it.
+                            ws.send(Message::Binary(vec![1, 2, 3].into()))
+                                .await
+                                .unwrap();
+                            json!({"jsonrpc":"2.0","id":id,"result":p})
+                        }
+                        "boom" => {
+                            json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":"kaboom"}})
+                        }
+                        "empty" => json!({"jsonrpc":"2.0","id":id}),
+                        "garbage" => {
+                            ws.send(Message::Text("not json".into())).await.unwrap();
+                            continue;
+                        }
+                        _ => json!({"jsonrpc":"2.0","id":id,"result":{"ok":true}}),
+                    }
+                };
+                ws.send(Message::Text(reply.to_string().into()))
+                    .await
+                    .unwrap();
+            }
+        });
+        (port, log)
+    }
+
+    fn disc(port: u16, token: &str, project_path: Option<String>) -> BridgeDiscovery {
+        BridgeDiscovery {
+            pid: std::process::id(),
+            port,
+            token: token.into(),
+            project_path,
+        }
+    }
+
+    async fn closed_port() -> u16 {
+        // Grab an ephemeral port, then free it so a connect is refused.
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        l.local_addr().unwrap().port()
+    }
+
+    #[test]
+    fn read_discovery_from_handles_missing_malformed_and_valid_files() {
+        let dir = std::env::temp_dir().join(format!("renderly-mcp-disc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        assert!(read_discovery_from(&dir.join("absent.json")).is_none());
+
+        let bad = dir.join("bad.json");
+        std::fs::write(&bad, "{ not json").unwrap();
+        assert!(read_discovery_from(&bad).is_none());
+
+        let incomplete = dir.join("incomplete.json");
+        std::fs::write(&incomplete, r#"{"pid":1,"port":2}"#).unwrap();
+        assert!(read_discovery_from(&incomplete).is_none());
+
+        let good = dir.join("good.json");
+        std::fs::write(
+            &good,
+            r#"{"pid":7,"port":8,"token":"tok","project_path":null}"#,
+        )
+        .unwrap();
+        let d = read_discovery_from(&good).expect("valid file parses");
+        assert_eq!((d.pid, d.port, d.token.as_str()), (7, 8, "tok"));
+        assert!(d.project_path.is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn empty_project_path_never_matches() {
+        let d = disc(1, "t", Some(String::new()));
+        assert!(!discovery_matches_project(&d, Path::new("anything")));
+    }
+
+    #[test]
+    fn paths_match_falls_back_to_literal_comparison_for_missing_files() {
+        assert!(paths_match(
+            Path::new("/no/such/file.json"),
+            Path::new("/no/such/file.json")
+        ));
+        assert!(!paths_match(
+            Path::new("/no/such/a.json"),
+            Path::new("/no/such/b.json")
+        ));
+    }
+
+    #[tokio::test]
+    async fn call_round_trips_and_injects_token_and_incrementing_ids() {
+        let (port, log) = fake_bridge(Mode::Normal).await;
+        let mut client = BridgeClient::connect(&disc(port, TOKEN, None))
+            .await
+            .unwrap();
+
+        let r = client.call("echo", json!({"a": 1})).await.unwrap();
+        assert_eq!(r, json!({"a": 1}));
+        // Non-object params are coerced to an empty object (token still attached).
+        let r = client.call("echo", json!("scalar")).await.unwrap();
+        assert_eq!(r, json!({}));
+        let r = client.call("whatever", json!({})).await.unwrap();
+        assert_eq!(r, json!({"ok": true}));
+
+        let log = log.lock().unwrap();
+        assert_eq!(log.len(), 3);
+        assert_eq!(log[0]["jsonrpc"], "2.0");
+        assert_eq!(log[0]["method"], "echo");
+        assert_eq!(log[0]["params"]["token"], TOKEN);
+        let ids: Vec<u64> = log.iter().map(|r| r["id"].as_u64().unwrap()).collect();
+        assert_eq!(ids, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn call_surfaces_error_responses() {
+        let (port, _log) = fake_bridge(Mode::Normal).await;
+        let mut client = BridgeClient::connect(&disc(port, TOKEN, None))
+            .await
+            .unwrap();
+        assert_eq!(client.call("boom", json!({})).await.unwrap_err(), "kaboom");
+        // The connection stays usable after an error response.
+        assert!(client.call("ping", json!({})).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn call_with_wrong_token_is_rejected_by_bridge() {
+        let (port, _log) = fake_bridge(Mode::Normal).await;
+        let mut client = BridgeClient::connect(&disc(port, "wrong", None))
+            .await
+            .unwrap();
+        let err = client.call("echo", json!({})).await.unwrap_err();
+        assert_eq!(err, "invalid token");
+    }
+
+    #[tokio::test]
+    async fn call_reports_closed_connection() {
+        let (port, _log) = fake_bridge(Mode::DropAfterRequest).await;
+        let mut client = BridgeClient::connect(&disc(port, TOKEN, None))
+            .await
+            .unwrap();
+        let err = client.call("echo", json!({})).await.unwrap_err();
+        assert!(
+            err.contains("bridge closed") || err.contains("bridge recv"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn call_reports_missing_result_and_unparseable_reply() {
+        let (port, _log) = fake_bridge(Mode::Normal).await;
+        let mut client = BridgeClient::connect(&disc(port, TOKEN, None))
+            .await
+            .unwrap();
+        assert_eq!(
+            client.call("empty", json!({})).await.unwrap_err(),
+            "bridge response missing result"
+        );
+        let err = client.call("garbage", json!({})).await.unwrap_err();
+        assert!(err.starts_with("bridge parse"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn connect_fails_when_nothing_listens() {
+        let port = closed_port().await;
+        assert!(BridgeClient::connect(&disc(port, TOKEN, None))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn try_live_bridge_with_applies_pid_path_and_connect_gates() {
+        let dir = std::env::temp_dir();
+        let project = dir.join(format!(
+            "renderly-mcp-live-{}.renderly.json",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&project, "{}").unwrap();
+        let project_str = project.to_string_lossy().into_owned();
+
+        // Matching project path + live pid + listening port => connected.
+        let (port, _log) = fake_bridge(Mode::Normal).await;
+        let d = disc(port, TOKEN, Some(project_str.clone()));
+        let (got, mut client) = try_live_bridge_with(d.clone(), Some(&project))
+            .await
+            .expect("should connect");
+        assert_eq!(got.port, port);
+        assert_eq!(
+            client.call("ping", json!({})).await.unwrap(),
+            json!({"ok": true})
+        );
+
+        // No session path (status queries) skips the path check.
+        let (port2, _l) = fake_bridge(Mode::Normal).await;
+        assert!(try_live_bridge_with(disc(port2, TOKEN, None), None)
+            .await
+            .is_some());
+
+        // Path mismatch => headless, even though the bridge is reachable.
+        let (port3, _l) = fake_bridge(Mode::Normal).await;
+        let other = dir.join("some-other-project.renderly.json");
+        assert!(
+            try_live_bridge_with(disc(port3, TOKEN, Some(project_str.clone())), Some(&other))
+                .await
+                .is_none()
+        );
+
+        // Dead pid => headless.
+        let mut dead = d.clone();
+        dead.pid = 0;
+        assert!(try_live_bridge_with(dead, Some(&project)).await.is_none());
+
+        // Unreachable port => headless.
+        let closed = closed_port().await;
+        assert!(
+            try_live_bridge_with(disc(closed, TOKEN, Some(project_str)), Some(&project))
+                .await
+                .is_none()
+        );
+
+        std::fs::remove_file(&project).ok();
     }
 }

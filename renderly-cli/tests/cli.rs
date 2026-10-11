@@ -1,0 +1,385 @@
+//! End-to-end tests that execute the built `renderly` binary.
+
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+const BIN: &str = env!("CARGO_BIN_EXE_renderly");
+
+/// Unique temp dir, removed on drop.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new() -> Self {
+        let dir = std::env::temp_dir().join(format!("renderly-cli-it-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        TempDir(dir)
+    }
+    fn path(&self, name: &str) -> PathBuf {
+        self.0.join(name)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).ok();
+    }
+}
+
+fn run<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> Output {
+    Command::new(BIN).args(args).output().expect("run renderly")
+}
+
+fn stdout(o: &Output) -> String {
+    String::from_utf8_lossy(&o.stdout).into_owned()
+}
+
+fn stderr(o: &Output) -> String {
+    String::from_utf8_lossy(&o.stderr).into_owned()
+}
+
+fn new_project(dir: &TempDir, extra: &[&str]) -> PathBuf {
+    let p = dir.path("p.renderly.json");
+    let mut args: Vec<&std::ffi::OsStr> = vec!["new-project".as_ref(), p.as_os_str()];
+    args.extend(extra.iter().map(|s| std::ffi::OsStr::new(*s)));
+    let out = run(&args);
+    assert!(out.status.success(), "new-project failed: {}", stderr(&out));
+    p
+}
+
+fn read_json(p: &Path) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
+}
+
+fn apply(p: &Path, cmd: &str) -> Output {
+    run(&["apply".as_ref(), p.as_os_str(), cmd.as_ref()])
+}
+
+fn assert_fails_unchanged(p: &Path, out: &Output, needle: &str) {
+    let before = std::fs::read(p).unwrap();
+    assert!(!out.status.success(), "expected failure");
+    let err = stderr(out);
+    assert!(err.contains(needle), "stderr missing {needle:?}: {err}");
+    assert_eq!(before, std::fs::read(p).unwrap(), "file changed");
+}
+
+#[test]
+fn new_project_defaults() {
+    let dir = TempDir::new();
+    let p = new_project(&dir, &[]);
+    let v = read_json(&p);
+    assert_eq!(v["name"], "untitled");
+    assert_eq!(v["settings"]["width"], 1080);
+    assert_eq!(v["settings"]["height"], 1920);
+    assert_eq!(v["settings"]["fps"], 60.0);
+    assert_eq!(v["settings"]["sample_rate"], 48000);
+    assert_eq!(
+        v["schema_version"],
+        renderly_core::project::SCHEMA_VERSION as u64
+    );
+    // Must load as a real Project.
+    let project: renderly_core::project::Project = serde_json::from_value(v).unwrap();
+    assert!(project.tracks.is_empty());
+}
+
+#[test]
+fn new_project_explicit_options() {
+    let dir = TempDir::new();
+    let p = new_project(
+        &dir,
+        &[
+            "--name",
+            "my edit",
+            "--width",
+            "640",
+            "--height",
+            "360",
+            "--fps",
+            "24",
+            "--sample-rate",
+            "44100",
+        ],
+    );
+    let v = read_json(&p);
+    assert_eq!(v["name"], "my edit");
+    assert_eq!(v["settings"]["width"], 640);
+    assert_eq!(v["settings"]["height"], 360);
+    assert_eq!(v["settings"]["fps"], 24.0);
+    assert_eq!(v["settings"]["sample_rate"], 44100);
+}
+
+#[test]
+fn new_project_rejects_bad_args() {
+    let dir = TempDir::new();
+    let p = dir.path("x.json");
+    let out = run(&[
+        "new-project".as_ref(),
+        p.as_os_str(),
+        "--width".as_ref(),
+        "abc".as_ref(),
+    ]);
+    assert!(!out.status.success());
+    assert!(!p.exists());
+}
+
+#[test]
+fn apply_add_track_mutates_file_and_prints_outcome() {
+    let dir = TempDir::new();
+    let p = new_project(&dir, &[]);
+    let out = apply(&p, r#"{"command":"AddTrack","kind":"video","name":"V1"}"#);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("TrackAdded"), "{}", stdout(&out));
+    let v = read_json(&p);
+    assert_eq!(v["tracks"].as_array().unwrap().len(), 1);
+    assert_eq!(v["tracks"][0]["name"], "V1");
+    assert!(stdout(&out).contains(v["tracks"][0]["id"].as_str().unwrap()));
+}
+
+#[test]
+fn apply_invalid_json_fails_unchanged() {
+    let dir = TempDir::new();
+    let p = new_project(&dir, &[]);
+    let out = apply(&p, "{not json");
+    assert_fails_unchanged(&p, &out, "parsing command JSON");
+}
+
+#[test]
+fn apply_unknown_command_fails_unchanged() {
+    let dir = TempDir::new();
+    let p = new_project(&dir, &[]);
+    let out = apply(&p, r#"{"command":"Explode"}"#);
+    assert_fails_unchanged(&p, &out, "parsing command JSON");
+}
+
+#[test]
+fn apply_core_failure_fails_unchanged() {
+    let dir = TempDir::new();
+    let p = new_project(&dir, &[]);
+    let missing = uuid::Uuid::new_v4().to_string();
+    let cmd = json!({
+        "command": "AddClip",
+        "track_id": missing,
+        "media_id": uuid::Uuid::new_v4().to_string(),
+        "position_secs": 0.0,
+        "source_in_secs": 0.0,
+        "source_out_secs": 1.0,
+    })
+    .to_string();
+    let out = apply(&p, &cmd);
+    assert_fails_unchanged(&p, &out, "command failed");
+}
+
+#[test]
+fn apply_missing_project_fails() {
+    let dir = TempDir::new();
+    let p = dir.path("nope.json");
+    let out = apply(&p, r#"{"command":"AddTrack","kind":"video","name":"V1"}"#);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("reading"), "{}", stderr(&out));
+    assert!(!p.exists());
+}
+
+#[test]
+fn apply_script_applies_in_order() {
+    let dir = TempDir::new();
+    let p = new_project(&dir, &[]);
+    let script = dir.path("s.json");
+    std::fs::write(
+        &script,
+        r#"[{"command":"AddTrack","kind":"video","name":"first"},
+            {"command":"AddTrack","kind":"audio","name":"second"}]"#,
+    )
+    .unwrap();
+    let out = run(&["apply-script".as_ref(), p.as_os_str(), script.as_os_str()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out).matches("TrackAdded").count(), 2);
+    let v = read_json(&p);
+    let tracks = v["tracks"].as_array().unwrap();
+    assert_eq!(tracks.len(), 2);
+    assert_eq!(tracks[0]["name"], "first");
+    assert_eq!(tracks[1]["name"], "second");
+}
+
+#[test]
+fn apply_script_failure_midway_leaves_file_unchanged() {
+    let dir = TempDir::new();
+    let p = new_project(&dir, &[]);
+    let script = dir.path("s.json");
+    let bad = json!({
+        "command": "AddClip",
+        "track_id": uuid::Uuid::new_v4().to_string(),
+        "media_id": uuid::Uuid::new_v4().to_string(),
+        "position_secs": 0.0,
+        "source_in_secs": 0.0,
+        "source_out_secs": 1.0,
+    });
+    let cmds = json!([
+        {"command":"AddTrack","kind":"video","name":"V1"},
+        bad,
+        {"command":"AddTrack","kind":"video","name":"V2"},
+    ]);
+    std::fs::write(&script, cmds.to_string()).unwrap();
+    let out = run(&["apply-script".as_ref(), p.as_os_str(), script.as_os_str()]);
+    assert_fails_unchanged(&p, &out, "command failed");
+    // The first command did run (reported) but was not persisted.
+    assert!(stdout(&out).contains("TrackAdded"));
+    assert!(read_json(&p)["tracks"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn apply_script_malformed_fails_unchanged() {
+    let dir = TempDir::new();
+    let p = new_project(&dir, &[]);
+    let script = dir.path("s.json");
+
+    std::fs::write(&script, "not json").unwrap();
+    let out = run(&["apply-script".as_ref(), p.as_os_str(), script.as_os_str()]);
+    assert_fails_unchanged(&p, &out, "parsing script JSON");
+
+    // An object instead of an array is also malformed.
+    std::fs::write(
+        &script,
+        r#"{"command":"AddTrack","kind":"video","name":"V1"}"#,
+    )
+    .unwrap();
+    let out = run(&["apply-script".as_ref(), p.as_os_str(), script.as_os_str()]);
+    assert_fails_unchanged(&p, &out, "parsing script JSON");
+
+    // Missing script file.
+    let out = run(&[
+        "apply-script".as_ref(),
+        p.as_os_str(),
+        dir.path("missing.json").as_os_str(),
+    ]);
+    assert_fails_unchanged(&p, &out, "reading");
+}
+
+#[test]
+fn show_round_trips_to_file() {
+    let dir = TempDir::new();
+    let p = new_project(&dir, &["--name", "shown"]);
+    let out = apply(&p, r#"{"command":"AddTrack","kind":"audio","name":"A1"}"#);
+    assert!(out.status.success());
+    let out = run(&["show".as_ref(), p.as_os_str()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("\n  "), "expected pretty-printed JSON");
+    let shown: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(shown, read_json(&p));
+    assert_eq!(shown["name"], "shown");
+}
+
+#[test]
+fn show_missing_or_corrupt_file_fails() {
+    let dir = TempDir::new();
+    let out = run(&["show".as_ref(), dir.path("nope.json").as_os_str()]);
+    assert!(!out.status.success());
+    let bad = dir.path("bad.json");
+    std::fs::write(&bad, "garbage").unwrap();
+    let out = run(&["show".as_ref(), bad.as_os_str()]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("parsing project JSON"));
+}
+
+#[test]
+fn export_unknown_preset_fails() {
+    let dir = TempDir::new();
+    let p = new_project(&dir, &[]);
+    let o = dir.path("out.mp4");
+    let out = run(&[
+        "export".as_ref(),
+        p.as_os_str(),
+        o.as_os_str(),
+        "--preset".as_ref(),
+        "vimeo".as_ref(),
+    ]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("unknown preset"), "{}", stderr(&out));
+    assert!(!o.exists());
+}
+
+#[test]
+fn export_empty_timeline_fails() {
+    let dir = TempDir::new();
+    let p = new_project(&dir, &["--fps", "10"]);
+    let o = dir.path("out.mp4");
+    let out = run(&["export".as_ref(), p.as_os_str(), o.as_os_str()]);
+    assert!(!out.status.success());
+    // Without ffmpeg the failure is "not found" instead; still non-zero.
+    if renderly_core::media::ffmpeg_available() {
+        assert!(
+            stderr(&out).contains("no enabled video clips"),
+            "{}",
+            stderr(&out)
+        );
+    }
+    assert!(!o.exists());
+}
+
+#[test]
+fn export_real_video() {
+    if !renderly_core::media::ffmpeg_available() {
+        eprintln!("skipping export test: ffmpeg not on PATH");
+        return;
+    }
+    let dir = TempDir::new();
+    let src = dir.path("src.mp4");
+    let status = Command::new(renderly_core::media::ffmpeg_path().unwrap())
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=1:size=320x240:rate=30",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+        ])
+        .arg(&src)
+        .status()
+        .expect("ffmpeg");
+    assert!(status.success());
+
+    // Presets fix the output size, so keep it cheap with a low project fps.
+    let p = new_project(&dir, &["--fps", "10"]);
+    let out = apply(
+        &p,
+        &json!({"command":"ImportMedia","path":src.to_string_lossy()}).to_string(),
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = apply(&p, r#"{"command":"AddTrack","kind":"video","name":"V1"}"#);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let v = read_json(&p);
+    let media_id = v["media"][0]["id"].as_str().unwrap().to_string();
+    let track_id = v["tracks"][0]["id"].as_str().unwrap().to_string();
+    let out = apply(
+        &p,
+        &json!({
+            "command": "AddClip",
+            "track_id": track_id,
+            "media_id": media_id,
+            "position_secs": 0.0,
+            "source_in_secs": 0.0,
+            "source_out_secs": 0.5,
+        })
+        .to_string(),
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let o = dir.path("out.mp4");
+    let out = run(&["export".as_ref(), p.as_os_str(), o.as_os_str()]);
+    if !out.status.success() {
+        if stderr(&out).contains("no suitable GPU adapter") {
+            eprintln!("skipping export test: no GPU adapter");
+            return;
+        }
+        panic!("export failed: {}", stderr(&out));
+    }
+    assert!(stdout(&out).contains("exported"), "{}", stdout(&out));
+    assert!(std::fs::metadata(&o).unwrap().len() > 0);
+}

@@ -67,6 +67,10 @@ jobs:
         run: npm ci && npm run build
         working-directory: renderly-app
 
+      - name: Test frontend
+        run: npm test
+        working-directory: renderly-app
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 

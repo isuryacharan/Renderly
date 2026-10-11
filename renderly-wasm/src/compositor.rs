@@ -36,8 +36,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use renderly_core::compose::{eval, upload_layer_pixels, ComposeLayer, Compositor, LayerSource};
-use renderly_core::project::{ClipMaskKind, ClipTransform, Project};
+use renderly_core::compose::{
+    eval, preview_supported_mask, upload_layer_pixels, ComposeLayer, Compositor, LayerSource,
+};
+use renderly_core::project::Project;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, HtmlImageElement, HtmlVideoElement};
 
@@ -379,43 +381,29 @@ impl WasmCompositor {
 
             // Raster / generated mattes need filesystem decode — deferred on wasm (see the
             // module doc). Everything else (rect/ellipse shapes) passes straight through.
-            let mask = layer.mask.clone().filter(|m| {
-                !matches!(
-                    m.kind,
-                    ClipMaskKind::Raster { .. } | ClipMaskKind::Generated { .. }
-                )
-            });
-
-            compose_layers.push(ComposeLayer {
-                source: LayerSource::Texture {
+            // Layer wiring (transform/effects/transition) is the SAME function export uses.
+            let mask = preview_supported_mask(layer.mask.as_ref());
+            compose_layers.push(ComposeLayer::from_active(
+                layer,
+                LayerSource::Texture {
                     texture,
                     width,
                     height,
                 },
-                transform: layer.transform,
-                effects: layer.effects.clone(),
                 mask,
-                transition: layer.transition,
-            });
+            ));
         }
 
         for cap in &captions {
             let texture = self.ensure_caption_texture(&cap.text, &cap.style_id, out_w, out_h)?;
-            compose_layers.push(ComposeLayer {
-                source: LayerSource::Texture {
-                    texture,
-                    width: out_w,
-                    height: out_h,
-                },
-                // Caption bitmaps are already rendered at output resolution (same as export,
-                // see `export::mod.rs`'s FrameRenderer::render_inner) — identity transform, no
-                // cover-fit needed (`compose::cover_uv` is a no-op when layer/output aspect
-                // already match).
-                transform: ClipTransform::default(),
-                effects: Vec::new(),
-                mask: None,
-                transition: None,
-            });
+            // Caption bitmaps are already rendered at output resolution (same as export,
+            // see `export::mod.rs`'s FrameRenderer::render_inner) — `ComposeLayer::caption`
+            // is the shared identity-transform wiring.
+            compose_layers.push(ComposeLayer::caption(LayerSource::Texture {
+                texture,
+                width: out_w,
+                height: out_h,
+            }));
         }
 
         let compositor = self.compositor.as_mut().expect("checked above");

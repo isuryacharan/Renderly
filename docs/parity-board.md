@@ -76,14 +76,14 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 |---|---|---|
 | `renderly-core` tests | ✅ | 107 |
 | `renderly-app` (Rust) tests | ✅ | 16 |
-| `renderly-mcp` tests | 🟡 | 8 — thin for an agent-facing surface |
-| `renderly-cli` tests | 🟡 | 3 unit tests (load/save, apply) — nothing runs the binary end to end. Good first issue |
-| Frontend tests | ⬜ | Verification currently runs through the browser harness |
-| Export pixel-parity suite | ⬜ | Golden-frame comparisons, preview vs export |
+| `renderly-mcp` tests | ✅ | 43 — headless tool handlers, a fake loopback bridge, and a stdio JSON-RPC end-to-end run of the built binary |
+| `renderly-cli` tests | ✅ | 19 — 16 run the built binary through every subcommand, including a real export |
+| Frontend tests | ✅ | Vitest, 260 — snapping, layout, preview/mask math, command builders checked against [command-api.md](command-api.md), the editor store. `npm test`; not yet covered: `timeline/interactions.ts`, components |
+| Export golden frames | ✅ | `renderly-core/tests/golden_frames.rs` — 40 committed frames: every built-in effect and transition, masks, keyframes, captions. `RENDERLY_UPDATE_GOLDEN=1` regenerates |
+| Preview vs export parity | 🟡 | Both paths build layers through `ComposeLayer::from_active`; the suite runs a native stand-in for the wasm compositor against export. Not exercised: browser decode, external-image upload, the surface blit — that needs a headless WebGPU browser run |
 
 ## Good first issues
 
-- `renderly-cli` integration tests — small surface, stable command API.
 - macOS or Linux runtime QA: install, run, file what breaks.
 - An asset pack — caption styles, LUTs, SFX, transitions
   ([`examples/packs/starter`](../examples/packs/starter) is the template).

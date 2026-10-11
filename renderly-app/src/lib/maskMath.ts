@@ -243,9 +243,11 @@ export function applyMaskHandleDrag(
   const du = curUv.u - startUv.u;
   const dv = curUv.v - startUv.v;
   if (kind === "move") {
+    // Slide-clamp: keep the size and stop at the frame edge (clampMaskBounds alone would
+    // shrink the box as it crosses the edge).
     return clampMaskBounds({
-      x: start.x + du,
-      y: start.y + dv,
+      x: Math.min(Math.max(0, start.x + du), Math.max(0, 1 - start.width)),
+      y: Math.min(Math.max(0, start.y + dv), Math.max(0, 1 - start.height)),
       width: start.width,
       height: start.height,
     });
@@ -287,7 +289,10 @@ export function applyMaskHandleDrag(
       break;
   }
 
-  return clampMaskBounds(normalizeRectUv(x0, y0, x1, y1));
+  // Clamp each edge before normalizing so a handle dragged off-frame pins its own edge
+  // at 0/1 without dragging the anchored (opposite) edge outward with it.
+  const c01 = (v: number) => Math.min(1, Math.max(0, v));
+  return clampMaskBounds(normalizeRectUv(c01(x0), c01(y0), c01(x1), c01(y1)));
 }
 
 /** Round-trip identity check for cover-fit + optional transform (used by smoke asserts). */
