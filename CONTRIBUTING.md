@@ -49,8 +49,8 @@ Prereqs: Rust via [rustup](https://rustup.rs) (the version is pinned in
 touching the preview compositor.
 
 ```sh
-git clone https://github.com/mecharan14/renderly.git
-cd renderly
+git clone https://github.com/isuryacharan/Renderly.git
+cd Renderly
 cargo build --workspace
 cargo test --workspace
 

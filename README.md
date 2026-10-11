@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mecharan14/renderly/actions/workflows/ci.yml"><img src="https://github.com/mecharan14/renderly/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/isuryacharan/Renderly/actions/workflows/ci.yml"><img src="https://github.com/isuryacharan/Renderly/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL-3.0"></a>
   <img src="https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS%2FLinux%20CI-2f7bf2" alt="Platforms">
   <img src="https://img.shields.io/badge/engine-Rust%20%2B%20wgpu%20%2B%20FFmpeg-orange" alt="Engine">
@@ -89,8 +89,8 @@ One command API, one project schema, dispatched identically everywhere — specs
 Prereqs: Rust, Node 20+, `ffmpeg`/`ffprobe` on PATH, `wasm-pack` (`cargo install wasm-pack`).
 
 ```sh
-git clone https://github.com/mecharan14/renderly.git
-cd renderly
+git clone https://github.com/isuryacharan/Renderly.git
+cd Renderly
 cargo build --workspace
 
 # Desktop app

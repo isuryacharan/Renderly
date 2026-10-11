@@ -38,7 +38,7 @@
     "publisher": "Renderly",
     "copyright": "Copyright © 2026 Renderly contributors. AGPL-3.0.",
     "category": "Video",
-    "homepage": "https://github.com/mecharan14/renderly",
+    "homepage": "https://github.com/isuryacharan/Renderly",
     "shortDescription": "AI-native, open-source video editor.",
     "longDescription": "An open-source, native video editor built for AI agents — and the humans who finish the job. One command API drives the GUI, the CLI, and MCP.",
     "license": "AGPL-3.0",

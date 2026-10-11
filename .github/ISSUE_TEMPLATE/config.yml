@@ -1,8 +1,8 @@
 blank_issues_enabled: true
 contact_links:
   - name: Contributing guide
-    url: https://github.com/mecharan14/renderly/blob/main/CONTRIBUTING.md
+    url: https://github.com/isuryacharan/Renderly/blob/main/CONTRIBUTING.md
     about: Setup, ground rules, and the three ways in (asset packs, plugins, code)
   - name: Feature parity board
-    url: https://github.com/mecharan14/renderly/blob/main/docs/parity-board.md
+    url: https://github.com/isuryacharan/Renderly/blob/main/docs/parity-board.md
     about: What's shipped, what's open, and which items are good first issues
