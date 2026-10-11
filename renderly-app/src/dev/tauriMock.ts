@@ -418,6 +418,21 @@ export function invoke<T = unknown>(cmd: string, args?: any): Promise<T> {
       return reply({ can_undo: true, can_redo: true, revision, patch: [] });
     case "get_media_assets":
       return reply({});
+    // Preview host assets (raster/generated mattes, pack LUTs). The sample project references
+    // none; harness scripts that inject a Raster mask / pack:<id>:lut:<id> effect via
+    // `window.__store` get a synthetic left-to-right gradient matte and a channel-rotating
+    // 2x2x2 .cube so the wasm path is exercisable without a filesystem.
+    case "read_preview_matte":
+      return mockGradientMattePng() as Promise<T>;
+    case "preview_matte_stamps":
+      return reply(((args?.paths as string[]) ?? []).map(() => 1));
+    case "read_preview_pack_luts":
+      return reply(
+        ((args?.wanted as { pack_id: string; lut_id: string }[]) ?? []).map((w) => ({
+          ...w,
+          cube: MOCK_ROTATE_CUBE,
+        })),
+      );
     case "project_thumbnail":
       return reply(null);
     default:
@@ -485,4 +500,29 @@ export function open(_opts?: any): Promise<string | null> {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function save(_opts?: any): Promise<string | null> {
   return Promise.resolve(null);
+}
+
+// ---- Preview host-asset fixtures (see the read_preview_* cases in `invoke`) ----
+
+/// 2x2x2 .cube rotating channels (r,g,b) -> (g,b,r): visibly obvious, parse-valid.
+const MOCK_ROTATE_CUBE = (() => {
+  let text = 'TITLE "mock-rotate"\nLUT_3D_SIZE 2\n';
+  for (let b = 0; b < 2; b++)
+    for (let g = 0; g < 2; g++) for (let r = 0; r < 2; r++) text += `${g} ${b} ${r}\n`;
+  return text;
+})();
+
+/// 64x36 horizontal black->white ramp as PNG bytes (what the real backend returns for a
+/// Raster/Generated matte file).
+async function mockGradientMattePng(): Promise<ArrayBuffer> {
+  const canvas = new OffscreenCanvas(64, 36);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("2d context unavailable");
+  const grad = ctx.createLinearGradient(0, 0, 64, 0);
+  grad.addColorStop(0, "#000");
+  grad.addColorStop(1, "#fff");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 64, 36);
+  const blob = await canvas.convertToBlob({ type: "image/png" });
+  return blob.arrayBuffer();
 }

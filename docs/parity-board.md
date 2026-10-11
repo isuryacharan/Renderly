@@ -31,8 +31,8 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 | — | Transitions (10 built-in) | ✅ | `SetClipTransition` |
 | P4-1a | Shape masks (rect/ellipse) + compositor alpha path | ✅ | schema v6; `SetClipMask`; `renderly-core/src/mask.rs` |
 | P4-3b | Shape mask authoring UI | ✅ | Mask tool (M); `PreviewMaskOverlay`; inspector feather/invert |
-| — | Raster / generated mattes in preview | 🟡 | Export only — needs fs-free decode on wasm32 |
-| — | Pack `.cube` LUTs in preview | 🟡 | Export only — needs the LUT packed without a filesystem load |
+| — | Raster / generated mattes in preview | ✅ | Host reads the file, wasm core composites it ([preview-webview.md](preview-webview.md) P4b). Not in preview: background removal without a baked matte (export builds a live heuristic matte) |
+| — | Pack `.cube` LUTs in preview | ✅ | Same host-supplied path; parsed by the core `.cube` parser on wasm32 |
 | P4-3 | Chroma key | 🟡 | `builtin:chroma_key`; CPU per-pixel, wants a WGSL pass |
 | P4-1b | Background removal | 🟡 | `SetClipBackgroundRemoval`, `GenerateBackgroundMatte`; heuristic + optional `RENDERLY_SEG_CLI` |
 | P4-ML | Core-hosted ONNX RVM/BiRefNet | ⬜ | **The headline open item.** See the recorded decision below |

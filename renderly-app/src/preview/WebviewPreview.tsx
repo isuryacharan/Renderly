@@ -54,7 +54,7 @@ export function WebviewPreview({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const engine = new WebviewPreviewEngine(canvas, ipc.assetUrl);
+    const engine = new WebviewPreviewEngine(canvas, ipc.assetUrl, ipc.previewAssetBackend);
     engineRef.current = engine;
     (globalThis as unknown as { __previewEngine?: WebviewPreviewEngine }).__previewEngine = engine;
     void engine.init().then(() => {

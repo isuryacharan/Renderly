@@ -14,12 +14,20 @@
 
 import type { Clip, ClipTransform, MediaClip, MediaItem, Project, Track } from "../lib/types";
 import { IDENTITY_TRANSFORM, clipDurationSecs } from "../lib/types";
+import { PreviewAssetSync } from "./previewAssets";
+import type { PreviewAssetBackend } from "./previewAssets";
 
 /// Minimal structural type for renderly-wasm's WasmCompositor (the real .d.ts lives in the
 /// gitignored generated pkg, so we don't import its types at build time).
 interface WasmCompositorLike {
   set_project(json: string): void;
   render(timeSecs: number, sources: object): void;
+  // Host-supplied assets (previewAssets.ts): file-backed mattes and pack .cube LUTs.
+  required_assets(): string;
+  set_matte(key: string, width: number, height: number, rgba: Uint8Array): void;
+  remove_matte(key: string): void;
+  set_pack_lut(packId: string, lutId: string, cubeText: string): void;
+  clear_pack_luts(): void;
   free(): void;
 }
 
@@ -321,9 +329,19 @@ export class WebviewPreviewEngine {
   private lastFrameTime = 0;
   private drops = 0;
 
-  constructor(canvas: HTMLCanvasElement, assetUrl: (path: string) => string) {
+  /// Keeps raster/generated mattes and pack LUTs registered with the wasm compositor
+  /// (null until the GPU path is live, and always null on the Canvas2D fallback).
+  private assets: PreviewAssetSync | null = null;
+  private readonly assetBackend: PreviewAssetBackend | null;
+
+  constructor(
+    canvas: HTMLCanvasElement,
+    assetUrl: (path: string) => string,
+    assetBackend: PreviewAssetBackend | null = null,
+  ) {
     this.canvas = canvas;
     this.assetUrl = assetUrl;
+    this.assetBackend = assetBackend;
     this.statsWindowStart = performance.now();
   }
 
@@ -412,6 +430,16 @@ export class WebviewPreviewEngine {
         console.error("[preview] initial set_project failed:", err);
       }
     }
+    if (this.gpu && this.assetBackend) {
+      this.assets = new PreviewAssetSync(
+        this.gpu,
+        this.assetBackend,
+        () => this.drawFrame(this.currentTimeSecs()),
+        undefined,
+        () => this.project?.asset_pack_paths ?? [],
+      );
+      void this.assets.sync();
+    }
     if (!this.gpu) {
       const ctx = this.canvas.getContext("2d");
       if (!ctx) throw new Error("2d context unavailable");
@@ -458,6 +486,8 @@ export class WebviewPreviewEngine {
       // Same serde schema as the project file — the store holds the Rust project verbatim.
       try {
         this.gpu.set_project(JSON.stringify(project));
+        // Mattes / pack LUTs the new project references (no-op unless one changed).
+        void this.assets?.sync();
       } catch (err) {
         console.error("[preview] set_project failed:", err);
       }
@@ -924,6 +954,8 @@ export class WebviewPreviewEngine {
 
   dispose(): void {
     this.disposed = true;
+    this.assets?.dispose();
+    this.assets = null;
     this.cancelScheduledFrame();
     if (this.gpu) {
       try {

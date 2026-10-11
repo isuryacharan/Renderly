@@ -1,14 +1,108 @@
 //! Clip mask / matte application (Phase 4). CPU path shared by preview and export.
+//!
+//! Also home to the cross-target matte plumbing the wasm preview uses: [`matte_cache_key`] /
+//! [`matte_file_path`] / [`project_matte_requests`] tell the host which matte files a project
+//! needs, and [`luma_from_rgba`] is the exact RGBA->luma8 conversion `image`'s `to_luma8`
+//! performs, so a matte decoded by the browser lands in the compositor as the same bytes the
+//! native `image::open(..).to_luma8()` path produces.
+
+use std::path::PathBuf;
 
 use crate::frame::RgbaFrame;
-use crate::project::{ClipMask, ClipMaskKind, MaskShape};
+use crate::project::{ClipMask, ClipMaskKind, MaskShape, Project};
+
+/// File name of the baked matte inside a `Generated` mask's / background-removal's cache dir.
+pub const GENERATED_MATTE_FILE: &str = "matte.png";
+
+/// Compositor matte-cache key for a file-backed matte kind (`None` for shape / `Luma` masks,
+/// which need no external data). The wasm host registers decoded mattes under this key
+/// (`Compositor::set_matte`); native export derives the same key when it loads from disk.
+pub fn matte_cache_key(kind: &ClipMaskKind) -> Option<String> {
+    match kind {
+        ClipMaskKind::Raster { path } => Some(format!("raster:{}", path.display())),
+        ClipMaskKind::Generated { cache_dir } => Some(format!("gen:{}", cache_dir.display())),
+        _ => None,
+    }
+}
+
+/// The image file backing a file-backed matte kind.
+pub fn matte_file_path(kind: &ClipMaskKind) -> Option<PathBuf> {
+    match kind {
+        ClipMaskKind::Raster { path } => Some(path.clone()),
+        ClipMaskKind::Generated { cache_dir } => Some(cache_dir.join(GENERATED_MATTE_FILE)),
+        _ => None,
+    }
+}
+
+/// One matte a host must supply to the compositor before the project's file-backed masks
+/// render: decode `path`, then hand RGBA to `Compositor::set_matte(key, ..)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatteRequest {
+    pub key: String,
+    pub path: PathBuf,
+}
+
+/// The mask a media clip is composited with when it has a *file-backed* matte, i.e. exactly
+/// what export's background-removal resolution picks when a baked matte cache exists:
+/// `Generated` from `matte_cache_dir`. Shared by export and the preview so they cannot differ.
+pub fn cached_background_mask(cfg: &crate::project::BackgroundRemoval) -> Option<ClipMask> {
+    cfg.matte_cache_dir.as_ref().map(|dir| ClipMask {
+        enabled: true,
+        invert: false,
+        feather: cfg.feather,
+        kind: ClipMaskKind::Generated {
+            cache_dir: dir.clone(),
+        },
+    })
+}
+
+/// Every file-backed matte referenced by `project` (clip masks and baked background-removal
+/// mattes), deduplicated by key, in track/clip order. Pure data walk - no filesystem access.
+pub fn project_matte_requests(project: &Project) -> Vec<MatteRequest> {
+    let mut out: Vec<MatteRequest> = Vec::new();
+    let mut push = |kind: &ClipMaskKind| {
+        if let (Some(key), Some(path)) = (matte_cache_key(kind), matte_file_path(kind)) {
+            if !out.iter().any(|r| r.key == key) {
+                out.push(MatteRequest { key, path });
+            }
+        }
+    };
+    for track in &project.tracks {
+        for clip in &track.clips {
+            let Some(media) = clip.as_media() else {
+                continue;
+            };
+            if let Some(bg) = media.background_removal.as_ref().filter(|b| b.enabled) {
+                if let Some(mask) = cached_background_mask(bg) {
+                    push(&mask.kind);
+                    continue;
+                }
+            }
+            if let Some(mask) = media.mask.as_ref() {
+                push(&mask.kind);
+            }
+        }
+    }
+    out
+}
+
+/// RGBA8 -> single-channel luma8 with the same integer coefficients and truncation as
+/// `image::DynamicImage::to_luma8` (ITU-R BT.709 weights 2126/7152/722 over 10000; alpha
+/// ignored). `rgba.len()` must be a multiple of 4 (a trailing partial pixel is dropped).
+pub fn luma_from_rgba(rgba: &[u8]) -> Vec<u8> {
+    rgba.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| ((2126 * p[0] as u32 + 7152 * p[1] as u32 + 722 * p[2] as u32) / 10000) as u8)
+        .collect()
+}
 
 /// Apply a clip mask to an RGBA frame in place (modulates alpha).
 ///
-/// `Raster`/`Generated` (filesystem-backed) mattes are only available on native builds —
+/// `Raster`/`Generated` (filesystem-backed) mattes are only applied on native builds —
 /// they go through the `image` crate's file decode, which is unavailable on wasm32. `Luma`
-/// (raw in-memory pixels) works everywhere; JS can decode a raster matte and hand it through
-/// as `Luma` bytes on the wasm path. See docs/preview-webview.md P2 scope limits.
+/// (raw in-memory pixels) works everywhere. (This CPU path is not used by the GPU
+/// compositor; the wasm preview feeds decoded file mattes through `Compositor::set_matte`.)
 pub fn apply_clip_mask(frame: &mut RgbaFrame, mask: &ClipMask) {
     if !mask.enabled {
         return;
@@ -38,7 +132,7 @@ pub fn apply_clip_mask(frame: &mut RgbaFrame, mask: &ClipMask) {
         ClipMaskKind::Raster { .. } => {}
         #[cfg(not(target_arch = "wasm32"))]
         ClipMaskKind::Generated { cache_dir } => {
-            let matte_path = std::path::Path::new(cache_dir).join("matte.png");
+            let matte_path = std::path::Path::new(cache_dir).join(GENERATED_MATTE_FILE);
             if let Ok(matte) = image::open(&matte_path) {
                 let gray = matte.to_luma8();
                 apply_raster_matte(
@@ -241,5 +335,54 @@ mod tests {
         // Center-ish pixel (2,2) should stay opaque.
         let idx = ((2 * 4 + 2) * 4 + 3) as usize;
         assert_eq!(frame.pixels[idx], 255);
+    }
+
+    #[test]
+    fn luma_from_rgba_matches_bt709_truncation() {
+        // gray stays exact; pure channels use the 2126/7152/722 weights, alpha ignored.
+        let px = [
+            200, 200, 200, 7, //
+            255, 0, 0, 255, //
+            0, 255, 0, 0, //
+            0, 0, 255, 128,
+        ];
+        assert_eq!(luma_from_rgba(&px), vec![200, 54, 182, 18]);
+    }
+
+    #[test]
+    fn matte_requests_cover_masks_and_baked_background() {
+        use crate::project::{BackgroundRemoval, Settings, Track, TrackKind};
+        let mut project = Project::new("t", Settings::default());
+        let mut track = Track::new(TrackKind::Video, "V");
+        let a = crate::project::MediaClip {
+            mask: Some(ClipMask {
+                enabled: true,
+                invert: false,
+                feather: 0.0,
+                kind: ClipMaskKind::Raster {
+                    path: "m.png".into(),
+                },
+            }),
+            ..Default::default()
+        };
+        let b = crate::project::MediaClip {
+            background_removal: Some(BackgroundRemoval {
+                enabled: true,
+                model_id: "heuristic".into(),
+                threshold: 0.5,
+                feather: 0.1,
+                temporal: false,
+                matte_cache_dir: Some("cache".into()),
+            }),
+            ..Default::default()
+        };
+        track.clips.push(crate::project::Clip::Video(a));
+        track.clips.push(crate::project::Clip::Video(b));
+        project.tracks.push(track);
+        let reqs = project_matte_requests(&project);
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(reqs[0].key, "raster:m.png");
+        assert_eq!(reqs[1].key, "gen:cache");
+        assert_eq!(reqs[1].path, PathBuf::from("cache").join("matte.png"));
     }
 }

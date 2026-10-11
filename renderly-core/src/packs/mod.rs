@@ -133,12 +133,12 @@ pub struct CubeLut {
     pub data: Vec<[f32; 3]>,
 }
 
-/// Everything below that touches the filesystem or `Project` (pack manifest/`.cube` loading)
-/// is native-only. The wasm compositor is fed already-decoded pack data another way (or, for
-/// P2, simply doesn't apply pack LUTs yet — see docs/preview-webview.md P2 scope limits); the
-/// pure LUT-sampling/upload helpers (`CubeLut`, `cube_lut_upload_bytes`, `find_cube_lut`,
-/// `parse_pack_lut_id`) still compile everywhere since `compose`/`compose::effects` reference
-/// them unconditionally.
+/// Everything below that touches the filesystem (pack manifest/`.cube` loading) is
+/// native-only. The wasm compositor is fed pack LUTs another way: the webview fetches the
+/// `.cube` text from the host and builds [`LoadedPack::from_luts`] via [`parse_cube_text`]
+/// (docs/preview-webview.md P4b). The pure LUT helpers (`CubeLut`, `parse_cube_text`,
+/// `cube_lut_upload_bytes`, `find_cube_lut`, `parse_pack_lut_id`, `referenced_pack_luts`)
+/// compile everywhere.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_pack(root: &Path) -> Result<LoadedPack, String> {
     let manifest_path = root.join("pack.json");
@@ -160,6 +160,61 @@ pub fn load_pack(root: &Path) -> Result<LoadedPack, String> {
         manifest,
         luts,
     })
+}
+
+impl LoadedPack {
+    /// A minimal in-memory pack carrying only parsed LUTs - no filesystem, no manifest
+    /// beyond its id. This is what the wasm preview builds from `.cube` text the webview
+    /// fetched, so `find_cube_lut` / the effect processor resolve `pack:<id>:lut:<lut>` the
+    /// same way they do for a pack loaded from disk.
+    pub fn from_luts(pack_id: &str, luts: BTreeMap<String, CubeLut>) -> Self {
+        let manifest = PackManifest {
+            id: pack_id.to_string(),
+            name: pack_id.to_string(),
+            version: default_pack_version(),
+            caption_styles: Vec::new(),
+            luts: luts
+                .keys()
+                .map(|id| PackLut {
+                    id: id.clone(),
+                    label: id.clone(),
+                    path: String::new(),
+                })
+                .collect(),
+            transitions: Vec::new(),
+            stickers: Vec::new(),
+            sfx: Vec::new(),
+            templates: Vec::new(),
+        };
+        LoadedPack {
+            root: PathBuf::new(),
+            manifest,
+            luts,
+        }
+    }
+}
+
+/// Distinct `(pack_id, lut_id)` pairs of every enabled-or-not pack-LUT effect on the
+/// project's media clips, in first-use order - what a host without a filesystem must fetch
+/// before those effects can render. Pure data walk.
+pub fn referenced_pack_luts(project: &crate::project::Project) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for track in &project.tracks {
+        for clip in &track.clips {
+            let Some(media) = clip.as_media() else {
+                continue;
+            };
+            for effect in &media.effects {
+                if let Some((pack, lut)) = parse_pack_lut_id(&effect.effect_id) {
+                    let pair = (pack.to_string(), lut.to_string());
+                    if !out.contains(&pair) {
+                        out.push(pair);
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 pub fn find_pack<'a>(packs: &'a [LoadedPack], pack_id: &str) -> Option<&'a LoadedPack> {
@@ -305,6 +360,13 @@ pub fn find_caption_style<'a>(
 #[cfg(not(target_arch = "wasm32"))]
 fn parse_cube(path: &Path) -> Result<CubeLut, String> {
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    parse_cube_text(&text)
+}
+
+/// Parse the text of an Adobe/Resolve `.cube` 3D LUT. Pure (`&str` in), so the wasm preview
+/// can parse LUT text the webview fetched from the host; native `load_pack` reads the file and
+/// calls the same function, so both targets build identical [`CubeLut`]s.
+pub fn parse_cube_text(text: &str) -> Result<CubeLut, String> {
     let mut size = 0usize;
     let mut data = Vec::new();
     for line in text.lines() {

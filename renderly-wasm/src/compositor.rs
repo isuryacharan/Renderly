@@ -12,11 +12,24 @@
 //! 4. A tiny blit pass samples that RT onto the canvas surface (whose swapchain format —
 //!    typically `Bgra8Unorm` on the web — the render pipeline converts to implicitly).
 //!
-//! Deferred on this path (documented in docs/preview-webview.md P2): pack (`.cube`) LUTs
-//! (they need filesystem loads; `packs` is empty here so pack-LUT effect instances are
-//! skipped by the effect processor), raster/`Generated` mattes (`image::open` — masks of
-//! those kinds are dropped before composite), and background removal (needs CPU frame
-//! access).
+//! Host-supplied assets (docs/preview-webview.md P4b) — wasm32 has no filesystem, so data
+//! the native export reads from disk reaches the compositor through the host (the webview,
+//! which gets the bytes from the Tauri backend):
+//! - `required_assets()` lists, as JSON, the file-backed mattes (`Raster` / `Generated`
+//!   masks and baked background-removal mattes) and pack-LUT `(pack_id, lut_id)` pairs the
+//!   current project references. All path / key derivation is core Rust
+//!   (`mask::project_matte_requests`, `packs::referenced_pack_luts`), not JS.
+//! - `set_matte(key, w, h, rgba)` registers a browser-decoded matte; core converts RGBA to
+//!   luma8 exactly like `image`'s `to_luma8` and `Compositor::preview_layer_mask` then
+//!   resolves the layer's mask to it. Mattes survive a compositor rebuild (resolution
+//!   change) — the luma bytes are retained here and re-registered.
+//! - `set_pack_lut(pack, lut, cube_text)` parses `.cube` text with core's parser and builds
+//!   the `LoadedPack`s handed to `compose_to_texture`, so `pack:<id>:lut:<lut>` effects run
+//!   the same `pack_lut.wgsl` pass as export.
+//!
+//! Still deferred: background removal *without* a baked matte cache (export derives a live
+//! heuristic matte from decoded CPU pixels; the preview has none and shows the clip's own
+//! mask instead — see `Compositor::preview_layer_mask`).
 //!
 //! Captions (P3, landed): `eval::active_captions(project, t)` — the same shared timing eval
 //! export uses — drives which caption clips are live; `renderly_core::captions::render_caption`
@@ -36,9 +49,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use renderly_core::compose::{
-    eval, preview_supported_mask, upload_layer_pixels, ComposeLayer, Compositor, LayerSource,
-};
+use std::collections::BTreeMap;
+
+use renderly_core::compose::{eval, upload_layer_pixels, ComposeLayer, Compositor, LayerSource};
+use renderly_core::mask::{luma_from_rgba, project_matte_requests};
+use renderly_core::packs::{parse_cube_text, referenced_pack_luts, CubeLut, LoadedPack};
 use renderly_core::project::Project;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, HtmlImageElement, HtmlVideoElement};
@@ -124,6 +139,13 @@ pub struct WasmCompositor {
     canvas: HtmlCanvasElement,
     compositor: Option<Compositor>,
     project: Option<Project>,
+    /// matte cache key -> (width, height, luma8) registered by the host; re-uploaded into a
+    /// rebuilt `Compositor` (its matte cache starts empty).
+    mattes: HashMap<String, (u32, u32, Vec<u8>)>,
+    /// pack id -> lut id -> parsed `.cube`, as supplied by the host.
+    pack_luts: BTreeMap<String, BTreeMap<String, CubeLut>>,
+    /// `pack_luts` as the `LoadedPack` slice `compose_to_texture` takes.
+    packs: Vec<LoadedPack>,
     /// media-id → pooled GPU texture receiving `copy_external_image_to_texture` copies.
     /// Recreated only when the source's pixel size changes.
     media_textures: HashMap<String, MediaTexture>,
@@ -262,6 +284,9 @@ impl WasmCompositor {
             canvas,
             compositor: None,
             project: None,
+            mattes: HashMap::new(),
+            pack_luts: BTreeMap::new(),
+            packs: Vec::new(),
             media_textures: HashMap::new(),
             caption_textures: HashMap::new(),
             blit_pipeline,
@@ -287,9 +312,96 @@ impl WasmCompositor {
                     .map_err(|e| js_err("compositor build", e))?;
             self.compositor = Some(compositor);
             self.blit_bind_group = None;
+            if let Some(compositor) = self.compositor.as_mut() {
+                for (key, (w, h, luma)) in &self.mattes {
+                    compositor
+                        .set_matte(key, *w, *h, luma)
+                        .map_err(|e| js_err("re-register matte", e))?;
+                }
+                compositor.clear_pack_lut_cache();
+            }
         }
         self.project = Some(project);
         Ok(())
+    }
+
+    /// JSON `{ "mattes": [{"key", "path"}], "pack_luts": [{"pack_id", "lut_id"}] }`: the
+    /// host-supplied data the current project needs (see the module doc). Empty arrays when
+    /// there is no project or it references nothing file-backed.
+    pub fn required_assets(&self) -> String {
+        let Some(project) = self.project.as_ref() else {
+            return r#"{"mattes":[],"pack_luts":[]}"#.to_string();
+        };
+        let mattes: Vec<serde_json::Value> = project_matte_requests(project)
+            .into_iter()
+            .map(|r| {
+                serde_json::json!({
+                    "key": r.key,
+                    "path": r.path.to_string_lossy(),
+                })
+            })
+            .collect();
+        let pack_luts: Vec<serde_json::Value> = referenced_pack_luts(project)
+            .into_iter()
+            .map(|(pack_id, lut_id)| serde_json::json!({ "pack_id": pack_id, "lut_id": lut_id }))
+            .collect();
+        serde_json::json!({ "mattes": mattes, "pack_luts": pack_luts }).to_string()
+    }
+
+    /// Register (replace) the matte stored under `key` (a `required_assets` key) from
+    /// browser-decoded straight-RGBA pixels, `width * height * 4` bytes.
+    pub fn set_matte(
+        &mut self,
+        key: &str,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+    ) -> Result<(), JsValue> {
+        if rgba.len() != width as usize * height as usize * 4 {
+            return Err(js_err(
+                "set_matte",
+                format!("{} bytes is not {width}x{height} RGBA", rgba.len()),
+            ));
+        }
+        let luma = luma_from_rgba(rgba);
+        if let Some(compositor) = self.compositor.as_mut() {
+            compositor
+                .set_matte(key, width, height, &luma)
+                .map_err(|e| js_err("set_matte", e))?;
+        }
+        self.mattes.insert(key.to_string(), (width, height, luma));
+        Ok(())
+    }
+
+    /// Forget a matte (mask cleared / no longer referenced).
+    pub fn remove_matte(&mut self, key: &str) {
+        self.mattes.remove(key);
+        if let Some(compositor) = self.compositor.as_mut() {
+            compositor.remove_matte(key);
+        }
+    }
+
+    /// Register (replace) one pack LUT from the text of its `.cube` file.
+    pub fn set_pack_lut(
+        &mut self,
+        pack_id: &str,
+        lut_id: &str,
+        cube_text: &str,
+    ) -> Result<(), JsValue> {
+        let cube = parse_cube_text(cube_text)
+            .map_err(|e| js_err(&format!("pack lut {pack_id}/{lut_id}"), e))?;
+        self.pack_luts
+            .entry(pack_id.to_string())
+            .or_default()
+            .insert(lut_id.to_string(), cube);
+        self.rebuild_packs();
+        Ok(())
+    }
+
+    /// Drop every host-supplied pack LUT (pack unloaded / project closed).
+    pub fn clear_pack_luts(&mut self) {
+        self.pack_luts.clear();
+        self.rebuild_packs();
     }
 
     /// Composite the frame at `time_secs` and present it to the canvas.
@@ -379,10 +491,13 @@ impl WasmCompositor {
                 },
             );
 
-            // Raster / generated mattes need filesystem decode — deferred on wasm (see the
-            // module doc). Everything else (rect/ellipse shapes) passes straight through.
-            // Layer wiring (transform/effects/transition) is the SAME function export uses.
-            let mask = preview_supported_mask(layer.mask.as_ref());
+            // Shape / luma masks pass straight through; file-backed mattes resolve to the
+            // host-registered texture (and drop to "unmasked" until registered). Layer
+            // wiring (transform/effects/transition) is the SAME function export uses.
+            let mask = self
+                .compositor
+                .as_ref()
+                .and_then(|c| c.preview_layer_mask(layer));
             compose_layers.push(ComposeLayer::from_active(
                 layer,
                 LayerSource::Texture {
@@ -408,7 +523,7 @@ impl WasmCompositor {
 
         let compositor = self.compositor.as_mut().expect("checked above");
         compositor
-            .compose_to_texture(&[], &compose_layers)
+            .compose_to_texture(&self.packs, &compose_layers)
             .map_err(|e| js_err("compose", e))?;
 
         self.present()
@@ -523,6 +638,17 @@ impl WasmCompositor {
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(frame);
         Ok(())
+    }
+
+    fn rebuild_packs(&mut self) {
+        self.packs = self
+            .pack_luts
+            .iter()
+            .map(|(pack_id, luts)| LoadedPack::from_luts(pack_id, luts.clone()))
+            .collect();
+        if let Some(compositor) = self.compositor.as_mut() {
+            compositor.clear_pack_lut_cache();
+        }
     }
 
     fn ensure_media_texture(&mut self, key: &str, width: u32, height: u32) -> wgpu::Texture {

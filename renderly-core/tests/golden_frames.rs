@@ -17,19 +17,28 @@
 //!      keyframed transforms, transition progress),
 //!    - `ComposeLayer::from_active` / `ComposeLayer::caption` (how an evaluated layer becomes
 //!      a compositor layer),
-//!    - `compose::preview_supported_mask` (the preview's documented mask gap),
+//!    - `Compositor::preview_layer_mask` (which mask the preview composites with),
+//!    - `mask::project_matte_requests` / `Compositor::set_matte_rgba` and
+//!      `packs::referenced_pack_luts` / `parse_cube_text` / `LoadedPack::from_luts` (how
+//!      file-backed mattes and pack `.cube` LUTs reach the compositor without a filesystem),
 //!    - the `Compositor` itself (all WGSL: effects, masks, transitions, composite).
 //!
 //!    [`PreviewPipeline`] below is a native stand-in for `WasmCompositor::render`: it feeds
 //!    the same pre-decoded RGBA through exactly those shared functions in the same order,
 //!    uploads each layer into a `LayerSource::Texture` (what the wasm path does via
-//!    `copy_external_image_to_texture`) on a device the *test* owns, with an empty pack slice
-//!    (the wasm path passes none), and `render_caption` (builtin styles) instead of
-//!    `render_caption_for_project`. It then asserts the result matches `FrameRenderer`.
+//!    `copy_external_image_to_texture`) on a device the *test* owns, and `render_caption`
+//!    (builtin styles) instead of `render_caption_for_project`. Host-supplied data follows
+//!    the wasm flow: the stand-in "host" reads each matte / `.cube` file from disk as raw
+//!    bytes (the Tauri command), decodes the PNG to RGBA (the browser's `createImageBitmap`)
+//!    or takes the `.cube` text, and registers it through the SAME core entry points
+//!    `WasmCompositor::set_matte` / `set_pack_lut` call - never through the compositor's
+//!    native `image::open` fallback. It then asserts the result matches `FrameRenderer`.
 //!
 //!    **Covered**: layer selection, transform/effect/mask/transition wiring, texture-source
-//!    vs frame-source compositing, captions via the builtin rasterizer, the "preview drops
-//!    unsupported mattes / pack LUTs" behaviour.
+//!    vs frame-source compositing, captions via the builtin rasterizer, raster / generated
+//!    mattes and pack `.cube` LUTs fed fs-free.
+//!    **Not covered** here: background removal without a baked matte cache (export builds a
+//!    live heuristic matte from CPU pixels; the preview has none - documented gap).
 //!    **Not covered** (needs a browser): `copy_external_image_to_texture` colour handling,
 //!    browser video decode, the surface blit (RT -> swapchain format, linear resample),
 //!    `resolve_layer_source`'s `#incoming` element keys, and the texture/caption caches.
@@ -62,15 +71,17 @@ use image::{GrayImage, Luma, Rgba, RgbaImage};
 use renderly_core::captions::render_caption;
 use renderly_core::commands::ExportPreset;
 use renderly_core::compose::{
-    eval, preview_supported_mask, upload_layer_pixels, ComposeError, ComposeLayer, Compositor,
-    LayerSource, BUILTIN_EFFECT_IDS,
+    eval, upload_layer_pixels, ComposeError, ComposeLayer, Compositor, LayerSource,
+    BUILTIN_EFFECT_IDS,
 };
 use renderly_core::export::{DecodeOptions, ExportSettings, FrameRenderer};
+use renderly_core::mask::project_matte_requests;
 use renderly_core::media::{ffmpeg_available, ffmpeg_path};
+use renderly_core::packs::{parse_cube_text, referenced_pack_luts, CubeLut, LoadedPack};
 use renderly_core::project::{
-    AnimProperty, CaptionClip, Clip, ClipMask, ClipMaskKind, ClipTransform, ClipTransition, Easing,
-    EffectInstance, Keyframe, KeyframeTrack, MediaClip, MediaItem, MediaKind, Project, Settings,
-    Track, TrackKind, TransitionKind,
+    AnimProperty, BackgroundRemoval, CaptionClip, Clip, ClipMask, ClipMaskKind, ClipTransform,
+    ClipTransition, Easing, EffectInstance, Keyframe, KeyframeTrack, MediaClip, MediaItem,
+    MediaKind, Project, Settings, Track, TrackKind, TransitionKind,
 };
 use uuid::Uuid;
 
@@ -660,20 +671,11 @@ struct Scene {
     times: Vec<f64>,
     project: Project,
     tol: Tol,
-    /// `Some(reason)` = the preview path is KNOWN to differ from export for this scene
-    /// (docs/parity-board.md); excluded from the all-scenes parity test and covered by an
-    /// `#[ignore]`d test instead.
-    preview_gap: Option<&'static str>,
 }
 
 impl Scene {
     fn tol(mut self, tol: Tol) -> Self {
         self.tol = tol;
-        self
-    }
-
-    fn preview_gap(mut self, reason: &'static str) -> Self {
-        self.preview_gap = Some(reason);
         self
     }
 
@@ -845,7 +847,6 @@ fn scene_tracks(name: &str, times: &[f64], tracks: Vec<Vec<Layer>>) -> Scene {
         times: times.to_vec(),
         project,
         tol: GOLDEN_TOL,
-        preview_gap: None,
     }
 }
 
@@ -853,10 +854,6 @@ fn scene_tracks(name: &str, times: &[f64], tracks: Vec<Vec<Layer>>) -> Scene {
 fn scene(name: &str, times: &[f64], layers: Vec<Layer>) -> Scene {
     scene_tracks(name, times, layers.into_iter().map(|l| vec![l]).collect())
 }
-
-const GAP_RASTER_MATTE: &str =
-    "docs/parity-board.md row 'Raster / generated mattes in preview': export only";
-const GAP_PACK_LUT: &str = "docs/parity-board.md row 'Pack `.cube` LUTs in preview': export only";
 
 fn full(src: Src) -> Layer {
     Layer::new(src, 0.0, 3.0)
@@ -1014,8 +1011,7 @@ fn scenes() -> Vec<Scene> {
             &[0.5],
             vec![full(Src::Bars).effect("pack:goldenpack:lut:rot", &[("intensity", 1.0)])],
         )
-        .pack()
-        .preview_gap(GAP_PACK_LUT),
+        .pack(),
     );
 
     // --- masks (masked bars over stripes, so the cut-out shows the layer below) ---------
@@ -1057,34 +1053,28 @@ fn scenes() -> Vec<Scene> {
             full(Src::Bars).mask(ellipse(), 0.2, true),
         ],
     ));
-    v.push(
-        scene(
-            "mask_raster_matte",
-            &[0.5],
-            vec![
-                full(Src::Stripes),
-                full(Src::Bars).mask(ClipMaskKind::Raster { path: matte_path() }, 0.0, false),
-            ],
-        )
-        .preview_gap(GAP_RASTER_MATTE),
-    );
-    v.push(
-        scene(
-            "mask_generated_matte",
-            &[0.5],
-            vec![
-                full(Src::Stripes),
-                full(Src::Bars).mask(
-                    ClipMaskKind::Generated {
-                        cache_dir: generated_matte_cache_dir(),
-                    },
-                    0.3,
-                    true,
-                ),
-            ],
-        )
-        .preview_gap(GAP_RASTER_MATTE),
-    );
+    v.push(scene(
+        "mask_raster_matte",
+        &[0.5],
+        vec![
+            full(Src::Stripes),
+            full(Src::Bars).mask(ClipMaskKind::Raster { path: matte_path() }, 0.0, false),
+        ],
+    ));
+    v.push(scene(
+        "mask_generated_matte",
+        &[0.5],
+        vec![
+            full(Src::Stripes),
+            full(Src::Bars).mask(
+                ClipMaskKind::Generated {
+                    cache_dir: generated_matte_cache_dir(),
+                },
+                0.3,
+                true,
+            ),
+        ],
+    ));
 
     // --- transitions: all ten kinds, mid-way; crossfade also at 25% / 75% ----------------
     for kind in TransitionKind::ALL {
@@ -1187,14 +1177,21 @@ fn export_renderer() -> FrameRenderer {
 // ---------------------------------------------------------------------------------------
 
 /// See the module docs for exactly what this does and does not cover. Mirrors
-/// `renderly-wasm/src/compositor.rs::render` step for step: `eval::active_layers` ->
-/// per-layer texture (stand-in for `copy_external_image_to_texture`) ->
-/// `ComposeLayer::from_active(.., preview_supported_mask)` -> captions via builtin
-/// `render_caption` + `ComposeLayer::caption` -> `Compositor::composite(&[] /* no packs */, ..)`.
+/// `renderly-wasm/src/compositor.rs::render` step for step: sync host-supplied assets
+/// (`sync_assets`) -> `eval::active_layers` -> per-layer texture (stand-in for
+/// `copy_external_image_to_texture`) -> `ComposeLayer::from_active(..,
+/// Compositor::preview_layer_mask)` -> captions via builtin `render_caption` +
+/// `ComposeLayer::caption` -> `Compositor::composite(&packs, ..)`.
 struct PreviewPipeline {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     compositor: Compositor,
+    /// matte keys already registered (the wasm side keeps its own `mattes` map).
+    mattes: HashSet<String>,
+    /// pack id -> lut id -> parsed cube, as `WasmCompositor::pack_luts`.
+    pack_luts: BTreeMap<String, BTreeMap<String, CubeLut>>,
+    /// `pack_luts` as `LoadedPack`s, as `WasmCompositor::packs`.
+    packs: Vec<LoadedPack>,
 }
 
 impl PreviewPipeline {
@@ -1232,7 +1229,79 @@ impl PreviewPipeline {
             device,
             queue,
             compositor,
+            mattes: HashSet::new(),
+            pack_luts: BTreeMap::new(),
+            packs: Vec::new(),
         })
+    }
+
+    /// The webview-side half of the wasm flow (`previewAssets.ts` + the Tauri commands),
+    /// played by the test: ask core what the project needs, fetch bytes "from the backend",
+    /// decode like the browser would, and register through the wasm crate's entry points.
+    /// The compositor's native `image::open` fallback is never reached because every
+    /// referenced matte is registered here first (and `preview_layer_mask` drops any that
+    /// are not).
+    fn sync_assets(&mut self, project: &Project) {
+        for req in project_matte_requests(project) {
+            if self.mattes.contains(&req.key) {
+                continue;
+            }
+            let bytes = std::fs::read(&req.path).expect("host reads matte bytes");
+            let rgba = image::load_from_memory(&bytes)
+                .expect("host decodes matte")
+                .to_rgba8();
+            self.compositor
+                .set_matte_rgba(&req.key, rgba.width(), rgba.height(), rgba.as_raw())
+                .expect("set_matte_rgba");
+            self.mattes.insert(req.key);
+        }
+        let mut changed = false;
+        for (pack_id, lut_id) in referenced_pack_luts(project) {
+            if self
+                .pack_luts
+                .get(&pack_id)
+                .is_some_and(|l| l.contains_key(&lut_id))
+            {
+                continue;
+            }
+            // Stand-in for the backend command: find the project pack with this id and read
+            // the LUT's `.cube` text.
+            let (root, rel) = project
+                .asset_pack_paths
+                .iter()
+                .find_map(|root| {
+                    let manifest: serde_json::Value = serde_json::from_str(
+                        &std::fs::read_to_string(root.join("pack.json")).ok()?,
+                    )
+                    .ok()?;
+                    if manifest["id"] != pack_id.as_str() {
+                        return None;
+                    }
+                    let rel = manifest["luts"]
+                        .as_array()?
+                        .iter()
+                        .find(|l| l["id"] == lut_id.as_str())?["path"]
+                        .as_str()?
+                        .to_string();
+                    Some((root.clone(), rel))
+                })
+                .expect("pack lut exists");
+            let text = std::fs::read_to_string(root.join(rel)).expect("read cube text");
+            let cube = parse_cube_text(&text).expect("parse cube");
+            self.pack_luts
+                .entry(pack_id)
+                .or_default()
+                .insert(lut_id, cube);
+            changed = true;
+        }
+        if changed {
+            self.packs = self
+                .pack_luts
+                .iter()
+                .map(|(id, luts)| LoadedPack::from_luts(id, luts.clone()))
+                .collect();
+            self.compositor.clear_pack_lut_cache();
+        }
     }
 
     /// Same usages the wasm path gives its per-media textures.
@@ -1258,6 +1327,7 @@ impl PreviewPipeline {
     }
 
     fn render(&mut self, project: &Project, t: f64, images: &HashMap<Uuid, RgbaImage>) -> Vec<u8> {
+        self.sync_assets(project);
         let layers = eval::active_layers(project, t).expect("active_layers");
         let captions = eval::active_captions(project, t);
 
@@ -1274,7 +1344,7 @@ impl PreviewPipeline {
                     width: img.width(),
                     height: img.height(),
                 },
-                preview_supported_mask(layer.mask.as_ref()),
+                self.compositor.preview_layer_mask(layer),
             ));
         }
         for cap in &captions {
@@ -1286,9 +1356,8 @@ impl PreviewPipeline {
                 height: H,
             }));
         }
-        // The wasm path passes `&[]` for packs (pack LUTs are a documented preview gap).
         self.compositor
-            .composite(&[], &compose)
+            .composite(&self.packs, &compose)
             .expect("preview composite")
     }
 }
@@ -1515,44 +1584,92 @@ fn every_transition_kind_is_covered_by_a_scene() {
     }
 }
 
+/// `preview_layer_mask`: shape / luma masks always pass; file-backed mattes only once
+/// registered (until then the layer renders unmasked rather than failing the frame); a baked
+/// background-removal matte wins over the clip's own mask, exactly like export.
 #[test]
-fn preview_supported_mask_drops_only_filesystem_mattes() {
-    let mk = |kind| {
-        Some(ClipMask {
-            enabled: true,
-            invert: false,
-            feather: 0.0,
-            kind,
-        })
+fn preview_layer_mask_requires_registered_file_mattes() {
+    let Some(_env) = env() else { return };
+    let Some(mut preview) = PreviewPipeline::new() else {
+        return;
     };
+    let mk = |kind| ClipMask {
+        enabled: true,
+        invert: false,
+        feather: 0.0,
+        kind,
+    };
+    let layer_with = |mask: Option<ClipMask>, bg: Option<BackgroundRemoval>| {
+        let mut project = new_project();
+        ensure_media(&mut project, Src::Bars, MediaKind::Video);
+        let mut clip = Layer::new(Src::Bars, 0.0, 3.0).clip;
+        clip.mask = mask;
+        clip.background_removal = bg;
+        let mut track = Track::new(TrackKind::Video, "V");
+        track.clips.push(Clip::Video(clip));
+        project.tracks.push(track);
+        let mut layers = eval::active_layers(&project, 0.5).expect("active_layers");
+        layers.remove(0)
+    };
+
     let rect = mk(ClipMaskKind::Rect {
         x: 0.0,
         y: 0.0,
         width: 1.0,
         height: 1.0,
     });
-    assert_eq!(preview_supported_mask(rect.as_ref()), rect);
-    let luma = mk(ClipMaskKind::Luma {
-        pixels: vec![255; 4],
-        width: 2,
-        height: 2,
-    });
-    assert_eq!(preview_supported_mask(luma.as_ref()), luma);
-    assert!(preview_supported_mask(
-        mk(ClipMaskKind::Raster {
-            path: "m.png".into()
-        })
-        .as_ref()
-    )
-    .is_none());
-    assert!(preview_supported_mask(
-        mk(ClipMaskKind::Generated {
-            cache_dir: "c".into()
-        })
-        .as_ref()
-    )
-    .is_none());
-    assert!(preview_supported_mask(None).is_none());
+    assert_eq!(
+        preview
+            .compositor
+            .preview_layer_mask(&layer_with(Some(rect.clone()), None)),
+        Some(rect)
+    );
+    let raster = mk(ClipMaskKind::Raster { path: matte_path() });
+    let raster_layer = layer_with(Some(raster.clone()), None);
+    assert!(
+        preview
+            .compositor
+            .preview_layer_mask(&raster_layer)
+            .is_none(),
+        "unregistered matte must drop, not error"
+    );
+    let key = renderly_core::mask::matte_cache_key(&raster.kind).expect("raster key");
+    preview
+        .compositor
+        .set_matte(&key, 2, 2, &[255; 4])
+        .expect("set_matte");
+    assert_eq!(
+        preview.compositor.preview_layer_mask(&raster_layer),
+        Some(raster)
+    );
+    preview.compositor.remove_matte(&key);
+    assert!(preview
+        .compositor
+        .preview_layer_mask(&raster_layer)
+        .is_none());
+
+    // Baked background removal -> Generated matte (feather from the config), replacing the
+    // clip's own mask once registered.
+    let bg = BackgroundRemoval {
+        enabled: true,
+        model_id: "heuristic".into(),
+        threshold: 0.5,
+        feather: 0.25,
+        temporal: false,
+        matte_cache_dir: Some(generated_matte_cache_dir()),
+    };
+    let bg_layer = layer_with(None, Some(bg.clone()));
+    assert!(preview.compositor.preview_layer_mask(&bg_layer).is_none());
+    let gen_mask = renderly_core::mask::cached_background_mask(&bg).expect("baked mask");
+    let gen_key = renderly_core::mask::matte_cache_key(&gen_mask.kind).expect("gen key");
+    preview
+        .compositor
+        .set_matte(&gen_key, 2, 2, &[255; 4])
+        .expect("set_matte");
+    assert_eq!(
+        preview.compositor.preview_layer_mask(&bg_layer),
+        Some(gen_mask)
+    );
 }
 
 #[test]
@@ -1598,7 +1715,7 @@ fn fixture_decode_is_bit_exact() {
     );
 }
 
-/// Preview-style pipeline == FrameRenderer for every scene without a documented gap.
+/// Preview-style pipeline == FrameRenderer for every scene.
 #[test]
 fn preview_style_pipeline_matches_export_for_all_scenes() {
     let Some(env) = env() else { return };
@@ -1609,7 +1726,7 @@ fn preview_style_pipeline_matches_export_for_all_scenes() {
     let mut failures = Vec::new();
     let mut worst = 0u8;
     let mut checked = 0;
-    for s in scenes().into_iter().filter(|s| s.preview_gap.is_none()) {
+    for s in scenes() {
         let mut export = export_renderer();
         for &t in &s.times {
             checked += 1;
@@ -1683,8 +1800,9 @@ fn export_render_is_deterministic_across_renderers() {
 }
 
 // ---------------------------------------------------------------------------------------
-// Known divergences / bugs: #[ignore]d so they can be un-ignored when fixed.
-// Run with: cargo test -p renderly-core --test golden_frames -- --ignored
+// Dedicated preview/export parity tests for features that used to be preview gaps (they are
+// also part of the all-scenes test above), plus known bugs, which stay #[ignore]d until fixed.
+// Run ignored ones with: cargo test -p renderly-core --test golden_frames -- --ignored
 // ---------------------------------------------------------------------------------------
 
 fn assert_gap_scenes_match(names: &[&str]) {
@@ -1706,14 +1824,14 @@ fn assert_gap_scenes_match(names: &[&str]) {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// Raster + generated (baked-cache) mattes: preview gets them fs-free via `set_matte_rgba`.
 #[test]
-#[ignore = "docs/parity-board.md row 'Raster / generated mattes in preview': the wasm preview drops Raster/Generated mattes (needs fs-free decode), export applies them"]
 fn parity_gap_raster_and_generated_mattes() {
     assert_gap_scenes_match(&["mask_raster_matte", "mask_generated_matte"]);
 }
 
+/// Pack `.cube` LUT: preview gets it fs-free via `parse_cube_text` + `LoadedPack::from_luts`.
 #[test]
-#[ignore = "docs/parity-board.md row 'Pack `.cube` LUTs in preview': the wasm preview passes no packs, so pack LUT effects are skipped; export applies them"]
 fn parity_gap_pack_cube_lut() {
     assert_gap_scenes_match(&["fx_pack_cube_lut"]);
 }

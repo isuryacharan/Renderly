@@ -1,5 +1,6 @@
 mod media_assets;
 mod playback;
+mod preview_assets;
 
 mod bridge;
 
@@ -1493,6 +1494,9 @@ pub fn run() {
             get_media_assets,
             list_extensions,
             list_registry,
+            preview_assets::read_preview_matte,
+            preview_assets::preview_matte_stamps,
+            preview_assets::read_preview_pack_luts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Renderly");

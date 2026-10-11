@@ -293,6 +293,24 @@ export function assetUrl(path: string): string {
   return convertFileSrc(path);
 }
 
+// ---- Preview compositor host assets (raster/generated mattes, pack .cube LUTs) ----
+
+/// Backend for `preview/previewAssets.ts`. The commands only serve files the open project
+/// references (src-tauri/src/preview_assets.rs), so no asset-protocol scope is involved.
+export const previewAssetBackend = {
+  readMatte(path: string): Promise<ArrayBuffer> {
+    return invoke<ArrayBuffer>("read_preview_matte", { path });
+  },
+  matteStamps(paths: string[]): Promise<number[]> {
+    return invoke<number[]>("preview_matte_stamps", { paths });
+  },
+  readPackLuts(
+    wanted: { pack_id: string; lut_id: string }[],
+  ): Promise<{ pack_id: string; lut_id: string; cube: string }[]> {
+    return invoke("read_preview_pack_luts", { wanted });
+  },
+};
+
 // ---- Preview / playback ----
 
 export function play(timeSecs: number): Promise<void> {

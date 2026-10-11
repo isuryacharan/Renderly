@@ -701,10 +701,9 @@ impl EffectProcessor {
         kind: &ClipMaskKind,
     ) -> Result<wgpu::TextureView, ComposeError> {
         let cache_key = match kind {
-            ClipMaskKind::Raster { path } => format!("raster:{}", path.display()),
-            ClipMaskKind::Generated { cache_dir } => format!("gen:{}", cache_dir.display()),
             ClipMaskKind::Luma { .. } => "luma:live".to_string(), // Don't cache live heuristic mattes
-            _ => return Err(ComposeError::Wgpu("not a texture mask".into())),
+            other => crate::mask::matte_cache_key(other)
+                .ok_or_else(|| ComposeError::Wgpu("not a texture mask".into()))?,
         };
 
         if let Some(view) = self.matte_cache.get(&cache_key) {
@@ -713,21 +712,15 @@ impl EffectProcessor {
             }
         }
 
-        // Raster/Generated mattes are loaded from the filesystem via `image::open`, which is
-        // unavailable on wasm32 (no fs). Deferred for the wasm compositor per
-        // docs/preview-webview.md P2 scope limits — Luma (raw-pixel, decode-free) mattes still
-        // work on wasm; JS can decode raster mattes and feed them through as Luma bytes.
+        // File-backed mattes miss the cache only when nobody registered them. Native export
+        // loads them from disk (`image::open`); wasm32 has no filesystem, so the host must
+        // have decoded the file and called `set_matte` first (callers gate on `has_matte`
+        // via `Compositor::preview_layer_mask`, so reaching the error arm below is a bug).
         #[cfg(not(target_arch = "wasm32"))]
         let (pixels, width, height) = match kind {
-            ClipMaskKind::Raster { path } => {
-                let img = image::open(path).map_err(|e| ComposeError::Wgpu(e.to_string()))?;
-                let gray = img.to_luma8();
-                let w = gray.width();
-                let h = gray.height();
-                (gray.into_raw(), w, h)
-            }
-            ClipMaskKind::Generated { cache_dir } => {
-                let path = cache_dir.join("matte.png");
+            ClipMaskKind::Raster { .. } | ClipMaskKind::Generated { .. } => {
+                let path = crate::mask::matte_file_path(kind)
+                    .ok_or_else(|| ComposeError::Wgpu("not a texture mask".into()))?;
                 let img = image::open(path).map_err(|e| ComposeError::Wgpu(e.to_string()))?;
                 let gray = img.to_luma8();
                 let w = gray.width();
@@ -750,8 +743,7 @@ impl EffectProcessor {
             } => (pixels.clone(), *width, *height),
             ClipMaskKind::Raster { .. } | ClipMaskKind::Generated { .. } => {
                 return Err(ComposeError::Wgpu(
-                    "raster/generated mattes are not supported in the wasm preview compositor \
-                     (deferred, see docs/preview-webview.md P2); pass a Luma matte instead"
+                    "matte not registered: the host must decode the matte file and call                      Compositor::set_matte before compositing a raster/generated mask"
                         .into(),
                 ));
             }
@@ -782,6 +774,64 @@ impl EffectProcessor {
             self.matte_cache.insert(cache_key, view.clone());
         }
         Ok(view)
+    }
+
+    /// Register (or replace) the luma matte stored under `key` (see
+    /// [`crate::mask::matte_cache_key`]). `luma` is row-major, unpadded, `width * height`
+    /// bytes. This is the filesystem-free entry point: the wasm preview decodes the matte
+    /// file in the webview and hands pixels here; masks of the matching kind then resolve to
+    /// this texture instead of `image::open`.
+    pub(super) fn set_matte(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        key: &str,
+        luma: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<(), ComposeError> {
+        if width == 0 || height == 0 || luma.len() != width as usize * height as usize {
+            return Err(ComposeError::Wgpu(format!(
+                "matte '{key}': {} bytes does not match {width}x{height} luma",
+                luma.len()
+            )));
+        }
+        let texture = device.create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: Some("matte"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            luma,
+        );
+        self.matte_cache
+            .insert(key.to_string(), texture.create_view(&Default::default()));
+        Ok(())
+    }
+
+    pub(super) fn has_matte_key(&self, key: &str) -> bool {
+        self.matte_cache.contains_key(key)
+    }
+
+    pub(super) fn remove_matte(&mut self, key: &str) {
+        self.matte_cache.remove(key);
+    }
+
+    /// Drop uploaded pack-LUT 3D textures so the next use re-uploads from the (possibly
+    /// replaced) `LoadedPack` data - the cache is otherwise keyed by effect id + size only.
+    pub(super) fn clear_pack_lut_cache(&mut self) {
+        self.pack_lut_cache.clear();
     }
 
     fn ensure_dummy_matte(

@@ -233,8 +233,8 @@ media file ──► <video> / WebCodecs VideoDecoder (HW decode, browser-schedu
       `COPY_DST | RENDER_ATTACHMENT | TEXTURE_BINDING` per WebGPU spec), builds
       `ComposeLayer`s (transform/effects/mask/transition straight from eval), runs
       `compose_to_texture`, blits to the canvas surface, presents via `queue.present`.
-      Not-ready elements are skipped for the frame (same policy as P1). Raster/`Generated`
-      mattes are dropped (deferred, below).
+      Not-ready elements are skipped for the frame (same policy as P1). File-backed mattes
+      and pack LUTs arrive via the host-asset flow (P4b, below).
     - `debug_layers(time_secs, sources)`: QA introspection used by the harness (layer
       count, per-layer element resolution, transition progress).
   - Build: `npm run build:wasm` in renderly-app runs
@@ -391,12 +391,11 @@ media file ──► <video> / WebCodecs VideoDecoder (HW decode, browser-schedu
     disappears immediately on the next frame.
 
   **Deferred on the wasm path (explicitly, per the P2 scope allowances):**
-  - Pack (`.cube`) LUTs — need filesystem loads; `render` passes an empty pack slice and
-    pack-LUT effect instances are skipped. (Wire-up path: JS fetches pack bytes and hands
-    them over; `packs`' pure `CubeLut` upload helpers already compile on wasm32.)
-  - Raster / `Generated` mattes (`image::open`) — masks of those kinds are dropped before
-    composite (`Luma` in-memory mattes DO work). Background removal likewise (needs CPU
-    frame access).
+  - ~~Pack (`.cube`) LUTs~~ and ~~raster / `Generated` mattes~~ — landed in P4b (below).
+  - Background removal **without a baked matte cache** — export builds a live heuristic matte
+    from the decoded frame's CPU pixels (`export::resolve_background_removal_mask`); the
+    preview has no CPU frame access, so it shows the clip's own mask instead. (With a baked
+    `matte_cache_dir` it renders, see P4b.)
   - Audio (stays on the backend/rodio path).
   - Images in the harness: the sample logo isn't mapped to a real file by the mock, so the
     `HTMLImageElement` code path in `render` is written but not pixel-verified.
@@ -521,6 +520,56 @@ media file ──► <video> / WebCodecs VideoDecoder (HW decode, browser-schedu
   same-call temp-canvas `drawImage`+`getImageData` (`[127,127,127,255]` at the canvas
   center), toggled play/pause with no console errors, and confirmed no console references
   to the deleted `set_preview_mode`/`set_preview_bounds` commands.
+
+## P4b — host-supplied mattes and pack LUTs (landed)
+
+Closes the two preview<->export parity gaps that needed files the wasm build cannot read:
+raster / generated mattes and pack `.cube` LUTs. Nothing is reimplemented in JS; the webview
+only moves bytes.
+
+```
+disk ──► Tauri command (project-scoped read) ──► JS (previewAssets.ts) ──► WasmCompositor ──► core Compositor
+```
+
+- **What is needed** is decided in core Rust, not JS: `WasmCompositor::required_assets()`
+  returns JSON from `renderly_core::mask::project_matte_requests` (every `Raster` / `Generated`
+  mask plus background-removal with a baked `matte_cache_dir`, keyed by
+  `mask::matte_cache_key`, file = the raster path or `<cache_dir>/matte.png`) and
+  `renderly_core::packs::referenced_pack_luts` (`pack:<id>:lut:<id>` effect ids).
+- **Bytes** come from three Tauri commands in `src-tauri/src/preview_assets.rs`:
+  `read_preview_matte(path)` (raw encoded image via `tauri::ipc::Response`),
+  `preview_matte_stamps(paths)` (mtimes, so a matte regenerated in place at the same path
+  is noticed), `read_preview_pack_luts(wanted)` (`.cube` text). Each serves only what the
+  open project references, so no asset-protocol scope is touched (the "runtime scope or
+  blank" gotcha does not apply — there is no `<img src>` of these files). The browser harness
+  gets synthetic fixtures from `dev/tauriMock.ts`.
+- **Mattes**: `previewAssets.ts` decodes the image with `createImageBitmap`
+  (colour-management and premultiplication off) -> `getImageData` -> RGBA ->
+  `WasmCompositor::set_matte(key, w, h, rgba)`. Core converts RGBA to luma8 with exactly
+  `image::to_luma8`'s integer weights (`mask::luma_from_rgba`) and registers the texture in the
+  compositor's matte cache (`Compositor::set_matte`) — the same cache native export fills from
+  disk, so the same `mask` WGSL pass runs. `Compositor::preview_layer_mask` (shared with the
+  golden suite) picks the layer's mask: a baked background-removal matte wins over the clip
+  mask (as in export, via the shared `mask::cached_background_mask`), and a file-backed matte
+  not yet registered renders unmasked instead of failing the frame. Luma bytes are retained
+  in the wasm struct and re-registered if the compositor is rebuilt (resolution change).
+- **Pack LUTs**: `.cube` text -> `WasmCompositor::set_pack_lut(pack, lut, text)` ->
+  `packs::parse_cube_text` (the parser native `load_pack` uses, now `&str`-based and
+  cross-target) -> `LoadedPack::from_luts` -> the pack slice passed to `compose_to_texture`,
+  so `pack_lut.wgsl` runs as in export. The compositor's uploaded 3D-texture cache is cleared
+  whenever the pack data changes.
+- **Refresh**: `PreviewAssetSync.sync()` runs after every `set_project` (coalesced; zero IPC
+  unless a project references file-backed data). It drops mattes no longer referenced, reloads
+  a matte whose mtime changed, and rebuilds the LUT set when `asset_pack_paths` changes or a
+  LUT stops being used.
+- **Parity evidence**: `renderly-core/tests/golden_frames.rs`'s `PreviewPipeline` plays the
+  host through the same core entry points (not the compositor's native `image::open`
+  fallback) and the all-scenes parity test now includes `mask_raster_matte`,
+  `mask_generated_matte` and `fx_pack_cube_lut` at the usual 1-LSB `PARITY_TOL`
+  (`parity_gap_*` tests un-ignored). Not covered (needs a browser): the real
+  `createImageBitmap` decode of a matte PNG (gray PNGs with colour-profile chunks or 16-bit
+  depth may differ by a LSB or two from the `image` crate's decode), and translucent matte
+  PNGs (canvas readback un-premultiplies; `image` ignores alpha).
 
 ## Risks
 

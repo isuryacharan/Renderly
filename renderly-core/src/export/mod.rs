@@ -962,15 +962,8 @@ fn resolve_background_removal_mask(
 ) -> Option<crate::project::ClipMask> {
     use crate::project::{ClipMask, ClipMaskKind};
 
-    if let Some(dir) = cfg.matte_cache_dir.as_ref() {
-        return Some(ClipMask {
-            enabled: true,
-            invert: false,
-            feather: cfg.feather,
-            kind: ClipMaskKind::Generated {
-                cache_dir: dir.clone(),
-            },
-        });
+    if let Some(mask) = crate::mask::cached_background_mask(cfg) {
+        return Some(mask);
     }
 
     // Live heuristic matte when no cache has been baked yet.

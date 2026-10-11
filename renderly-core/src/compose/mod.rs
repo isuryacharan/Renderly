@@ -93,8 +93,8 @@ impl ComposeLayer {
     /// `LayerSource::Texture` filled from a browser element), so transform / effects /
     /// transition can never be wired differently in the two. `mask` is passed in because
     /// each path legitimately resolves it differently: export may replace it with a
-    /// background-removal matte, the preview drops mattes it cannot load
-    /// ([`preview_supported_mask`]).
+    /// live background-removal matte; the preview uses
+    /// [`Compositor::preview_layer_mask`].
     pub fn from_active(layer: &ActiveLayer, source: LayerSource, mask: Option<ClipMask>) -> Self {
         Self {
             source,
@@ -117,23 +117,6 @@ impl ComposeLayer {
             transition: None,
         }
     }
-}
-
-/// The mask the wasm preview can honour: shape masks (rect / ellipse) and in-memory `Luma`
-/// mattes pass through; `Raster` / `Generated` mattes (filesystem `image::open`) are dropped.
-/// This is a documented preview-only gap (docs/parity-board.md "Raster / generated mattes in
-/// preview"); keeping it here, next to [`ComposeLayer::from_active`], makes the gap a single
-/// named function that the golden suite exercises natively
-/// (`renderly-core/tests/golden_frames.rs`).
-pub fn preview_supported_mask(mask: Option<&ClipMask>) -> Option<ClipMask> {
-    mask.filter(|m| {
-        !matches!(
-            m.kind,
-            crate::project::ClipMaskKind::Raster { .. }
-                | crate::project::ClipMaskKind::Generated { .. }
-        )
-    })
-    .cloned()
 }
 
 impl From<RgbaFrame> for ComposeLayer {
@@ -313,6 +296,78 @@ impl Compositor {
         height: u32,
     ) -> Result<Self, ComposeError> {
         Self::from_device(device, queue, width, height)
+    }
+
+    /// Register (or replace) a file-backed matte from decoded RGBA pixels (what a webview's
+    /// `createImageBitmap` + `getImageData` yields), converting to luma8 exactly like native
+    /// `image::open(..).to_luma8()`. `key` is [`crate::mask::matte_cache_key`] of the
+    /// `Raster` / `Generated` mask it backs. This is the filesystem-free path the wasm preview
+    /// uses; export loads the same mattes from disk into the same cache.
+    pub fn set_matte_rgba(
+        &mut self,
+        key: &str,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+    ) -> Result<(), ComposeError> {
+        let luma = crate::mask::luma_from_rgba(rgba);
+        self.set_matte(key, width, height, &luma)
+    }
+
+    /// As [`Self::set_matte_rgba`] for already-single-channel pixels.
+    pub fn set_matte(
+        &mut self,
+        key: &str,
+        width: u32,
+        height: u32,
+        luma: &[u8],
+    ) -> Result<(), ComposeError> {
+        let (device, queue) = (Arc::clone(&self.device), Arc::clone(&self.queue));
+        self.effects
+            .set_matte(&device, &queue, key, luma, width, height)
+    }
+
+    /// Forget a registered matte (mask cleared / project closed).
+    pub fn remove_matte(&mut self, key: &str) {
+        self.effects.remove_matte(key);
+    }
+
+    /// Whether `kind` can be composited right now: shape and in-memory `Luma` masks always
+    /// can; file-backed mattes only once registered via [`Self::set_matte`].
+    pub fn has_matte(&self, kind: &crate::project::ClipMaskKind) -> bool {
+        match crate::mask::matte_cache_key(kind) {
+            Some(key) => self.effects.has_matte_key(&key),
+            None => true,
+        }
+    }
+
+    /// Invalidate uploaded pack-LUT textures; call after the pack slice handed to
+    /// [`Self::compose_to_texture`] changes content.
+    pub fn clear_pack_lut_cache(&mut self) {
+        self.effects.clear_pack_lut_cache();
+    }
+
+    /// The mask the *preview* composites an evaluated layer with, mirroring export's
+    /// resolution (`export::resolve_background_removal_mask`) for everything that needs no
+    /// per-frame CPU pixels:
+    /// - background removal enabled with a baked `matte_cache_dir` -> its `Generated` matte
+    ///   (same [`crate::mask::cached_background_mask`] export calls);
+    /// - otherwise the clip's own mask.
+    ///
+    /// A file-backed matte the host has not registered yet is dropped (layer renders
+    /// unmasked) instead of failing the whole frame. **Unsupported sub-case:** background
+    /// removal enabled *without* a baked cache makes export build a live heuristic matte from
+    /// the decoded frame's pixels; the preview has no CPU frame access, so it falls back to the
+    /// clip's own mask there.
+    pub fn preview_layer_mask(&self, layer: &eval::ActiveLayer) -> Option<ClipMask> {
+        let baked = layer
+            .background_removal
+            .as_ref()
+            .filter(|b| b.enabled)
+            .and_then(crate::mask::cached_background_mask);
+        baked
+            .or_else(|| layer.mask.clone())
+            .filter(|m| self.has_matte(&m.kind))
     }
 
     pub fn width(&self) -> u32 {
