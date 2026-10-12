@@ -175,6 +175,23 @@ const extensionCatalog = {
 
 let revision = 1;
 
+let mockModelInstalled = false;
+function mockModelStatus(id: string) {
+  return {
+    id,
+    name: "Robust Video Matting (MobileNetV3, fp32)",
+    license_spdx: "GPL-3.0-only",
+    license_url: "https://github.com/PeterL1n/RobustVideoMatting/blob/master/LICENSE",
+    source_url: "https://github.com/PeterL1n/RobustVideoMatting",
+    download_host: "github.com",
+    size_bytes: 14_975_696,
+    sha256: "88d4531297118f595bf2fd60f6f566aec2e559393802d1f436c380f0cbbd2828",
+    installed: mockModelInstalled,
+    path: mockModelInstalled ? "C:/mock/models/rvm_mobilenetv3_fp32.onnx" : null,
+    cache_dir: "C:/Users/you/AppData/Local/renderly/models",
+  };
+}
+
 // ---- Mutable project state + a tiny command applier, so `apply_command`/`apply_commands`
 // below can echo a REAL RFC-6902 patch (via fast-json-patch's `compare`, the same diff
 // approach the real backend's `json_patch::diff` uses) instead of the empty `patch: []`
@@ -429,6 +446,30 @@ function applyMockCommand(project: Project, cmd: any): void {
     case "SetClipMask": {
       const clip = mockFindClip(mockFindTrack(project, cmd.track_id), cmd.clip_id);
       if (clip && clip.type !== "caption") clip.mask = cmd.mask;
+      break;
+    }
+    case "SetClipBackgroundRemoval": {
+      const clip = mockFindClip(mockFindTrack(project, cmd.track_id), cmd.clip_id);
+      if (clip && (clip.type === "video" || clip.type === "audio")) clip.background_removal = cmd.config;
+      break;
+    }
+    case "GenerateBackgroundMatte":
+    case "AttachBackgroundMatte": {
+      // Pretend a baked matte sequence exists so the inspector shows its Ready state.
+      const clip = mockFindClip(mockFindTrack(project, cmd.track_id), cmd.clip_id);
+      if (clip && (clip.type === "video" || clip.type === "audio") && clip.background_removal) {
+        clip.background_removal.matte_cache_dir = "C:/mock/matte-cache";
+        if (clip.background_removal.model_id === "rvm") {
+          clip.background_removal.matte_frames = {
+            start_secs: clip.source_in_secs,
+            fps: 30,
+            count: Math.round((clip.source_out_secs - clip.source_in_secs) * 30) + 1,
+            width: 1280,
+            height: 720,
+            stamp: Date.now(),
+          };
+        }
+      }
       break;
     }
     case "MoveClip": {
@@ -767,6 +808,22 @@ export function invoke<T = unknown>(cmd: string, args?: any): Promise<T> {
           cube: MOCK_ROTATE_CUBE,
         })),
       );
+    // Local ML models: the matting weights start "not installed" so the consent dialog is
+    // reachable in the harness; the mock "download" flips them to installed.
+    case "ml_model_status":
+      return reply(mockModelStatus(String(args?.id ?? "")));
+    case "ml_download_model": {
+      mockModelInstalled = true;
+      return reply(mockModelStatus(String(args?.id ?? "")));
+    }
+    case "background_matte_status": {
+      const clip = mockFindClip(mockFindTrack(currentProject, String(args?.trackId)), String(args?.clipId));
+      const bg = clip && (clip.type === "video" || clip.type === "audio") ? clip.background_removal : null;
+      if (!bg?.matte_cache_dir) return reply({ state: "not_generated" });
+      return reply({ state: "ready", frames: bg.matte_frames?.count ?? null });
+    }
+    case "cancel_background_matte":
+      return reply(undefined);
     case "project_thumbnail":
       return reply(null);
     default:

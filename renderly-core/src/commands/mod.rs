@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod adjustment;
+#[cfg(test)]
+mod matte_tests;
 mod motion;
 mod reframe;
 mod sequences;
@@ -237,10 +239,22 @@ pub enum Command {
         clip_id: Id,
         config: Option<BackgroundRemoval>,
     },
-    /// Bake a single-frame matte for background removal and wire `mask` (Phase 4).
+    /// Bake the background-removal matte and wire `mask` (Phase 4). `heuristic` / CLI models
+    /// bake one image for the clip; `rvm` runs Robust Video Matting in-process over the clip's
+    /// used source range and bakes a matte per source frame (needs the model installed:
+    /// [`CommandError::ModelNotAvailable`] otherwise; never downloads).
     GenerateBackgroundMatte {
         track_id: Id,
         clip_id: Id,
+    },
+    /// Point a clip's background removal at an already-baked `rvm` matte sequence (read from the
+    /// sequence's `matte.json`). `GenerateBackgroundMatte` does this itself; hosts that run the
+    /// long bake off the project lock (progress, cancel) bake against a snapshot and then apply
+    /// this small command. Fails when the sequence is stale for the clip.
+    AttachBackgroundMatte {
+        track_id: Id,
+        clip_id: Id,
+        cache_dir: std::path::PathBuf,
     },
     /// Set or clear audio denoise on an audio-track clip (Phase 4).
     SetClipAudioDenoise {
@@ -472,6 +486,15 @@ pub enum CommandError {
     Multicam(String),
     #[error("analysis error: {0}")]
     Analysis(String),
+    /// An ML model the command needs is not installed. Commands never download; fetch it with
+    /// `renderly models download <id>` (or the `ml_download_model` / MCP `download_model` tools)
+    /// after the user agreed.
+    #[error(
+        "model {model_id} is not installed; download it first (renderly models download {model_id})"
+    )]
+    ModelNotAvailable { model_id: String },
+    #[error("cancelled")]
+    Cancelled,
     #[error("not yet implemented: {0}")]
     NotImplemented(&'static str),
     #[error("sequence not found: {0}")]
@@ -694,6 +717,11 @@ pub fn apply_command(project: &mut Project, cmd: Command) -> Result<CommandOutco
         Command::GenerateBackgroundMatte { track_id, clip_id } => {
             generate_background_matte(project, track_id, clip_id)
         }
+        Command::AttachBackgroundMatte {
+            track_id,
+            clip_id,
+            cache_dir,
+        } => attach_background_matte(project, track_id, clip_id, cache_dir),
         Command::SetClipAudioDenoise {
             track_id,
             clip_id,
@@ -2115,6 +2143,7 @@ fn default_background_removal() -> BackgroundRemoval {
         feather: 0.0,
         temporal: false,
         matte_cache_dir: None,
+        matte_frames: None,
     }
 }
 
@@ -2169,11 +2198,45 @@ fn decode_clip_frame(
     }
 }
 
-fn generate_background_matte(
-    project: &mut Project,
+/// Map a segmentation failure onto the command error space (typed where callers branch on it).
+pub fn segmentation_error(e: crate::segmentation::SegmentationError) -> CommandError {
+    use crate::segmentation::SegmentationError as S;
+    match e {
+        S::ModelNotAvailable { model_id } => CommandError::ModelNotAvailable { model_id },
+        S::Cancelled => CommandError::Cancelled,
+        other => CommandError::Analysis(other.to_string()),
+    }
+}
+
+/// Snapshot the inputs of an in-process `rvm` matte bake for a clip, without mutating anything.
+/// Returns `None` when the clip's configured model is not `rvm` (those bake instantly through
+/// [`apply_command`]). Hosts use this to run [`crate::segmentation::bake_rvm_matte`] off the
+/// project lock, then apply [`Command::AttachBackgroundMatte`].
+pub fn prepare_rvm_matte_job(
+    project: &Project,
     track_id: Id,
     clip_id: Id,
-) -> Result<CommandOutcome, CommandError> {
+) -> Result<Option<crate::segmentation::MatteJob>, CommandError> {
+    let clip = video_media_clip(project, track_id, clip_id)?;
+    let is_rvm = clip
+        .background_removal
+        .as_ref()
+        .is_some_and(|c| crate::segmentation::is_rvm_model_id(&c.model_id));
+    if !is_rvm {
+        return Ok(None);
+    }
+    reject_sequence_media(project, clip.media_id, "GenerateBackgroundMatte")?;
+    crate::segmentation::prepare_rvm_job(project, clip_id, &clip)
+        .map(Some)
+        .map_err(segmentation_error)
+}
+
+/// The media clip `clip_id` on video track `track_id` (cloned).
+fn video_media_clip(
+    project: &Project,
+    track_id: Id,
+    clip_id: Id,
+) -> Result<MediaClip, CommandError> {
     let track = project
         .find_track(track_id)
         .ok_or(CommandError::TrackNotFound(track_id))?;
@@ -2184,14 +2247,29 @@ fn generate_background_matte(
             TrackKind::Video,
         ));
     }
-    let clip = track
+    Ok(track
         .clips
         .iter()
         .find(|c| c.id() == clip_id)
         .ok_or(CommandError::ClipNotFound(clip_id, track_id))?
         .as_media()
         .ok_or(CommandError::NotMediaClip(clip_id))?
-        .clone();
+        .clone())
+}
+
+fn generate_background_matte(
+    project: &mut Project,
+    track_id: Id,
+    clip_id: Id,
+) -> Result<CommandOutcome, CommandError> {
+    let clip = video_media_clip(project, track_id, clip_id)?;
+
+    // In-process RVM: per-frame matte over the used source range (blocking; hosts that need
+    // progress/cancel use `prepare_rvm_matte_job` + `AttachBackgroundMatte` instead).
+    if let Some(job) = prepare_rvm_matte_job(project, track_id, clip_id)? {
+        crate::segmentation::bake_rvm_matte(&job, &mut |_| true).map_err(segmentation_error)?;
+        return attach_background_matte(project, track_id, clip_id, job.cache_dir);
+    }
 
     reject_sequence_media(project, clip.media_id, "GenerateBackgroundMatte")?;
     let mid_source = (clip.source_in_secs + clip.source_out_secs) * 0.5;
@@ -2207,11 +2285,60 @@ fn generate_background_matte(
         "renderly-matte-{}",
         crate::segmentation::cache_key(clip.media_id, &cfg)
     ));
-    crate::segmentation::bake_frame_matte(&frame, &cfg, &cache_dir)
-        .map_err(|e| CommandError::Analysis(e.to_string()))?;
+    crate::segmentation::bake_frame_matte(&frame, &cfg, &cache_dir).map_err(segmentation_error)?;
 
     let feather = cfg.feather;
     cfg.matte_cache_dir = Some(cache_dir.clone());
+    cfg.matte_frames = None;
+
+    let clip = media_clip_mut(project, track_id, clip_id)?;
+    clip.background_removal = Some(cfg);
+    clip.mask = Some(ClipMask {
+        enabled: true,
+        invert: false,
+        feather,
+        kind: ClipMaskKind::Generated { cache_dir },
+    });
+    Ok(CommandOutcome::Applied)
+}
+
+fn attach_background_matte(
+    project: &mut Project,
+    track_id: Id,
+    clip_id: Id,
+    cache_dir: std::path::PathBuf,
+) -> Result<CommandOutcome, CommandError> {
+    let clip = video_media_clip(project, track_id, clip_id)?;
+    let media = project
+        .find_media(clip.media_id)
+        .ok_or(CommandError::MediaNotFound(clip.media_id))?;
+    let sidecar = crate::segmentation::read_sidecar(&cache_dir).ok_or_else(|| {
+        CommandError::Analysis(format!(
+            "no matte sequence at {} (missing or unreadable matte.json)",
+            cache_dir.display()
+        ))
+    })?;
+    if let Some(reason) = crate::segmentation::sidecar_staleness(
+        &sidecar,
+        &media.path,
+        clip.source_in_secs,
+        clip.source_out_secs,
+    ) {
+        return Err(CommandError::Analysis(format!(
+            "matte sequence does not match the clip: {reason}"
+        )));
+    }
+    let mut cfg = clip
+        .background_removal
+        .clone()
+        .unwrap_or_else(default_background_removal);
+    cfg.enabled = true;
+    if !crate::segmentation::is_rvm_model_id(&cfg.model_id) {
+        cfg.model_id = "rvm".into();
+    }
+    let feather = cfg.feather;
+    cfg.matte_cache_dir = Some(cache_dir.clone());
+    cfg.matte_frames = Some(sidecar.frames());
 
     let clip = media_clip_mut(project, track_id, clip_id)?;
     clip.background_removal = Some(cfg);

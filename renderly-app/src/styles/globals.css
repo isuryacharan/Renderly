@@ -2460,6 +2460,33 @@ dialog .dialog-sub {
   color: var(--danger);
 }
 
+/* Model download consent (ModelConsentDialog) and the AI background-removal inspector section. */
+.model-consent-facts {
+  margin: 0 0 0.75rem;
+  padding-left: 1.1rem;
+  font-size: 0.8rem;
+  color: var(--text-2);
+  max-width: 460px;
+}
+
+.model-consent-facts li {
+  margin-bottom: 0.35rem;
+}
+
+.model-consent-facts code {
+  word-break: break-all;
+}
+
+.matte-status {
+  font-size: 0.75rem;
+  color: var(--text-3);
+  margin: 0;
+}
+
+.matte-status.stale {
+  color: var(--warning, var(--text-2));
+}
+
 dialog menu {
   display: flex;
   justify-content: flex-end;

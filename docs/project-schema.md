@@ -188,9 +188,30 @@ transition, background removal, or multicam.
   Shape UVs are source-frame (0..1). Rect/ellipse authoring is via the app Mask tool
   overlay + `SetClipMask` (live drag patches the Zustand store directly for the preview
   canvas's own redraw — no backend round trip; see docs/preview-webview.md P4). |
-| `background_removal` | Optional config (`model_id` `heuristic` or CLI-backed `rvm`/`birefnet`, threshold, feather, `matte_cache_dir`). Without a baked matte it is not applied to a nested sequence's output (it stays per inner clip). |
+| `background_removal` | Optional config: `model_id` (`heuristic` built-in; `rvm` = Robust Video Matting in-process, needs the downloaded weights; `cli` / `birefnet` = external binary via `RENDERLY_SEG_CLI`), `threshold` (heuristic only), `feather`, `temporal` (superseded for `rvm`, which is inherently temporal), `matte_cache_dir`, and optional `matte_frames`. Without a baked matte it is not applied to a nested sequence's output (it stays per inner clip). See "Background removal mattes" below. |
 | `audio_denoise` | Optional `{ enabled, backend, strength }` — **audio tracks only** in v1. `backend` is `"afftdn"` (FFmpeg filter; the default when the field is absent) or `"rnnoise"` (RNNoise via `nnnoiseless`; `strength` = wet/dry mix). Added without a schema bump. Not settable on a clip that places a sequence (the inner clips carry their own). |
 | `multicam_group_id` | Optional link into `project.multicam_groups`. |
+
+### Background removal mattes
+
+`background_removal.matte_cache_dir` names the baked matte. Two layouts live there:
+
+- **single image** (`heuristic`, `cli`, `birefnet`): `matte.png`, applied to every frame of the
+  clip (as before);
+- **per-frame sequence** (`rvm`): `f000000.png`, `f000001.png`, ... (8-bit grayscale PNG,
+  255 = subject), a representative `matte.png` (the middle frame, so single-image consumers keep
+  working), and `matte.json` (provenance: model id + weights SHA-256, source path / mtime /
+  size, covered source range, fps, frame count, size, stamp).
+
+`background_removal.matte_frames` (optional, omitted when absent) is the sequence index the
+engine uses without touching the filesystem: `{ start_secs, fps, count, width, height, stamp }`.
+Matte frame `i` belongs to **source** time `start_secs + i / fps`; a layer showing source time
+`s` uses frame `round((s - start_secs) * fps)` clamped to `0..count-1` (nearest). `stamp` (ms
+since epoch) changes on every regeneration so hosts can invalidate cached frames. The matte then
+goes through the usual `Generated` mask path (`feather`, invert) before the clip mask stage.
+If two layers visible in the same output frame share one `matte_cache_dir` at different source
+times (e.g. both sides of a transition between two pieces of one split clip), they share the
+last-registered frame; this is an accepted edge case.
 
 ### Builtin effects (additions)
 
@@ -219,6 +240,12 @@ CPU-side steps, which have no decoded frame): GPU builtins → clip mask → com
   renders them with the same Rust code as export).
 
 ## Version history
+
+- **v7, additive (AI background removal)**: optional `MediaClip.background_removal.matte_frames`
+  (`{ start_secs, fps, count, width, height, stamp }`, serde-defaulted, omitted when absent) and
+  `model_id: "rvm"` now meaning in-process Robust Video Matting. **No version bump**: v7 has
+  not been released, and the field is purely additive - every existing v1-v7 file loads
+  unchanged and re-saves without the field.
 
 - **v5**: Speed keyframes; stickers/SFX; audio WASM.
 - **v6** (Phase 4): `ClipMask`, background removal, audio denoise, multicam groups; chroma key builtin.

@@ -2,10 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { PreviewAssetSync } from "./previewAssets";
 import type { PreviewAssetBackend, PreviewAssetHost } from "./previewAssets";
 
-function makeHost(required: () => object) {
+function makeHost(required: () => object, frames?: (t: number) => object[]) {
   const calls: string[] = [];
   const host: PreviewAssetHost = {
     required_assets: () => JSON.stringify(required()),
+    ...(frames ? { required_frame_mattes: (t: number) => JSON.stringify(frames(t)) } : {}),
     set_matte: (key, w, h) => void calls.push(`matte+ ${key} ${w}x${h}`),
     remove_matte: (key) => void calls.push(`matte- ${key}`),
     set_pack_lut: (p, l) => void calls.push(`lut+ ${p}/${l}`),
@@ -99,6 +100,72 @@ describe("PreviewAssetSync", () => {
     const sync = new PreviewAssetSync(host, backend, vi.fn(), decode);
     await sync.sync();
     await sync.sync();
+    expect(calls).toEqual([]);
+    expect(backend.readMatte).toHaveBeenCalledTimes(1);
+    err.mockRestore();
+  });
+
+  it("registers the time-indexed matte frame per key, replaces it as time moves, and prefetches", async () => {
+    // A clip whose source runs 1:1 with the timeline at 10 matte frames per second.
+    const frame = (t: number) => {
+      const index = Math.round(t * 10);
+      return [{ key: "gen:c", path: `c/f${index}.png`, index, stamp: 7 }];
+    };
+    const { host, calls } = makeHost(
+      () => ({ mattes: [], pack_luts: [], frame_mattes: true }),
+      frame,
+    );
+    const backend = makeBackend({ v: 1 });
+    const onChange = vi.fn();
+    const sync = new PreviewAssetSync(host, backend, onChange, decode);
+
+    // Before the project says it has per-frame mattes, nothing is looked up.
+    sync.syncFrameMattes(0);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(backend.readMatte).not.toHaveBeenCalled();
+
+    await sync.sync();
+    sync.syncFrameMattes(0);
+    await vi.waitFor(() => expect(calls).toEqual(["matte+ gen:c 2x1"]));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    // f0 registered; f1 (t+0.1) was prefetched into the cache but not registered.
+    await vi.waitFor(() => expect(backend.readMatte).toHaveBeenCalledTimes(2));
+    expect(calls).toHaveLength(1);
+
+    // Same instant again: no work. Next frame: served from the prefetch cache, no new read.
+    sync.syncFrameMattes(0);
+    sync.syncFrameMattes(0.1);
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    expect(backend.readMatte).toHaveBeenCalledWith("c/f0.png");
+    expect(backend.readMatte).toHaveBeenCalledWith("c/f1.png");
+
+    // Regenerated sequence (new stamp) invalidates what was registered.
+    const regenerated = makeHost(
+      () => ({ mattes: [], pack_luts: [], frame_mattes: true }),
+      (t) => frame(t).map((r) => ({ ...r, stamp: 8 })),
+    );
+    const sync2 = new PreviewAssetSync(regenerated.host, makeBackend({ v: 1 }), vi.fn(), decode);
+    await sync2.sync();
+    sync2.syncFrameMattes(0);
+    await vi.waitFor(() => expect(regenerated.calls).toHaveLength(1));
+  });
+
+  it("a missing matte frame is logged once and not retried on every draw", async () => {
+    const { host, calls } = makeHost(
+      () => ({ mattes: [], pack_luts: [], frame_mattes: true }),
+      () => [{ key: "gen:c", path: "c/f0.png", index: 0, stamp: 1 }],
+    );
+    const backend = makeBackend({ v: 1 });
+    backend.readMatte = vi.fn(async () => {
+      throw new Error("gone");
+    });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const sync = new PreviewAssetSync(host, backend, vi.fn(), decode);
+    await sync.sync();
+    for (let i = 0; i < 3; i++) {
+      sync.syncFrameMattes(0);
+      await new Promise((r) => setTimeout(r, 0));
+    }
     expect(calls).toEqual([]);
     expect(backend.readMatte).toHaveBeenCalledTimes(1);
     err.mockRestore();

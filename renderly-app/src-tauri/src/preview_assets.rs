@@ -49,7 +49,15 @@ pub async fn read_preview_matte(
     path: String,
 ) -> Result<tauri::ipc::Response, String> {
     let wanted = PathBuf::from(&path);
-    if !referenced_matte_paths(&state)?.contains(&wanted) {
+    // The single matte image a mask / baked background removal names, or one frame of a
+    // per-frame matte sequence (`f000123.png` in a baked cache dir of the open project).
+    let allowed = referenced_matte_paths(&state)?.contains(&wanted)
+        || state.with_session(|s| {
+            Ok(renderly_core::mask::is_frame_matte_path(
+                &s.project, &wanted,
+            ))
+        })?;
+    if !allowed {
         return Err(format!("not a matte of the open project: {path}"));
     }
     let bytes = tauri::async_runtime::spawn_blocking(move || std::fs::read(&wanted))

@@ -107,6 +107,25 @@ Made by the project owner on 2026-10-11:
 4. **`ort` fallback**: allowed only for a model `tract` cannot run, and only with the native
    library path fixed to our own bundled copy (`ORT_DYLIB_PATH` ignored).
 
+## What shipped (2026-10)
+
+- **Robust Video Matting** (MobileNetV3, fp32, GPL-3.0 weights) runs in-process under `tract`
+  (`renderly-core/src/ml/rvm.rs`, pre/post-processing written from the model's documented I/O
+  contract; no upstream code copied) and powers background-removal `model_id: "rvm"` as a per-frame
+  matte. The weights are **never bundled or committed**: the app shows a consent dialog (model,
+  size, upstream host, licence link, local cache path) and downloads from the project's own
+  GitHub release, pinned by tag and SHA-256, through `ml::download_model` (atomic, fail-closed).
+  `renderly models download <id> --yes` and the MCP `download_model` tool (`user_consented: true`)
+  do the same for CLI and agents; nothing in a render or command path downloads implicitly - a
+  missing model is the typed error `ModelNotAvailable`. `RENDERLY_MODEL_DIR` points at an
+  existing copy.
+- **BiRefNet-lite was dropped**: ~100 s/frame and ~14 GB under `tract` made it impractical, so
+  its manifest entry was removed instead of shipping a dead option. (`model_id: "birefnet"` on a
+  clip still means "external binary via `RENDERLY_SEG_CLI`".) The "stills" role in the stack table
+  above is therefore unfilled.
+- Mattes are a derived cache, not part of the conveyed work: sequences live in the temp dir and
+  record the weights' SHA-256 in `matte.json`.
+
 ## Not verified
 
 ONNX Runtime's third-party notices; `ort` prebuilt availability per platform; `tract`

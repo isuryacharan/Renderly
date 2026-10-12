@@ -1973,6 +1973,7 @@ fn preview_layer_mask_requires_registered_file_mattes() {
         feather: 0.25,
         temporal: false,
         matte_cache_dir: Some(generated_matte_cache_dir()),
+        matte_frames: None,
     };
     let bg_layer = layer_with(None, Some(bg.clone()));
     assert!(preview.compositor.preview_layer_mask(&bg_layer).is_none());

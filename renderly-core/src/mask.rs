@@ -94,6 +94,106 @@ pub fn project_matte_requests(project: &Project) -> Vec<MatteRequest> {
     out
 }
 
+/// A per-frame background-removal matte (`BackgroundRemoval::matte_frames`) a layer needs at one
+/// instant: `path` is the PNG of the nearest matte frame to the layer's *source* time. A host
+/// hands its pixels to `Compositor::set_matte(key, ..)` before compositing that time - under the
+/// same `key` as the single representative `matte.png` that [`project_matte_requests`] lists,
+/// which it replaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameMatteRequest {
+    pub key: String,
+    pub path: PathBuf,
+    /// Matte frame index within the sequence.
+    pub index: u32,
+    /// `MatteFrames::stamp` of the sequence (changes on regeneration; hosts cache by it).
+    pub stamp: u64,
+}
+
+/// Every enabled background removal of `project` that has a per-frame matte sequence:
+/// `(cache dir, sequence index)`.
+fn frame_matte_sequences(project: &Project) -> Vec<(&PathBuf, &crate::project::MatteFrames)> {
+    let mut out = Vec::new();
+    for track in project.all_tracks() {
+        for clip in &track.clips {
+            let Some(bg) = clip
+                .as_media()
+                .and_then(|m| m.background_removal.as_ref())
+                .filter(|b| b.enabled)
+            else {
+                continue;
+            };
+            if let (Some(dir), Some(frames)) =
+                (bg.matte_cache_dir.as_ref(), bg.matte_frames.as_ref())
+            {
+                out.push((dir, frames));
+            }
+        }
+    }
+    out
+}
+
+/// Whether any clip uses a per-frame background-removal matte (lets a host skip per-frame
+/// matte lookups entirely for ordinary projects).
+pub fn project_has_frame_mattes(project: &Project) -> bool {
+    !frame_matte_sequences(project).is_empty()
+}
+
+/// Whether `path` is a frame file (`f000123.png`) of one of the project's per-frame matte
+/// sequences. Hosts that serve matte bytes to the webview use this to stay project-scoped.
+pub fn is_frame_matte_path(project: &Project, path: &std::path::Path) -> bool {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
+        return false;
+    };
+    let is_frame_name = name.len() == 11
+        && name.starts_with('f')
+        && name.ends_with(".png")
+        && name[1..7].bytes().all(|b| b.is_ascii_digit());
+    is_frame_name
+        && frame_matte_sequences(project)
+            .iter()
+            .any(|(d, _)| d.as_path() == dir)
+}
+
+/// The per-frame mattes the layers visible at root timeline time `t` need (including layers
+/// inside nested sequences), deduplicated by key. Pure data walk - no filesystem access - and
+/// the same source-time -> frame mapping native export uses, so the preview and export pick the
+/// same matte frame.
+pub fn frame_matte_requests_at(project: &Project, t: f64) -> Vec<FrameMatteRequest> {
+    let mut out: Vec<FrameMatteRequest> = Vec::new();
+    let Ok(layers) = crate::compose::eval::leaf_media_layers(project, t) else {
+        return out;
+    };
+    for layer in layers {
+        let Some((_, _, source_time)) = layer.media() else {
+            continue;
+        };
+        let Some(bg) = layer.background_removal.as_ref().filter(|b| b.enabled) else {
+            continue;
+        };
+        let (Some(frames), Some(dir), Some(mask)) = (
+            bg.matte_frames.as_ref(),
+            bg.matte_cache_dir.as_ref(),
+            cached_background_mask(bg),
+        ) else {
+            continue;
+        };
+        let Some(key) = matte_cache_key(&mask.kind) else {
+            continue;
+        };
+        if out.iter().any(|r| r.key == key) {
+            continue;
+        }
+        let index = frames.index_at(source_time);
+        out.push(FrameMatteRequest {
+            key,
+            path: dir.join(crate::project::MatteFrames::file_name(index)),
+            index,
+            stamp: frames.stamp,
+        });
+    }
+    out
+}
+
 /// RGBA8 -> single-channel luma8 with the same integer coefficients and truncation as
 /// `image::DynamicImage::to_luma8` (ITU-R BT.709 weights 2126/7152/722 over 10000; alpha
 /// ignored). `rgba.len()` must be a multiple of 4 (a trailing partial pixel is dropped).
@@ -381,6 +481,7 @@ mod tests {
                 feather: 0.1,
                 temporal: false,
                 matte_cache_dir: Some("cache".into()),
+                matte_frames: None,
             }),
             ..Default::default()
         };

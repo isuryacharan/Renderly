@@ -42,6 +42,9 @@ pub enum ExportError {
     /// Returned when `export_project_with_progress`'s callback returns `false`.
     #[error("export cancelled")]
     Cancelled,
+    /// A baked per-frame background-removal matte could not be read (regenerate it).
+    #[error("background-removal matte frame {path}: {message}")]
+    Matte { path: String, message: String },
 }
 
 impl From<EvalError> for ExportError {
@@ -267,6 +270,10 @@ pub struct FrameRenderer {
     /// times in one frame — a sequence placed twice, or a clip both nested and on the root —
     /// gets two independent readers.
     decoders: HashMap<InstanceKey, DecoderState>,
+    /// Per-frame background-removal mattes currently registered with the compositor, as
+    /// `(frame index, sequence stamp)` per matte key, so an unchanged frame is not re-read and
+    /// re-uploaded.
+    frame_mattes: HashMap<String, (u32, u64)>,
 }
 
 impl FrameRenderer {
@@ -277,6 +284,7 @@ impl FrameRenderer {
             decode_opts,
             compositor,
             decoders: HashMap::new(),
+            frame_mattes: HashMap::new(),
         })
     }
 
@@ -294,6 +302,7 @@ impl FrameRenderer {
             decode_opts,
             compositor,
             decoders: HashMap::new(),
+            frame_mattes: HashMap::new(),
         })
     }
 
@@ -396,12 +405,15 @@ impl FrameRenderer {
             plugin_host: plugin_host.as_ref(),
             reader_opts,
             decode_secs: 0.0,
+            frame_mattes: Vec::new(),
         };
         let mut scene = build_scene(project, steps, &mut host).map_err(|e| match e {
             SceneError::Eval(e) => ExportError::from(e),
             SceneError::Host(e) => e,
         })?;
         let decode_secs = host.decode_secs;
+        let wanted_mattes = std::mem::take(&mut host.frame_mattes);
+        self.register_frame_mattes(&wanted_mattes)?;
 
         for cap in eval::active_captions(project, time_secs) {
             scene.push(SceneStep::Layer(ComposeLayer::caption(LayerSource::Frame(
@@ -434,6 +446,38 @@ impl FrameRenderer {
     }
 }
 
+impl FrameRenderer {
+    /// Load and register the per-frame mattes this frame's layers need (nearest matte frame to
+    /// each layer's source time) under the same compositor keys the single-image path uses.
+    fn register_frame_mattes(&mut self, wanted: &[FrameMatte]) -> Result<(), ExportError> {
+        for m in wanted {
+            if self.frame_mattes.get(&m.key) == Some(&(m.index, m.stamp)) {
+                continue;
+            }
+            let path = m.dir.join(crate::project::MatteFrames::file_name(m.index));
+            let matte_err = |message: String| ExportError::Matte {
+                path: path.display().to_string(),
+                message,
+            };
+            let gray = image::open(&path)
+                .map_err(|e| matte_err(e.to_string()))?
+                .to_luma8();
+            self.compositor
+                .set_matte(&m.key, gray.width(), gray.height(), gray.as_raw())?;
+            self.frame_mattes.insert(m.key.clone(), (m.index, m.stamp));
+        }
+        Ok(())
+    }
+}
+
+/// A per-frame matte a layer needs this frame (see [`FrameRenderer::register_frame_mattes`]).
+struct FrameMatte {
+    key: String,
+    dir: PathBuf,
+    index: u32,
+    stamp: u64,
+}
+
 /// Native [`SceneHost`]: media layers are decoded through the renderer's per-instance ffmpeg
 /// readers.
 struct ExportHost<'a> {
@@ -441,6 +485,8 @@ struct ExportHost<'a> {
     plugin_host: Option<&'a crate::plugins::PluginHost>,
     reader_opts: ReaderOptions,
     decode_secs: f64,
+    /// Per-frame background-removal mattes the layers built so far need.
+    frame_mattes: Vec<FrameMatte>,
 }
 
 impl SceneHost for ExportHost<'_> {
@@ -469,7 +515,25 @@ impl SceneHost for ExportHost<'_> {
         }
 
         let mask = if let Some(bg) = layer.background_removal.as_ref().filter(|b| b.enabled) {
-            resolve_background_removal_mask(&frame, bg)
+            match (&bg.matte_frames, crate::mask::cached_background_mask(bg)) {
+                // Baked per-frame matte: the nearest matte frame to this layer's *source* time,
+                // composed through the same `Generated` mask (feather, invert) as a still matte.
+                (Some(frames), Some(mask)) => {
+                    if let (Some(key), Some(dir)) = (
+                        crate::mask::matte_cache_key(&mask.kind),
+                        bg.matte_cache_dir.as_ref(),
+                    ) {
+                        self.frame_mattes.push(FrameMatte {
+                            key,
+                            dir: dir.clone(),
+                            index: frames.index_at(source_time),
+                            stamp: frames.stamp,
+                        });
+                    }
+                    Some(mask)
+                }
+                _ => resolve_background_removal_mask(&frame, bg),
+            }
         } else {
             layer.mask.clone()
         };

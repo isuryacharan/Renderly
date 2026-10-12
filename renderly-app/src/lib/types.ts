@@ -162,6 +162,18 @@ export interface BackgroundRemoval {
   feather?: number;
   temporal?: boolean;
   matte_cache_dir?: string | null;
+  /// Present when `matte_cache_dir` holds a per-frame matte sequence (model `rvm`).
+  matte_frames?: MatteFrames | null;
+}
+
+/// Index of a per-frame matte sequence: frame `i` belongs to SOURCE time `start_secs + i / fps`.
+export interface MatteFrames {
+  start_secs: number;
+  fps: number;
+  count: number;
+  width: number;
+  height: number;
+  stamp?: number;
 }
 
 export interface AudioDenoise {

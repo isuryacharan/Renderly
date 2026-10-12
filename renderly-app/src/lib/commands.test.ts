@@ -60,6 +60,7 @@ const samples: Record<string, unknown> = {
   SetClipMask: c.setClipMask(T, K, null),
   SetClipBackgroundRemoval: c.setClipBackgroundRemoval(T, K, null),
   GenerateBackgroundMatte: c.generateBackgroundMatte(T, K),
+  AttachBackgroundMatte: c.attachBackgroundMatte(T, K, "C:/cache/matte"),
   SetClipAudioDenoise: c.setClipAudioDenoise(T, K, null),
   ApplyTemplate: c.applyTemplate("p", "t", 1),
   GenerateSticker: c.generateSticker("cat", T, 1, "o.png"),

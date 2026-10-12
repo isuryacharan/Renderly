@@ -1,4 +1,5 @@
 mod media_assets;
+mod ml;
 mod playback;
 mod preview_assets;
 
@@ -175,6 +176,10 @@ pub struct AppState {
     /// Cooperative cancel flag for the in-flight export (M6). Cleared at export start;
     /// `cancel_export` sets it so the progress callback returns `false`.
     pub(crate) export_cancel: Arc<AtomicBool>,
+    /// Cancel flag / single-flight guard of the in-flight `rvm` background-matte bake (see
+    /// `ml.rs`); the bake runs off the project lock.
+    pub(crate) matte_cancel: Arc<AtomicBool>,
+    pub(crate) matte_running: AtomicBool,
     /// Serializes every whole-project mutation (`apply_command`, `apply_commands`, `undo`,
     /// `redo`, and project open/create/quick-start) end-to-end — snapshot, compute,
     /// history push, session write-back, and save all happen while this is held. Without
@@ -202,6 +207,8 @@ impl AppState {
             history: Mutex::new(History::new()),
             revision: AtomicU64::new(0),
             export_cancel: Arc::new(AtomicBool::new(false)),
+            matte_cancel: Arc::new(AtomicBool::new(false)),
+            matte_running: AtomicBool::new(false),
             edit_lock: tauri::async_runtime::Mutex::new(()),
             playhead: Mutex::new(0.0),
             selection: Mutex::new(None),
@@ -261,6 +268,12 @@ impl AppState {
         command: serde_json::Value,
         mutation_id: Option<String>,
     ) -> Result<CommandResult, String> {
+        // The in-process `rvm` matte bake takes minutes: run it off the project lock with
+        // progress + cancel, and only apply its small result through the edit lock below.
+        if let Some((track_id, clip_id)) = ml::rvm_matte_target(self, &command) {
+            // Boxed: `generate_rvm_matte` calls back into this function for the attach step.
+            return Box::pin(self.generate_rvm_matte(app, track_id, clip_id, mutation_id)).await;
+        }
         let _edit_guard = self.edit_lock.lock().await;
         let cmd: Command =
             serde_json::from_value(command).map_err(|e| format!("invalid command: {e}"))?;
@@ -1571,6 +1584,10 @@ pub fn run() {
             preview_assets::read_preview_matte,
             preview_assets::preview_matte_stamps,
             preview_assets::read_preview_pack_luts,
+            ml::ml_model_status,
+            ml::ml_download_model,
+            ml::cancel_background_matte,
+            ml::background_matte_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Renderly");

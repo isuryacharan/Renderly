@@ -26,6 +26,10 @@
 //!   luma8 exactly like `image`'s `to_luma8` and `Compositor::preview_layer_mask` then
 //!   resolves the layer's mask to it. Mattes survive a compositor rebuild (resolution
 //!   change) — the luma bytes are retained here and re-registered.
+//! - `required_frame_mattes(t)` lists the per-frame (time-indexed) background-removal matte each
+//!   visible layer needs at `t` (core: `mask::frame_matte_requests_at`); the host registers it with
+//!   `set_matte` under the same key, replacing the previous frame's (docs/preview-webview.md,
+//!   "Per-frame background-removal mattes").
 //! - `set_pack_lut(pack, lut, cube_text)` parses `.cube` text with core's parser and builds
 //!   the `LoadedPack`s handed to `compose_to_texture`, so `pack:<id>:lut:<lut>` effects run
 //!   the same `pack_lut.wgsl` pass as export.
@@ -524,7 +528,7 @@ impl WasmCompositor {
     /// there is no project or it references nothing file-backed.
     pub fn required_assets(&self) -> String {
         let Some(project) = self.project.as_ref() else {
-            return r#"{"mattes":[],"pack_luts":[]}"#.to_string();
+            return r#"{"mattes":[],"pack_luts":[],"frame_mattes":false}"#.to_string();
         };
         let mattes: Vec<serde_json::Value> = project_matte_requests(project)
             .into_iter()
@@ -539,7 +543,37 @@ impl WasmCompositor {
             .into_iter()
             .map(|(pack_id, lut_id)| serde_json::json!({ "pack_id": pack_id, "lut_id": lut_id }))
             .collect();
-        serde_json::json!({ "mattes": mattes, "pack_luts": pack_luts }).to_string()
+        serde_json::json!({
+            "mattes": mattes,
+            "pack_luts": pack_luts,
+            // True when some clip has a per-frame background-removal matte: the host should then
+            // call `required_frame_mattes(t)` as the playhead moves.
+            "frame_mattes": renderly_core::mask::project_has_frame_mattes(project),
+        })
+        .to_string()
+    }
+
+    /// JSON `[{"key", "path", "index", "stamp"}]`: the per-frame background-removal matte each
+    /// visible layer needs at timeline time `time_secs` (the nearest matte frame to the layer's
+    /// *source* time - the same mapping export uses). The host decodes `path` and registers it
+    /// with `set_matte(key, ..)`, replacing the previous frame's matte under that key.
+    pub fn required_frame_mattes(&self, time_secs: f64) -> String {
+        let Some(project) = self.project.as_ref() else {
+            return "[]".to_string();
+        };
+        let requests: Vec<serde_json::Value> =
+            renderly_core::mask::frame_matte_requests_at(project, time_secs)
+                .into_iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "key": r.key,
+                        "path": r.path.to_string_lossy(),
+                        "index": r.index,
+                        "stamp": r.stamp,
+                    })
+                })
+                .collect();
+        serde_json::Value::Array(requests).to_string()
     }
 
     /// Register (replace) the matte stored under `key` (a `required_assets` key) from

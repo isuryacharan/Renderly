@@ -215,6 +215,21 @@ fn default_buckets() -> u32 {
     256
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DownloadModelRequest {
+    /// Manifest id from `list_models`, e.g. `rvm-mobilenetv3-fp32`.
+    pub id: String,
+    /// Must be `true`, and only after the user was shown the model's licence, size and download
+    /// host (see `list_models`) and agreed. Models are never downloaded implicitly.
+    pub user_consented: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MatteStatusRequest {
+    pub track_id: String,
+    pub clip_id: String,
+}
+
 #[tool_router]
 impl RenderlyMcp {
     #[tool(description = "Create a new empty .renderly.json project file and open it")]
@@ -535,6 +550,77 @@ impl RenderlyMcp {
         })?;
         serde_json::to_string_pretty(&status).map_err(|e| e.to_string())
     }
+
+    #[tool(
+        description = "List the local ML models (e.g. the Robust Video Matting weights used by \
+                       background removal with model_id \"rvm\"): licence, size, download host and \
+                       whether each is installed. Models are never downloaded implicitly."
+    )]
+    fn list_models(&self) -> String {
+        serde_json::to_string_pretty(&renderly_core::ml::list_model_status())
+            .unwrap_or_else(|e| format!("error: {e}"))
+    }
+
+    #[tool(
+        description = "Download an ML model from its upstream host into the local model cache \
+                       (SHA-256 verified). Only call after the user has been told the model's \
+                       licence, size and download host (list_models) and agreed; pass \
+                       user_consented=true to confirm."
+    )]
+    fn download_model(&self, Parameters(req): Parameters<DownloadModelRequest>) -> String {
+        self.download_model_impl(req)
+            .unwrap_or_else(|e| format!("error: {e}"))
+    }
+
+    fn download_model_impl(&self, req: DownloadModelRequest) -> Result<String, String> {
+        if !req.user_consented {
+            return Err(
+                "refusing to download without user consent: show the user the licence, size and \
+                 download host from list_models, then call again with user_consented=true"
+                    .into(),
+            );
+        }
+        let path = renderly_core::ml::download_model(&req.id, &mut |_, _| {})
+            .map_err(|e| e.to_string())?;
+        Ok(format!("installed {}", path.display()))
+    }
+
+    #[tool(
+        description = "State of a clip's background-removal matte: not_generated, ready, or \
+                       stale (source changed / trim outside the generated range). Regenerate \
+                       with the GenerateBackgroundMatte command."
+    )]
+    fn get_background_matte_status(
+        &self,
+        Parameters(req): Parameters<MatteStatusRequest>,
+    ) -> String {
+        self.matte_status_impl(req)
+            .unwrap_or_else(|e| format!("error: {e}"))
+    }
+
+    fn matte_status_impl(&self, req: MatteStatusRequest) -> Result<String, String> {
+        let track_id: uuid::Uuid = req
+            .track_id
+            .parse()
+            .map_err(|e| format!("invalid track_id UUID: {e}"))?;
+        let clip_id: uuid::Uuid = req
+            .clip_id
+            .parse()
+            .map_err(|e| format!("invalid clip_id UUID: {e}"))?;
+        self.with_session(|session| {
+            let clip = session
+                .project
+                .find_track(track_id)
+                .and_then(|t| t.clips.iter().find(|c| c.id() == clip_id))
+                .and_then(|c| c.as_media())
+                .ok_or_else(|| format!("media clip {clip_id} not found on track {track_id}"))?;
+            serde_json::to_string_pretty(&renderly_core::segmentation::matte_status(
+                &session.project,
+                clip,
+            ))
+            .map_err(|e| e.to_string())
+        })
+    }
 }
 
 fn media_path(project: &Project, media_id: uuid::Uuid) -> Result<std::path::PathBuf, String> {
@@ -588,7 +674,10 @@ impl ServerHandler for RenderlyMcp {
                  When the Renderly desktop app is running on the same project, edits go \
                  through the live bridge (shared undo + live GUI). Use get_editor_status \
                  to check. Perception: probe_media, get_transcript, render_frame, \
-                 detect_silence, detect_scenes, get_audio_peaks.",
+                 detect_silence, detect_scenes, get_audio_peaks, get_background_matte_status. \
+                 Local ML models (AI background removal) are never downloaded implicitly: \
+                 list_models shows licence/size/host, download_model needs the user's consent \
+                 (RENDERLY_MODEL_DIR points at an existing copy).",
         )
     }
 }
@@ -947,11 +1036,14 @@ mod tests {
             "apply_command",
             "detect_scenes",
             "detect_silence",
+            "download_model",
             "export",
             "get_audio_peaks",
+            "get_background_matte_status",
             "get_editor_status",
             "get_project",
             "get_transcript",
+            "list_models",
             "new_project",
             "open_project",
             "probe_media",
@@ -959,6 +1051,30 @@ mod tests {
         ];
         expected.sort();
         assert_eq!(names, expected);
+    }
+
+    #[test]
+    fn download_model_requires_explicit_consent_and_never_downloads_without_it() {
+        let mcp = RenderlyMcp::new();
+        let err = mcp
+            .download_model_impl(DownloadModelRequest {
+                id: "rvm-mobilenetv3-fp32".into(),
+                user_consented: false,
+            })
+            .unwrap_err();
+        assert!(err.contains("consent"), "{err}");
+        // Unknown ids fail before any network use, even with consent.
+        let err = mcp
+            .download_model_impl(DownloadModelRequest {
+                id: "no-such-model".into(),
+                user_consented: true,
+            })
+            .unwrap_err();
+        assert!(err.contains("unknown model"), "{err}");
+        // list_models is a pure listing that includes the matting weights.
+        let listing = mcp.list_models();
+        assert!(listing.contains("rvm-mobilenetv3-fp32"));
+        assert!(listing.contains("GPL-3.0"));
     }
 
     #[test]

@@ -946,7 +946,8 @@ impl ClipMaskKind {
 pub struct BackgroundRemoval {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// `heuristic` (builtin), or `cli` / `rvm` / `birefnet` when `RENDERLY_SEG_CLI` is set.
+    /// `heuristic` (builtin), `rvm` (Robust Video Matting in-process; per-frame matte, needs the
+    /// downloaded weights), or `cli` / `birefnet` when `RENDERLY_SEG_CLI` is set.
     #[serde(default = "default_bg_model")]
     pub model_id: String,
     #[serde(default = "default_bg_threshold")]
@@ -957,6 +958,46 @@ pub struct BackgroundRemoval {
     pub temporal: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matte_cache_dir: Option<PathBuf>,
+    /// Present when `matte_cache_dir` holds a per-frame matte sequence (the in-process `rvm`
+    /// model): the index needed to map a source time to a matte frame without touching the
+    /// filesystem. Absent for single-image mattes (`heuristic`, `RENDERLY_SEG_CLI`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte_frames: Option<MatteFrames>,
+}
+
+/// Index of a per-frame matte sequence stored in a background-removal cache dir as
+/// `f000000.png`, `f000001.png`, ... (grayscale PNG, 255 = subject). Matte frame `i` belongs to
+/// *source* time `start_secs + i / fps`, so a matte is valid for every clip that shows that part
+/// of the source regardless of speed or timeline position.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MatteFrames {
+    /// Source time (seconds) of matte frame 0.
+    pub start_secs: f64,
+    pub fps: f64,
+    pub count: u32,
+    pub width: u32,
+    pub height: u32,
+    /// Milliseconds since the epoch when the sequence was written; changes on every regeneration
+    /// so hosts can invalidate frames cached under the same path.
+    #[serde(default)]
+    pub stamp: u64,
+}
+
+impl MatteFrames {
+    /// Nearest matte frame for `source_time` (clamped to the sequence).
+    pub fn index_at(&self, source_time: f64) -> u32 {
+        if self.count == 0 || !source_time.is_finite() || !(self.fps.is_finite() && self.fps > 0.0)
+        {
+            return 0;
+        }
+        let i = ((source_time - self.start_secs) * self.fps).round();
+        i.clamp(0.0, f64::from(self.count - 1)) as u32
+    }
+
+    /// File name of matte frame `index` inside the cache dir.
+    pub fn file_name(index: u32) -> String {
+        format!("f{index:06}.png")
+    }
 }
 
 fn default_bg_model() -> String {

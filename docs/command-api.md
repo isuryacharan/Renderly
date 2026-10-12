@@ -42,6 +42,7 @@ pub enum Command {
     SetClipMask { track_id: Id, clip_id: Id, mask: Option<ClipMask> },
     SetClipBackgroundRemoval { track_id: Id, clip_id: Id, config: Option<BackgroundRemoval> },
     GenerateBackgroundMatte { track_id: Id, clip_id: Id },
+    AttachBackgroundMatte { track_id: Id, clip_id: Id, cache_dir: PathBuf },
     SetClipAudioDenoise { track_id: Id, clip_id: Id, config: Option<AudioDenoise> },
     ApplyTemplate { pack_id: String, template_id: String, position_secs: f64 },
     GenerateSticker { prompt: String, track_id: Id, position_secs: f64, output_path: String },
@@ -502,6 +503,57 @@ At least one field must be `Some`; omitted fields are unchanged (like `SetCaptio
   `NotAdjustmentClip`, `InvalidDuration`, `InvalidAdjustment` (bad position/opacity),
   `Overlap`.
 
+### Background removal and mattes
+
+`SetClipBackgroundRemoval` stores the config (`model_id`, `threshold`, `feather`, `temporal`,
+`matte_cache_dir`, `matte_frames`; see project-schema.md) and validates `threshold` / `feather`
+in 0..=1. `GenerateBackgroundMatte` bakes the matte the clip then renders with, according to the
+configured `model_id` (default `heuristic` when the clip has no config):
+
+| `model_id` | Backend | Result |
+|---|---|---|
+| `heuristic` | built-in luma / green-screen threshold | one `matte.png` for the clip (middle source frame) |
+| `cli`, `birefnet` | the binary named by `RENDERLY_SEG_CLI` (argv1 = input PNG, argv2 = alpha PNG) | one `matte.png` for the clip |
+| `rvm` | **Robust Video Matting, in-process** ([`renderly_core::ml::rvm`]) | a matte **per source frame** over the clip's used source range |
+
+`rvm` details:
+
+- Frames are decoded sequentially (one ffmpeg reader, <= 720 px tall, <= 30 fps), shrunk to a
+  working size (long edge <= 512, multiples of 32, aspect kept) with `downsample_ratio` chosen
+  from it (0.5 at the full 512 px size, else 1.0), matted with the recurrent state carried
+  frame to frame and **reset at the start of the range**, and the alpha is bilinearly resampled
+  to the decode size and stored as 8-bit grayscale PNGs `f000000.png`, `f000001.png`, ... in
+  `matte_cache_dir` (`$TMP/renderly-matte-rvm-<media>-<clip>`), plus a representative
+  `matte.png` (middle frame) and a `matte.json` sidecar (model id + SHA-256 of the weights
+  used, source path / mtime / size, covered source range, fps, frame count, size, stamp).
+  The sequence is built next to the cache dir and swapped in only on success, so a failed or
+  cancelled run leaves the previous matte intact. Speed: ~0.1 s per frame in release (CPU).
+- Mattes are indexed by **source** time (frame `i` is `range_start + i / fps`), not timeline
+  time: speed changes, moves and splits keep working; a clip trimmed to a sub-range, or a split
+  piece, is still covered. Export and the preview pick the nearest matte frame to each layer's
+  source time.
+- The command **never downloads** the weights: when they are not installed it fails with
+  `ModelNotAvailable { model_id: "rvm-mobilenetv3-fp32" }` and changes nothing. Install them
+  explicitly (`renderly models download rvm-mobilenetv3-fp32 --yes`, MCP `download_model`, or the
+  app's consent dialog); `RENDERLY_MODEL_DIR` points at an existing copy.
+- `threshold` and `temporal` do not apply to `rvm` (the matte is already soft and temporally
+  coherent); `feather` and the clip's `mask.invert` apply exactly as for single-image mattes.
+- Via `apply_command` the bake **blocks** until finished (CLI, headless MCP). The desktop app (and
+  the live bridge) intercept it: the bake runs against a project snapshot on a worker thread with
+  `matte:progress` events and a cancel, off the edit lock, and the app then applies the small
+  `AttachBackgroundMatte` command (`CommandError::Cancelled` when cancelled).
+
+`AttachBackgroundMatte` points a clip at an already-baked `rvm` sequence: it reads `matte.json`
+from `cache_dir`, refuses a sequence that is stale for the clip (different source file, or the
+clip uses source time outside the baked range), and sets `background_removal.matte_cache_dir`,
+`matte_frames` (the frame index) and the `Generated` clip mask. `GenerateBackgroundMatte(rvm)`
+runs it itself; it exists for hosts that bake off the project lock.
+
+Matte state for UIs/agents: `renderly_core::segmentation::matte_status` (MCP
+`get_background_matte_status`, app `background_matte_status`) reports `not_generated`, `ready`, or
+`stale { reason }` (source file changed on disk, clip trimmed outside the baked range, cache files
+gone, model changed).
+
 ### Commands that reject sequence media (schema v7)
 `TrackMotion`, `StabilizeClip`, `AutoReframeClip`, `GenerateBackgroundMatte`,
 `GenerateCaptions` and `SetClipAudioDenoise` reject a clip/media that is a nested sequence
@@ -559,6 +611,11 @@ remain follow-ups on top of the Phase 4 command surface above.
 - **Phase 3.1** (project schema v2): added `SetClipTransform`, `SetClipKeyframes`,
   `SetClipEffects`; `SplitClip` inherits transform / splits keyframes / remints effect ids.
 - **Phase 3.4**: `SetClipEffects` executes builtin WGSL effects.
+- **AI background removal** (non-breaking, schema stays v7): `GenerateBackgroundMatte` with
+  `model_id: "rvm"` runs Robust Video Matting in-process and bakes a per-frame matte;
+  new `AttachBackgroundMatte`; new `CommandError::ModelNotAvailable` / `Cancelled`; optional
+  `background_removal.matte_frames` (see project-schema.md). `model_id: "rvm"` no longer routes
+  through `RENDERLY_SEG_CLI` (use `cli` or `birefnet` for the external binary).
 - **Phase 4** (non-breaking): `builtin:chroma_key` is a WGSL pass in the shared compositor (native export and wasm preview); optional `spill` param (0..1, default 0) added.
 - **Phase 3.5** (project schema v3): added `SetClipTransition` (crossfade).
 - **Phase 3 close-out** (project schema v4): `SetClipSpeed`; ten transition kinds; glitch;

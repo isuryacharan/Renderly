@@ -12,11 +12,13 @@
 
 pub mod models;
 pub mod runtime;
+pub mod rvm;
 pub mod yunet;
 
 pub use models::{
-    download_model, model_cache_dir, resolve_model, ModelError, ModelSource, ModelSpec,
-    DEFAULT_MODEL_DIR_ENV, MODELS,
+    download_model, list_model_status, model_cache_dir, model_status, resolve_model, ModelError,
+    ModelSource, ModelSpec, ModelStatus, DEFAULT_MODEL_DIR_ENV, MODELS,
 };
 pub use runtime::{load_cached_plan, F32Tensor, InputFact, MlError, Plan};
+pub use rvm::{working_size, RvmSession, WorkingSize, RVM_MODEL_ID};
 pub use yunet::{Face, FaceDetector};

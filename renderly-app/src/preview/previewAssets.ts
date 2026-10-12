@@ -10,6 +10,9 @@
 /// The slice of `WasmCompositor` this module drives.
 export interface PreviewAssetHost {
   required_assets(): string;
+  /// Per-frame background-removal mattes the layers visible at timeline time `t` need (JSON
+  /// `FrameMatteRequest[]`). Absent on older wasm builds.
+  required_frame_mattes?(timeSecs: number): string;
   set_matte(key: string, width: number, height: number, rgba: Uint8Array): void;
   remove_matte(key: string): void;
   set_pack_lut(packId: string, lutId: string, cubeText: string): void;
@@ -64,7 +67,22 @@ export async function decodeImageToRgba(bytes: ArrayBuffer): Promise<DecodedImag
 interface RequiredAssets {
   mattes: { key: string; path: string }[];
   pack_luts: { pack_id: string; lut_id: string }[];
+  /// Some clip has a per-frame (time-indexed) background-removal matte.
+  frame_mattes?: boolean;
 }
+
+/// One matte frame a layer needs right now (core's `mask::frame_matte_requests_at`).
+interface FrameMatteRequest {
+  key: string;
+  path: string;
+  index: number;
+  stamp: number;
+}
+
+/// How far ahead (timeline seconds) matte frames are decoded into the cache during playback.
+const FRAME_MATTE_PREFETCH_SECS = 0.1;
+/// Decoded matte frames kept (720p RGBA is ~3.7 MB each).
+const FRAME_MATTE_CACHE = 6;
 
 const lutKey = (packId: string, lutId: string) => `${packId}\u0000${lutId}`;
 
@@ -76,6 +94,13 @@ export class PreviewAssetSync {
   private readonly loadedMattes = new Map<string, { path: string; stamp: number }>();
   private readonly loadedLuts = new Set<string>();
   private packSignature = "";
+  /// Per-frame mattes (time-indexed): which frame is registered per key, decoded frames kept
+  /// for scrubbing / prefetch, and the single-flight state of the loader.
+  private frameMattesWanted = false;
+  private readonly frameLoaded = new Map<string, string>();
+  private readonly frameDecoded = new Map<string, DecodedImage>();
+  private frameBusy = false;
+  private frameQueued: number | null = null;
   private running = false;
   private queued = false;
   private disposed = false;
@@ -98,6 +123,100 @@ export class PreviewAssetSync {
     this.loadedMattes.clear();
     this.loadedLuts.clear();
     this.packSignature = "";
+    this.frameLoaded.clear();
+    this.frameDecoded.clear();
+  }
+
+  /// Make sure the per-frame background-removal matte(s) for timeline time `t` are registered
+  /// with the compositor (a no-op unless some clip has one). Fire-and-forget and coalescing:
+  /// scrubbing/playback call this every draw; only the latest time is loaded, and `onChange`
+  /// repaints when a new matte frame was registered. Which frame a layer needs (source time ->
+  /// nearest matte frame) is decided in core Rust (`required_frame_mattes`); this only moves
+  /// bytes.
+  syncFrameMattes(t: number): void {
+    if (!this.frameMattesWanted || !this.host.required_frame_mattes || this.disposed) return;
+    if (this.frameBusy) {
+      this.frameQueued = t;
+      return;
+    }
+    this.frameBusy = true;
+    void this.runFrameMattes(t);
+  }
+
+  private async runFrameMattes(first: number): Promise<void> {
+    try {
+      let next: number | null = first;
+      while (next !== null && !this.disposed) {
+        this.frameQueued = null;
+        if (await this.registerFrameMattes(next)) this.onChange();
+        if (this.frameQueued === null) {
+          await this.prefetchFrameMattes(next + FRAME_MATTE_PREFETCH_SECS);
+        }
+        next = this.frameQueued;
+      }
+    } finally {
+      this.frameBusy = false;
+    }
+  }
+
+  private requestsAt(t: number): FrameMatteRequest[] {
+    try {
+      return JSON.parse(this.host.required_frame_mattes?.(t) ?? "[]") as FrameMatteRequest[];
+    } catch (err) {
+      console.error("[preview] required_frame_mattes failed:", err);
+      return [];
+    }
+  }
+
+  private async decodeFrame(r: FrameMatteRequest): Promise<DecodedImage> {
+    const sig = `${r.path}|${r.stamp}`;
+    const hit = this.frameDecoded.get(sig);
+    if (hit) {
+      // Refresh recency.
+      this.frameDecoded.delete(sig);
+      this.frameDecoded.set(sig, hit);
+      return hit;
+    }
+    const decoded = await this.decode(await this.backend.readMatte(r.path));
+    this.frameDecoded.set(sig, decoded);
+    while (this.frameDecoded.size > FRAME_MATTE_CACHE) {
+      const oldest = this.frameDecoded.keys().next().value;
+      if (oldest === undefined) break;
+      this.frameDecoded.delete(oldest);
+    }
+    return decoded;
+  }
+
+  private async registerFrameMattes(t: number): Promise<boolean> {
+    let changed = false;
+    for (const r of this.requestsAt(t)) {
+      const sig = `${r.path}|${r.stamp}`;
+      if (this.frameLoaded.get(r.key) === sig) continue;
+      try {
+        const decoded = await this.decodeFrame(r);
+        if (this.disposed) return changed;
+        this.host.set_matte(r.key, decoded.width, decoded.height, decoded.rgba);
+        changed = true;
+      } catch (err) {
+        // Missing frame: keep whatever matte is registered; record it so we do not retry on
+        // every draw.
+        console.error(`[preview] matte frame load failed (${r.path}):`, err);
+      }
+      this.frameLoaded.set(r.key, sig);
+    }
+    return changed;
+  }
+
+  private async prefetchFrameMattes(t: number): Promise<void> {
+    for (const r of this.requestsAt(t)) {
+      if (this.frameQueued !== null || this.disposed) return;
+      if (this.frameLoaded.get(r.key) === `${r.path}|${r.stamp}`) continue;
+      try {
+        await this.decodeFrame(r);
+      } catch {
+        // Prefetch is best effort.
+      }
+    }
   }
 
   async sync(): Promise<void> {
@@ -126,6 +245,11 @@ export class PreviewAssetSync {
       return;
     }
     let changed = false;
+    this.frameMattesWanted = required.frame_mattes === true;
+    if (!this.frameMattesWanted) {
+      this.frameLoaded.clear();
+      this.frameDecoded.clear();
+    }
     changed = (await this.syncMattes(required.mattes)) || changed;
     changed = (await this.syncPackLuts(required.pack_luts)) || changed;
     if (changed && !this.disposed) this.onChange();
@@ -160,6 +284,8 @@ export class PreviewAssetSync {
         if (this.disposed) return changed;
         this.host.set_matte(key, decoded.width, decoded.height, decoded.rgba);
         this.loadedMattes.set(key, { path, stamp });
+        // The representative matte replaced whatever frame was registered under this key.
+        this.frameLoaded.delete(key);
         changed = true;
       } catch (err) {
         // Missing/undecodable matte: the layer renders unmasked (export would fail loudly).

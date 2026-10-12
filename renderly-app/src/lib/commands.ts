@@ -283,6 +283,17 @@ export function generateBackgroundMatte(trackId: string, clipId: string) {
   return { command: "GenerateBackgroundMatte", track_id: trackId, clip_id: clipId };
 }
 
+/// Point a clip at an already-baked `rvm` matte sequence (the app's matte bake runs off the
+/// project lock and applies this afterwards; GenerateBackgroundMatte does it for you).
+export function attachBackgroundMatte(trackId: string, clipId: string, cacheDir: string) {
+  return {
+    command: "AttachBackgroundMatte",
+    track_id: trackId,
+    clip_id: clipId,
+    cache_dir: cacheDir,
+  };
+}
+
 export function setClipAudioDenoise(
   trackId: string,
   clipId: string,

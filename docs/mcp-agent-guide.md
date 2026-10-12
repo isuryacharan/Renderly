@@ -48,6 +48,8 @@ emit `project:changed` so the GUI updates live.
 | `RENDERLY_PIPER_MODEL` | Piper ONNX model for `GenerateVoiceover` with `piper_local` provider |
 | `RENDERLY_PIPER_CONFIG` | Optional Piper voice config JSON |
 | `OPENAI_API_KEY` | BYO OpenAI TTS for `GenerateVoiceover` with `open_ai` provider |
+| `RENDERLY_MODEL_DIR` | Directory holding already-downloaded ML model files (e.g. `rvm_mobilenetv3_fp32.onnx`); checked before the per-user model cache (`%LOCALAPPDATA%\renderly\models` / `$XDG_DATA_HOME/renderly/models`). Used as-is, unverified. Without the weights in either place, `GenerateBackgroundMatte` with `model_id: "rvm"` fails with `ModelNotAvailable` |
+| `RENDERLY_SEG_CLI` | External segmentation binary for background-removal `model_id` `cli` / `birefnet` (argv1 input PNG, argv2 alpha PNG) |
 | `RENDERLY_BRIDGE_DISCOVERY` | Overrides the live-bridge discovery file path. Point it at a nonexistent file to force headless mode (tests, sandboxes); unset in normal use |
 | PATH must include | `ffmpeg`, `ffprobe`; optional `whisper-cli` (or `whisper`) for STT; optional `piper` for local TTS |
 
@@ -81,6 +83,22 @@ Phase 1's `GenerateCaptions`, `GenerateVoiceover`, `SetAudioFade`, and `SetTrack
 | `detect_silence` | Silent spans in a `media_id` (FFmpeg `silencedetect`) |
 | `detect_scenes` | Scene cuts in a `media_id` (FFmpeg scene filter) |
 | `get_audio_peaks` | Downsampled peak envelope for waveform display |
+| `get_background_matte_status` | `{track_id, clip_id}` -> `not_generated` / `ready` / `stale {reason}` for a clip's background-removal matte |
+
+### Local ML models
+
+| Tool | Description |
+|---|---|
+| `list_models` | Known models with licence, size, download host and whether each is installed (never touches the network) |
+| `download_model` | `{id, user_consented}`: download a model from its upstream host into the model cache (SHA-256 verified, atomic). **Refuses unless `user_consented` is `true`** - show the user the licence, size and host from `list_models` and get their agreement first. The CLI equivalent is `renderly models list` / `renderly models download <id> --yes` |
+
+AI background removal: set `SetClipBackgroundRemoval` with `"model_id": "rvm"`, make sure
+`list_models` shows `rvm-mobilenetv3-fp32` installed (GPL-3.0 weights, ~15 MB, downloaded only
+with the user's consent; never bundled), then run `GenerateBackgroundMatte`. The bake takes about
+0.1 s per frame and the tool call blocks until it is done (when the desktop app is live on the
+project it runs there with a progress bar and the user can cancel it). A missing model is the
+typed error `model rvm-mobilenetv3-fp32 is not installed`. Check `get_background_matte_status`
+after trimming the clip or replacing the source: `stale` means regenerate.
 
 ## Worked example: script + footage → export
 

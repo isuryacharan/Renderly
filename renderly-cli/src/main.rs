@@ -60,6 +60,83 @@ enum CliCommand {
         #[arg(long, default_value = "tiktok")]
         preset: String,
     },
+    /// List or download the local ML models (never downloaded implicitly).
+    Models {
+        #[command(subcommand)]
+        action: ModelsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModelsCommand {
+    /// Show every known model: licence, size, download host and whether it is installed.
+    List,
+    /// Download a model from its upstream host into the model cache (SHA-256 verified).
+    Download {
+        /// Model id, e.g. `rvm-mobilenetv3-fp32` (see `models list`).
+        id: String,
+        /// Confirm you accept the model's licence and the download from the upstream host.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+fn describe_model(m: &renderly_core::ml::ModelStatus) -> String {
+    format!(
+        "{} ({})\n  licence: {} <{}>\n  size: {:.1} MB, from {}\n  stored in: {}\n  status: {}",
+        m.name,
+        m.id,
+        m.license_spdx,
+        m.license_url,
+        m.size_bytes as f64 / 1_000_000.0,
+        m.download_host.as_deref().unwrap_or("(bundled)"),
+        m.cache_dir,
+        match (&m.installed, &m.path) {
+            (true, Some(p)) => format!("installed at {p}"),
+            (true, None) => "installed (bundled)".to_string(),
+            _ => "not installed".to_string(),
+        }
+    )
+}
+
+fn run_models(action: ModelsCommand) -> Result<()> {
+    match action {
+        ModelsCommand::List => {
+            for m in renderly_core::ml::list_model_status() {
+                println!("{}\n", describe_model(&m));
+            }
+        }
+        ModelsCommand::Download { id, yes } => {
+            let status = renderly_core::ml::model_status(&id)?;
+            println!("{}", describe_model(&status));
+            if status.installed && status.path.is_some() {
+                println!("already installed");
+                return Ok(());
+            }
+            if !yes {
+                bail!(
+                    "this downloads {:.1} MB from {} under the {} licence; re-run with --yes to confirm",
+                    status.size_bytes as f64 / 1_000_000.0,
+                    status
+                        .download_host
+                        .as_deref()
+                        .unwrap_or("the upstream host"),
+                    status.license_spdx
+                );
+            }
+            let mut last_pct = u64::MAX;
+            let path = renderly_core::ml::download_model(&id, &mut |done, total| {
+                let pct = total.map_or(0, |t| done * 100 / t.max(1));
+                if pct != last_pct {
+                    last_pct = pct;
+                    eprint!("\rdownloading {id}: {pct}%   ");
+                }
+            })?;
+            eprintln!();
+            println!("installed {}", path.display());
+        }
+    }
+    Ok(())
 }
 
 fn load_project(path: &PathBuf) -> Result<Project> {
@@ -86,6 +163,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        CliCommand::Models { action } => run_models(action)?,
         CliCommand::NewProject {
             path,
             name,

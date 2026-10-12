@@ -3,11 +3,9 @@ import { Trash2, Link2 } from "lucide-react";
 import { useEditorStore } from "../../store/editorStore";
 import {
   deleteClip,
-  generateBackgroundMatte,
   setAudioFade,
   setAudioGain,
   setClipAudioDenoise,
-  setClipBackgroundRemoval,
   setClipEnabled,
   setClipSpeed,
   setClipTransform,
@@ -25,6 +23,7 @@ import { KeyframeEditor } from "./KeyframeEditor";
 import { EffectStackSection } from "./EffectStackSection";
 import { MaskSection } from "./MaskSection";
 import { MulticamSection } from "./MulticamSection";
+import { BackgroundRemovalSection } from "./BackgroundRemovalSection";
 
 const AUDIO_ROLES: { value: TrackAudioRole | ""; label: string }[] = [
   { value: "", label: "None" },
@@ -371,37 +370,7 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
         <details className="insp-disclosure">
           <summary>Background &amp; motion</summary>
           <div className="inspector-section insp-disclosure-body">
-            <button
-              type="button"
-              disabled={track.locked}
-              onClick={() =>
-                void dispatch(
-                  setClipBackgroundRemoval(track.id, clip.id, {
-                    enabled: true,
-                    model_id: "heuristic",
-                    threshold: 0.15,
-                    feather: 0.1,
-                    temporal: false,
-                  }),
-                )
-              }
-            >
-              Enable BG removal
-            </button>
-            <button
-              type="button"
-              disabled={track.locked}
-              onClick={() => void dispatch(generateBackgroundMatte(track.id, clip.id))}
-            >
-              Bake matte
-            </button>
-            <button
-              type="button"
-              disabled={track.locked}
-              onClick={() => void dispatch(setClipBackgroundRemoval(track.id, clip.id, null))}
-            >
-              Clear BG removal
-            </button>
+            <BackgroundRemovalSection track={track} clip={clip} />
             <button
               type="button"
               disabled={track.locked}

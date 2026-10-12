@@ -424,6 +424,82 @@ export function onDragLeave(cb: () => void): () => void {
   return () => void unlisten.then((f) => f());
 }
 
+// ---- Local ML models + background matte ----
+
+export interface ModelStatus {
+  id: string;
+  name: string;
+  license_spdx: string;
+  license_url: string;
+  source_url: string;
+  /// Host the weights are downloaded from, e.g. "github.com".
+  download_host: string | null;
+  size_bytes: number;
+  sha256: string;
+  installed: boolean;
+  path: string | null;
+  /// The model cache directory a download is stored in.
+  cache_dir: string;
+}
+
+export interface ModelDownloadProgress {
+  id: string;
+  done: number;
+  total: number | null;
+}
+
+export type MatteStatus =
+  | { state: "not_generated" }
+  | { state: "ready"; frames: number | null }
+  | { state: "stale"; reason: string };
+
+export interface MatteProgressPayload {
+  track_id: string;
+  clip_id: string;
+  frame: number;
+  total: number;
+}
+
+export interface MatteFinishedPayload {
+  track_id: string;
+  clip_id: string;
+  status: "ok" | "cancelled" | "error";
+  message: string | null;
+}
+
+export function mlModelStatus(id: string): Promise<ModelStatus> {
+  return invoke<ModelStatus>("ml_model_status", { id });
+}
+
+/// Download a model from its upstream host. Only call after the user agreed (the consent
+/// dialog); verified by SHA-256 and installed atomically, or rejected.
+export function mlDownloadModel(id: string): Promise<ModelStatus> {
+  return invoke<ModelStatus>("ml_download_model", { id });
+}
+
+export function onMlDownloadProgress(cb: (p: ModelDownloadProgress) => void): () => void {
+  const unlisten = listen<ModelDownloadProgress>("ml:download-progress", (e) => cb(e.payload));
+  return () => void unlisten.then((f) => f());
+}
+
+export function backgroundMatteStatus(trackId: string, clipId: string): Promise<MatteStatus> {
+  return invoke<MatteStatus>("background_matte_status", { trackId, clipId });
+}
+
+export function cancelBackgroundMatte(): Promise<void> {
+  return invoke("cancel_background_matte");
+}
+
+export function onMatteProgress(cb: (p: MatteProgressPayload) => void): () => void {
+  const unlisten = listen<MatteProgressPayload>("matte:progress", (e) => cb(e.payload));
+  return () => void unlisten.then((f) => f());
+}
+
+export function onMatteFinished(cb: (p: MatteFinishedPayload) => void): () => void {
+  const unlisten = listen<MatteFinishedPayload>("matte:finished", (e) => cb(e.payload));
+  return () => void unlisten.then((f) => f());
+}
+
 // ---- Native dialogs ----
 
 export const MEDIA_OPEN_FILTERS = [

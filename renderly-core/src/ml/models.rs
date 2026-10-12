@@ -144,25 +144,6 @@ pub static MODELS: &[ModelSpec] = &[
             },
         ],
     },
-    ModelSpec {
-        id: "birefnet-lite-2k",
-        name: "BiRefNet lite (general, 2K)",
-        license_spdx: "MIT",
-        license_url: "https://github.com/ZhengPeng7/BiRefNet/blob/main/LICENSE",
-        source_url: "https://github.com/ZhengPeng7/BiRefNet",
-        file_name: "BiRefNet_lite-general-2K-epoch_232.onnx",
-        bundled: None,
-        download_url: Some(
-            "https://github.com/ZhengPeng7/BiRefNet/releases/download/v1/BiRefNet_lite-general-2K-epoch_232.onnx",
-        ),
-        sha256: "6003d2f758bdb4e4802a09e39167529bc2eef9288d5b8fa537331467cbc4759d",
-        size_bytes: 331_082_421,
-        inputs: &[InputSpec {
-            name: "input_image",
-            shape: "1x3x2560x1440 f32 (fixed)",
-            pixels: "RGB, 0..1 then ImageNet mean/std normalised",
-        }],
-    },
 ];
 
 /// Look a model up by id.
@@ -360,10 +341,80 @@ pub fn download_to(
     Ok(final_path)
 }
 
+/// What a UI / agent needs to know to ask for consent and to show state: the manifest facts
+/// plus whether the file is installed right now.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ModelStatus {
+    pub id: String,
+    pub name: String,
+    pub license_spdx: String,
+    pub license_url: String,
+    pub source_url: String,
+    /// Host the weights are downloaded from (`None` when bundled / not downloadable).
+    pub download_host: Option<String>,
+    pub size_bytes: u64,
+    pub sha256: String,
+    /// Resolvable right now (bundled, in the override dir, or in the cache).
+    pub installed: bool,
+    /// Where the file lives when `installed` and file-backed.
+    pub path: Option<String>,
+    /// Where a download would put it.
+    pub cache_dir: String,
+}
+
+fn url_host(url: &str) -> Option<String> {
+    let rest = url.split_once("://")?.1;
+    Some(rest.split(['/', '?', '#']).next()?.to_string())
+}
+
+/// Status of one manifest model (resolution only; never touches the network).
+pub fn model_status(id: &str) -> Result<ModelStatus, ModelError> {
+    let spec = spec(id)?;
+    let resolved = resolve_model(id).ok();
+    Ok(ModelStatus {
+        id: spec.id.to_string(),
+        name: spec.name.to_string(),
+        license_spdx: spec.license_spdx.to_string(),
+        license_url: spec.license_url.to_string(),
+        source_url: spec.source_url.to_string(),
+        download_host: spec.download_url.and_then(url_host),
+        size_bytes: spec.size_bytes,
+        sha256: spec.sha256.to_string(),
+        installed: resolved.is_some(),
+        path: match &resolved {
+            Some(ModelSource::File(p)) => Some(p.display().to_string()),
+            _ => None,
+        },
+        cache_dir: model_cache_dir().display().to_string(),
+    })
+}
+
+/// [`model_status`] for every manifest model.
+pub fn list_model_status() -> Vec<ModelStatus> {
+    MODELS
+        .iter()
+        .filter_map(|m| model_status(m.id).ok())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
+
+    #[test]
+    fn status_reports_host_licence_and_size() {
+        let s = model_status("rvm-mobilenetv3-fp32").unwrap();
+        assert_eq!(s.download_host.as_deref(), Some("github.com"));
+        assert_eq!(s.license_spdx, "GPL-3.0-only");
+        assert_eq!(s.size_bytes, 14_975_696);
+        assert!(model_status("nope").is_err());
+        // The detector is bundled, so it is always installed.
+        let y = model_status("yunet-face-2026may").unwrap();
+        assert!(y.installed);
+        assert_eq!(url_host("https://a.b/c?d"), Some("a.b".into()));
+        assert_eq!(url_host("nope"), None);
+    }
     use std::net::TcpListener;
 
     fn is_hex64(s: &str) -> bool {

@@ -571,6 +571,36 @@ disk ──► Tauri command (project-scoped read) ──► JS (previewAssets.t
   depth may differ by a LSB or two from the `image` crate's decode), and translucent matte
   PNGs (canvas readback un-premultiplies; `image` ignores alpha).
 
+## Per-frame (time-indexed) background-removal mattes
+
+Background removal with the in-process `rvm` model bakes a matte **per source frame**
+(`background_removal.matte_frames`, see project-schema.md), so the preview must show a different
+matte as the playhead moves. It reuses the P4b design without any compositing in JS:
+
+- `required_assets()` still lists the representative `matte.png` of the cache dir under the usual
+  `gen:<dir>` key (so the layer is masked immediately, with the middle frame) and now carries
+  `frame_mattes: true` when any clip has a sequence.
+- `WasmCompositor::required_frame_mattes(t)` (core: `mask::frame_matte_requests_at`, which walks
+  `eval::leaf_media_layers(project, t)`) returns, as JSON, `[{ key, path, index, stamp }]`: the
+  nearest matte frame to each visible layer's **source** time - the same mapping native export
+  uses - under the **same key** as the representative matte.
+- `PreviewAssetSync.syncFrameMattes(t)` runs from `drawFrame` (only when `frame_mattes` is true).
+  It is single-flight and coalescing (latest `t` wins): it fetches the frame PNG with
+  `read_preview_matte` (now also allowed for `f######.png` files of a sequence the open project
+  uses - `mask::is_frame_matte_path`), decodes it with the same `createImageBitmap` path, calls
+  `set_matte(key, ..)` (replacing the previous frame's matte; the wasm struct keeps the latest
+  luma for compositor rebuilds), and repaints. It keeps the last 6 decoded frames and prefetches
+  the frames 0.1 s ahead, so paused scrubbing and 30 fps playback normally have the frame ready;
+  when a frame is not decoded in time the previous matte frame is shown for a draw or two.
+- A regenerated sequence has a new `stamp`, which invalidates what was registered.
+
+What differs from export: export registers the matte frame for the exact output frame before it
+composites; the preview registers asynchronously, so during fast playback or a scrub it can lag the
+picture by a frame or two (the previous matte frame is shown until the new one is decoded). The
+matte frame chosen for a given source time is identical. The decode path has the same LSB-level
+caveats as other P4b mattes (see above). Two layers of one frame that share a cache dir at
+different source times share one matte (same limitation as export).
+
 ## Nested sequences and adjustment layers (schema v7)
 
 The wasm compositor renders both with the same Rust code as export (`compose::eval::active_steps`

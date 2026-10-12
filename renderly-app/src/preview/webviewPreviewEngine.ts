@@ -34,6 +34,7 @@ interface WasmCompositorLike {
   active_media_layers(timeSecs: number): string;
   // Host-supplied assets (previewAssets.ts): file-backed mattes and pack .cube LUTs.
   required_assets(): string;
+  required_frame_mattes?(timeSecs: number): string;
   set_matte(key: string, width: number, height: number, rgba: Uint8Array): void;
   remove_matte(key: string): void;
   set_pack_lut(packId: string, lutId: string, cubeText: string): void;
@@ -932,6 +933,9 @@ export class WebviewPreviewEngine {
         const img = this.imgPool.get(mediaId);
         if (img) sources[key] = img;
       }
+      // Time-indexed (per-frame) background-removal mattes: make the matte for this instant
+      // current (async; repaints via the asset sync's onChange once it lands).
+      this.assets?.syncFrameMattes(t);
       try {
         this.gpu.render(t, sources);
         this.gpuRenderErrorLogged = false;
