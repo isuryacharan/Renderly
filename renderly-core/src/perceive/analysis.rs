@@ -1,6 +1,7 @@
 //! FFmpeg-backed media analysis: silence, scene cuts, waveform peaks.
 
 use crate::media::{ffmpeg_available, ffmpeg_path, FfmpegCliError};
+use crate::proc::SerialSpawn;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
@@ -47,7 +48,7 @@ pub fn detect_silence(
         .args(["-hide_banner", "-i"])
         .arg(path)
         .args(["-af", &filter, "-f", "null", "-"])
-        .output()
+        .output_serial()
         .map_err(|e| FfmpegCliError::SpawnFailed {
             tool: "ffmpeg",
             message: e.to_string(),
@@ -91,7 +92,7 @@ pub fn detect_scenes(path: &Path, threshold: f64) -> Result<Vec<SceneCut>, Analy
         .args(["-hide_banner", "-i"])
         .arg(path)
         .args(["-vf", &filter, "-f", "null", "-"])
-        .output()
+        .output_serial()
         .map_err(|e| FfmpegCliError::SpawnFailed {
             tool: "ffmpeg",
             message: e.to_string(),
@@ -183,7 +184,7 @@ pub fn audio_peaks(path: &Path, buckets: u32) -> Result<AudioPeaks, AnalysisErro
             "f32le",
             "pipe:1",
         ])
-        .output()
+        .output_serial()
         .map_err(|e| FfmpegCliError::SpawnFailed {
             tool: "ffmpeg",
             message: e.to_string(),

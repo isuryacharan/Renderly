@@ -53,3 +53,6 @@ renderly-app/public/wasm-pkg/
 # README tracked so Tauri's `ffmpeg/*` resource glob always matches.
 renderly-app/src-tauri/ffmpeg/**
 !renderly-app/src-tauri/ffmpeg/README.md
+
+# Claude Code agent worktrees
+.claude/worktrees/

@@ -8,6 +8,7 @@ use crate::media::{
     mix_timeline_audio, mux_video_audio, AudioMixClip, DuckSettings, FfmpegCliError, ReaderOptions,
     RgbaFrame, VideoEncoder, VideoReader,
 };
+use crate::proc::SerialSpawn;
 #[cfg(test)]
 use crate::project::MediaKind;
 use crate::project::{evaluate_volume_db, Clip, Project, TrackAudioRole, TrackKind};
@@ -736,7 +737,7 @@ fn bake_wasm_audio_effects(
                 &sample_rate.to_string(),
             ])
             .arg(&raw_path)
-            .status()
+            .status_serial()
             .map_err(|e| {
                 ExportError::Ffmpeg(FfmpegCliError::SpawnFailed {
                     tool: "ffmpeg",
@@ -788,7 +789,7 @@ fn bake_wasm_audio_effects(
             ])
             .arg(&raw_path)
             .arg(&wav_path)
-            .status()
+            .status_serial()
             .map_err(|e| {
                 ExportError::Ffmpeg(FfmpegCliError::SpawnFailed {
                     tool: "ffmpeg",
@@ -1006,7 +1007,7 @@ mod tests {
                 "yuv420p",
             ])
             .arg(path)
-            .status()
+            .status_serial()
             .expect("ffmpeg");
         assert!(status.success());
     }

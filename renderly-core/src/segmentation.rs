@@ -6,6 +6,7 @@
 
 use crate::mask::generate_heuristic_matte;
 use crate::media::RgbaFrame;
+use crate::proc::SerialSpawn;
 use crate::project::BackgroundRemoval;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -54,7 +55,7 @@ pub fn bake_frame_matte(
             let status = crate::proc::command(cli)
                 .arg(&input)
                 .arg(&out)
-                .status()
+                .status_serial()
                 .map_err(|e| SegmentationError::Cli(e.to_string()))?;
             if !status.success() {
                 return Err(SegmentationError::Cli(format!(

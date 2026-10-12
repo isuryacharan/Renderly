@@ -2,6 +2,7 @@
 //! binaries (no link-time dependency on libav); linked decode/encode via `ffmpeg-the-third`
 //! lands once vcpkg/FFMPEG_DIR is wired up for all dev/CI environments.
 
+use crate::proc::SerialSpawn;
 use std::io::{BufReader, Read, Write};
 
 use crate::project::TrackAudioRole;
@@ -102,7 +103,7 @@ pub fn probe_video(path: &Path) -> Result<ProbedVideo, FfmpegCliError> {
             "json",
         ])
         .arg(path)
-        .output()
+        .output_serial()
         .map_err(|e| FfmpegCliError::SpawnFailed {
             tool: "ffprobe",
             message: e.to_string(),
@@ -174,7 +175,7 @@ pub fn has_audio_stream(path: &Path) -> Result<bool, FfmpegCliError> {
             "csv=p=0",
         ])
         .arg(path)
-        .output()
+        .output_serial()
         .map_err(|e| FfmpegCliError::SpawnFailed {
             tool: "ffprobe",
             message: e.to_string(),
@@ -344,10 +345,12 @@ pub fn generate_thumbnail_strip(
                         ])
                         .arg(&frame_path);
                         silence_stderr(&mut cmd);
-                        let status = cmd.status().map_err(|e| FfmpegCliError::SpawnFailed {
-                            tool: "ffmpeg",
-                            message: e.to_string(),
-                        })?;
+                        let status =
+                            cmd.status_serial()
+                                .map_err(|e| FfmpegCliError::SpawnFailed {
+                                    tool: "ffmpeg",
+                                    message: e.to_string(),
+                                })?;
                         if !status.success() {
                             return Err(FfmpegCliError::NonZeroExit(status.code().unwrap_or(-1)));
                         }
@@ -395,10 +398,12 @@ pub fn generate_thumbnail_strip(
         ])
         .arg(out_path);
     silence_stderr(&mut tile_cmd);
-    let status = tile_cmd.status().map_err(|e| FfmpegCliError::SpawnFailed {
-        tool: "ffmpeg",
-        message: e.to_string(),
-    })?;
+    let status = tile_cmd
+        .status_serial()
+        .map_err(|e| FfmpegCliError::SpawnFailed {
+            tool: "ffmpeg",
+            message: e.to_string(),
+        })?;
 
     let _ = std::fs::remove_dir_all(&tmp);
 
@@ -437,7 +442,7 @@ fn compiled_hwaccels() -> &'static [String] {
         };
         let Ok(output) = crate::proc::command(ffmpeg)
             .args(["-hide_banner", "-hwaccels"])
-            .output()
+            .output_serial()
         else {
             return Vec::new();
         };
@@ -587,10 +592,12 @@ impl VideoReader {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut child = cmd.spawn().map_err(|e| FfmpegCliError::SpawnFailed {
-            tool: "ffmpeg",
-            message: e.to_string(),
-        })?;
+        let mut child = cmd
+            .spawn_serial()
+            .map_err(|e| FfmpegCliError::SpawnFailed {
+                tool: "ffmpeg",
+                message: e.to_string(),
+            })?;
 
         if let Some(stderr) = child.stderr.take() {
             drain_stderr(stderr);
@@ -688,7 +695,7 @@ fn compiled_encoders() -> &'static [String] {
         };
         let Ok(output) = crate::proc::command(ffmpeg)
             .args(["-hide_banner", "-encoders"])
-            .output()
+            .output_serial()
         else {
             return Vec::new();
         };
@@ -905,7 +912,7 @@ impl VideoEncoder {
             .stdin(Stdio::piped())
             .stderr(Stdio::piped())
             .stdout(Stdio::null())
-            .spawn()
+            .spawn_serial()
             .map_err(|e| FfmpegCliError::SpawnFailed {
                 tool: "ffmpeg",
                 message: e.to_string(),
@@ -980,7 +987,7 @@ pub fn mux_video_audio(
             "+faststart",
         ])
         .arg(output_path)
-        .status()
+        .status_serial()
         .map_err(|e| FfmpegCliError::SpawnFailed {
             tool: "ffmpeg",
             message: e.to_string(),
@@ -1056,7 +1063,7 @@ pub fn mix_timeline_audio(
                 .arg(&voice_wav)
                 .args(["-filter_complex", &filter, "-map", "[out]"])
                 .arg(&ducked_wav)
-                .status()
+                .status_serial()
                 .map_err(|e| FfmpegCliError::SpawnFailed {
                     tool: "ffmpeg",
                     message: e.to_string(),
@@ -1166,7 +1173,7 @@ fn mix_clip_bus(
                 "2",
             ])
             .arg(&seg)
-            .status()
+            .status_serial()
             .map_err(|e| FfmpegCliError::SpawnFailed {
                 tool: "ffmpeg",
                 message: e.to_string(),
@@ -1202,10 +1209,12 @@ fn mix_clip_bus(
         .args(["-ac", "2"])
         .arg(output_wav);
 
-    let status = cmd.status().map_err(|e| FfmpegCliError::SpawnFailed {
-        tool: "ffmpeg",
-        message: e.to_string(),
-    })?;
+    let status = cmd
+        .status_serial()
+        .map_err(|e| FfmpegCliError::SpawnFailed {
+            tool: "ffmpeg",
+            message: e.to_string(),
+        })?;
     std::fs::remove_dir_all(&temp_dir).ok();
     if !status.success() {
         return Err(FfmpegCliError::NonZeroExit(status.code().unwrap_or(-1)));
@@ -1357,7 +1366,7 @@ mod scaling_tests {
 
 #[cfg(test)]
 mod video_reader_tests {
-    use super::{ffmpeg_path, ReaderOptions, VideoReader};
+    use super::{ffmpeg_path, ReaderOptions, SerialSpawn, VideoReader};
 
     fn ffmpeg_available() -> bool {
         super::is_available()
@@ -1400,7 +1409,7 @@ mod video_reader_tests {
                 "yuv420p",
             ])
             .arg(&video_path)
-            .status()
+            .status_serial()
             .expect("ffmpeg encode");
         assert!(status.success());
 
@@ -1482,7 +1491,7 @@ mod video_reader_tests {
                 "yuv420p",
             ])
             .arg(&video_path)
-            .status()
+            .status_serial()
             .expect("ffmpeg encode");
         assert!(status.success());
 
@@ -1535,7 +1544,7 @@ mod video_reader_tests {
 
 #[cfg(test)]
 mod thumbnail_strip_tests {
-    use super::{ffmpeg_path, generate_thumbnail_strip};
+    use super::{ffmpeg_path, generate_thumbnail_strip, SerialSpawn};
 
     fn ffmpeg_available() -> bool {
         super::is_available()
@@ -1558,7 +1567,7 @@ mod thumbnail_strip_tests {
                 "yuv420p",
             ])
             .arg(path)
-            .status()
+            .status_serial()
             .expect("ffmpeg");
         assert!(status.success());
     }

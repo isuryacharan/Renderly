@@ -117,6 +117,64 @@ impl ComposeLayer {
     }
 }
 
+/// The one wgpu device every natively constructed [`Compositor`] shares.
+///
+/// Each `Compositor::new` used to build its own `Instance` (probing every backend), adapter
+/// and device. Doing that from several threads at once — parallel renders, or just the test
+/// suite — intermittently hung or crashed inside the graphics driver. wgpu devices are
+/// `Send + Sync` and meant to be shared, so create one per process and hand out clones.
+/// A failure is cached too: a machine without an adapter stays without one.
+#[cfg(not(target_arch = "wasm32"))]
+fn shared_device() -> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>), ComposeError> {
+    type Shared = Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>), Option<String>>;
+    static SHARED: std::sync::Mutex<Option<Shared>> = std::sync::Mutex::new(None);
+
+    let mut slot = SHARED.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.is_none() {
+        *slot = Some(pollster::block_on(create_device()).map_err(|e| match e {
+            ComposeError::NoAdapter => None,
+            other => Some(other.to_string()),
+        }));
+    }
+    match slot.as_ref() {
+        Some(Ok((device, queue))) => Ok((device.clone(), queue.clone())),
+        Some(Err(None)) | None => Err(ComposeError::NoAdapter),
+        Some(Err(Some(msg))) => Err(ComposeError::Wgpu(msg.clone())),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn create_device() -> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>), ComposeError> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::all(),
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+            apply_limit_buckets: false,
+        })
+        .await
+        .map_err(|_| ComposeError::NoAdapter)?;
+
+    let (device, queue) = adapter
+        .request_device(&wgpu::DeviceDescriptor {
+            label: Some("renderly-export"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            trace: wgpu::Trace::Off,
+        })
+        .await
+        .map_err(|e| ComposeError::Wgpu(e.to_string()))?;
+
+    Ok((Arc::new(device), Arc::new(queue)))
+}
+
 impl From<RgbaFrame> for ComposeLayer {
     fn from(frame: RgbaFrame) -> Self {
         Self {
@@ -385,34 +443,8 @@ impl Compositor {
 
     #[cfg(not(target_arch = "wasm32"))]
     async fn new_async(width: u32, height: u32) -> Result<Self, ComposeError> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-                apply_limit_buckets: false,
-            })
-            .await
-            .map_err(|_| ComposeError::NoAdapter)?;
-
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("renderly-export"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                trace: wgpu::Trace::Off,
-            })
-            .await
-            .map_err(|e| ComposeError::Wgpu(e.to_string()))?;
-
-        Self::from_device(Arc::new(device), Arc::new(queue), width, height)
+        let (device, queue) = shared_device()?;
+        Self::from_device(device, queue, width, height)
     }
 
     fn from_device(

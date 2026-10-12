@@ -1,5 +1,6 @@
 //! Local Piper and BYO OpenAI TTS for Phase 1 voiceover tracks.
 
+use crate::proc::SerialSpawn;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -67,7 +68,7 @@ fn synthesize_piper(text: &str, output_wav: &Path) -> Result<(), TtsError> {
     let status = cmd
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .status_serial()
         .map_err(|e| TtsError::PiperFailed(e.to_string()))?;
     std::fs::remove_dir_all(&dir).ok();
     if !status.success() {

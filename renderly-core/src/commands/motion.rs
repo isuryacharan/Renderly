@@ -601,6 +601,7 @@ fn stabilization_curves(
 mod tests {
     use super::*;
     use crate::commands::{apply_command, Command};
+    use crate::proc::SerialSpawn;
     use crate::project::{evaluate_transform, MediaItem, Settings};
     use crate::tracking::test_support::texture;
     use std::io::Write;
@@ -840,7 +841,7 @@ mod tests {
             ])
             .arg(&path)
             .stdin(Stdio::piped())
-            .spawn()
+            .spawn_serial()
             .expect("spawn ffmpeg");
         {
             let stdin = child.stdin.as_mut().expect("stdin");
@@ -1109,7 +1110,7 @@ mod tests {
                 "14",
             ])
             .arg(&big)
-            .status()
+            .status_serial()
             .expect("ffmpeg")
             .success();
         assert!(ok);

@@ -9,6 +9,7 @@ pub use analysis::{
 use crate::commands::ExportPreset;
 use crate::export::{render_frame_at, ExportError, ExportSettings};
 use crate::media::{ffmpeg_available, ffmpeg_path, FfmpegCliError};
+use crate::proc::SerialSpawn;
 use crate::project::{Clip, MediaKind, Project, TrackKind};
 use image::ImageEncoder;
 use serde::{Deserialize, Serialize};
@@ -137,7 +138,7 @@ pub fn transcribe_media(project: &Project, media_id: Uuid) -> Result<Transcript,
         .arg(&media.path)
         .args(["-vn", "-ar", "16000", "-ac", "1", "-f", "wav"])
         .arg(&wav)
-        .status()
+        .status_serial()
         .map_err(|e| FfmpegCliError::SpawnFailed {
             tool: "ffmpeg",
             message: e.to_string(),
@@ -155,7 +156,7 @@ pub fn transcribe_media(project: &Project, media_id: Uuid) -> Result<Transcript,
         .arg(&out_prefix)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
+        .status_serial()
         .map_err(|e| PerceiveError::WhisperFailed(e.to_string()))?;
     if !status.success() {
         return Err(PerceiveError::WhisperFailed(

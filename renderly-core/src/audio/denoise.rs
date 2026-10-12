@@ -17,6 +17,7 @@
 //!   sub-range), RNNoise never restarts mid-clip (no per-chunk warm-up artefacts), and the
 //!   cost is one streaming pass that is far faster than realtime.
 
+use crate::proc::SerialSpawn;
 use std::collections::hash_map::DefaultHasher;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
@@ -291,7 +292,7 @@ fn render_to_wav(source: &Path, strength: f64, out_path: &Path) -> Result<(), De
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()
+        .spawn_serial()
         .map_err(|e| FfmpegCliError::SpawnFailed {
             tool: "ffmpeg",
             message: e.to_string(),
@@ -629,7 +630,7 @@ mod tests {
             .args(["-hide_banner", "-loglevel", "error", "-i"])
             .arg(path)
             .args(["-f", "f32le", "-ac", "1", "-"])
-            .output()
+            .output_serial()
             .unwrap();
         assert!(out.status.success());
         out.stdout
@@ -664,7 +665,7 @@ mod tests {
                 "[o]",
             ])
             .arg(&src)
-            .status()
+            .status_serial()
             .unwrap();
         assert!(status.success());
 
