@@ -13,8 +13,10 @@
 //!    wasm32, so it cannot run under `cargo test`. Instead the layer-wiring that used to be
 //!    duplicated between the two paths now lives in ONE target-independent place in
 //!    `renderly-core` and both paths call it:
-//!    - `compose::eval::active_layers` / `active_captions` (which layers, source times,
-//!      keyframed transforms, transition progress),
+//!    - `compose::eval::active_steps` / `active_captions` (which layers and adjustment
+//!      layers, source times, keyframed transforms, transition progress, nested sequences),
+//!    - `compose::build_scene` (adjustment steps; recursion into nested sequences at their
+//!      own resolution - the host only supplies each media layer's pixels),
 //!    - `ComposeLayer::from_active` / `ComposeLayer::caption` (how an evaluated layer becomes
 //!      a compositor layer),
 //!    - `Compositor::preview_layer_mask` (which mask the preview composites with),
@@ -71,17 +73,17 @@ use image::{GrayImage, Luma, Rgba, RgbaImage};
 use renderly_core::captions::render_caption;
 use renderly_core::commands::ExportPreset;
 use renderly_core::compose::{
-    eval, upload_layer_pixels, ComposeError, ComposeLayer, Compositor, LayerSource,
-    BUILTIN_EFFECT_IDS,
+    build_scene, eval, upload_layer_pixels, ActiveLayer, ComposeError, ComposeLayer, Compositor,
+    LayerSource, SceneError, SceneHost, SceneStep, BUILTIN_EFFECT_IDS,
 };
 use renderly_core::export::{DecodeOptions, ExportSettings, FrameRenderer};
 use renderly_core::mask::project_matte_requests;
 use renderly_core::media::{ffmpeg_available, ffmpeg_path};
 use renderly_core::packs::{parse_cube_text, referenced_pack_luts, CubeLut, LoadedPack};
 use renderly_core::project::{
-    AnimProperty, BackgroundRemoval, CaptionClip, Clip, ClipMask, ClipMaskKind, ClipTransform,
-    ClipTransition, Easing, EffectInstance, Keyframe, KeyframeTrack, MediaClip, MediaItem,
-    MediaKind, Project, Settings, Track, TrackKind, TransitionKind,
+    AdjustmentClip, AnimProperty, BackgroundRemoval, CaptionClip, Clip, ClipMask, ClipMaskKind,
+    ClipTransform, ClipTransition, Easing, EffectInstance, Keyframe, KeyframeTrack, MediaClip,
+    MediaItem, MediaKind, Project, Sequence, Settings, Track, TrackKind, TransitionKind,
 };
 use uuid::Uuid;
 
@@ -703,16 +705,20 @@ impl Scene {
     }
 }
 
-/// One media clip + the source it plays, with builder-style modifiers.
+/// One media clip (or sequence clip, or adjustment layer) + the source it plays, with
+/// builder-style modifiers.
 struct Layer {
-    src: Src,
+    /// `None` for sequence clips and adjustment layers (no source file).
+    src: Option<Src>,
     clip: MediaClip,
+    /// Set for adjustment layers; the `clip` is then unused.
+    adjust: Option<AdjustmentClip>,
 }
 
 impl Layer {
     fn new(src: Src, position: f64, duration: f64) -> Self {
         Layer {
-            src,
+            src: Some(src),
             clip: MediaClip {
                 media_id: src.id(),
                 position_secs: position,
@@ -720,7 +726,39 @@ impl Layer {
                 source_out_secs: duration,
                 ..Default::default()
             },
+            adjust: None,
         }
+    }
+
+    /// A clip placing the sequence media `media_id`; plays `[source_in, source_in + duration)`
+    /// of the sequence at `position`.
+    fn sequence(media_id: Uuid, position: f64, source_in: f64, duration: f64) -> Self {
+        Layer {
+            src: None,
+            clip: MediaClip {
+                media_id,
+                position_secs: position,
+                source_in_secs: source_in,
+                source_out_secs: source_in + duration,
+                ..Default::default()
+            },
+            adjust: None,
+        }
+    }
+
+    fn adjustment(position: f64, duration: f64) -> Self {
+        Layer {
+            src: None,
+            clip: MediaClip::default(),
+            adjust: Some(AdjustmentClip::new(position, duration)),
+        }
+    }
+
+    fn adj_opacity(mut self, opacity: f64) -> Self {
+        if let Some(a) = self.adjust.as_mut() {
+            a.opacity = opacity;
+        }
+        self
     }
 
     fn transform(mut self, t: ClipTransform) -> Self {
@@ -729,12 +767,16 @@ impl Layer {
     }
 
     fn effect(mut self, effect_id: &str, params: &[(&str, f64)]) -> Self {
-        self.clip.effects.push(EffectInstance {
+        let instance = EffectInstance {
             id: Uuid::new_v4(),
             effect_id: effect_id.into(),
             enabled: true,
             params: params.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
-        });
+        };
+        match self.adjust.as_mut() {
+            Some(a) => a.effects.push(instance),
+            None => self.clip.effects.push(instance),
+        }
         self
     }
 
@@ -745,12 +787,16 @@ impl Layer {
     }
 
     fn mask(mut self, kind: ClipMaskKind, feather: f64, invert: bool) -> Self {
-        self.clip.mask = Some(ClipMask {
+        let mask = Some(ClipMask {
             enabled: true,
             invert,
             feather,
             kind,
         });
+        match self.adjust.as_mut() {
+            Some(a) => a.mask = mask,
+            None => self.clip.mask = mask,
+        }
         self
     }
 
@@ -828,6 +874,7 @@ fn ensure_media(project: &mut Project, src: Src, kind: MediaKind) {
         width: Some(w),
         height: Some(h),
         fps: Some(10.0),
+        sequence_id: None,
     });
 }
 
@@ -835,11 +882,78 @@ fn ensure_media(project: &mut Project, src: Src, kind: MediaKind) {
 fn scene_tracks(name: &str, times: &[f64], tracks: Vec<Vec<Layer>>) -> Scene {
     let mut project = new_project();
     for layers in tracks {
-        let mut track = Track::new(TrackKind::Video, "V");
-        for l in layers {
-            ensure_media(&mut project, l.src, MediaKind::Video);
-            track.clips.push(Clip::Video(l.clip));
+        let track = video_track(&mut project, layers);
+        project.tracks.push(track);
+    }
+    Scene {
+        name: name.into(),
+        times: times.to_vec(),
+        project,
+        tol: GOLDEN_TOL,
+    }
+}
+
+/// One video track holding `layers` (registering their source media on `project`).
+fn video_track(project: &mut Project, layers: Vec<Layer>) -> Track {
+    let mut track = Track::new(TrackKind::Video, "V");
+    for l in layers {
+        if let Some(src) = l.src {
+            ensure_media(project, src, MediaKind::Video);
         }
+        match l.adjust {
+            Some(a) => track.clips.push(Clip::Adjustment(a)),
+            None => track.clips.push(Clip::Video(l.clip)),
+        }
+    }
+    track
+}
+
+/// Add a nested sequence (one video track per inner Vec, bottom to top; `size` of `None`
+/// inherits the project size) and its media item. Returns the media id to place with
+/// [`Layer::sequence`].
+fn add_sequence(
+    project: &mut Project,
+    name: &str,
+    size: Option<(u32, u32)>,
+    tracks: Vec<Vec<Layer>>,
+) -> Uuid {
+    let tracks: Vec<Track> = tracks
+        .into_iter()
+        .map(|layers| video_track(project, layers))
+        .collect();
+    let sequence_id = Uuid::new_v4();
+    let media_id = Uuid::new_v4();
+    project.sequences.push(Sequence {
+        id: sequence_id,
+        name: name.into(),
+        width: size.map(|s| s.0),
+        height: size.map(|s| s.1),
+        tracks,
+    });
+    project.media.push(MediaItem {
+        id: media_id,
+        path: PathBuf::new(),
+        kind: MediaKind::Sequence,
+        duration_secs: None,
+        width: None,
+        height: None,
+        fps: None,
+        sequence_id: Some(sequence_id),
+    });
+    media_id
+}
+
+/// Like [`scene_tracks`], but `build` may first register sequences on the project and then
+/// returns the root tracks (each inner Vec one video track, bottom to top).
+fn scene_with_sequences(
+    name: &str,
+    times: &[f64],
+    build: impl FnOnce(&mut Project) -> Vec<Vec<Layer>>,
+) -> Scene {
+    let mut project = new_project();
+    let tracks = build(&mut project);
+    for layers in tracks {
+        let track = video_track(&mut project, layers);
         project.tracks.push(track);
     }
     Scene {
@@ -1145,6 +1259,151 @@ fn scenes() -> Vec<Scene> {
         vec![Layer::new(Src::Bars, 0.0, 2.0)],
     ));
 
+    // --- schema v7: adjustment layers ---------------------------------------------------
+    // Greyscale + extra contrast applied to everything beneath the adjustment layer.
+    let grade = |l: Layer| {
+        l.effect(
+            "builtin:color_adjust",
+            &[("saturation", 0.0), ("contrast", 1.4)],
+        )
+    };
+    v.push(scene(
+        "adjust_over_two_layers",
+        &[0.5],
+        vec![
+            full(Src::Stripes),
+            full(Src::Bars).transform(xf(-0.3, 0.0, 0.6, 0.6, 0.0, 1.0)),
+            grade(Layer::adjustment(0.0, 3.0)),
+        ],
+    ));
+    v.push(scene(
+        "adjust_opacity_and_mask",
+        &[0.5],
+        vec![
+            full(Src::Stripes),
+            full(Src::Bars).transform(xf(-0.3, 0.0, 0.6, 0.6, 0.0, 1.0)),
+            Layer::adjustment(0.0, 3.0)
+                .effect(
+                    "builtin:color_adjust",
+                    &[("saturation", 0.0), ("exposure", 0.8)],
+                )
+                .adj_opacity(0.6)
+                .mask(
+                    ClipMaskKind::Ellipse {
+                        cx: 0.5,
+                        cy: 0.5,
+                        rx: 0.3,
+                        ry: 0.4,
+                    },
+                    0.3,
+                    false,
+                ),
+        ],
+    ));
+    v.push(scene(
+        "adjust_layer_above_untouched",
+        &[0.5],
+        vec![
+            full(Src::Stripes),
+            grade(Layer::adjustment(0.0, 3.0)),
+            full(Src::Sprite).transform(xf(0.25, -0.15, 0.6, 0.6, 8.0, 1.0)),
+        ],
+    ));
+
+    // --- schema v7: nested sequences ----------------------------------------------------
+    // A square 180x180 sequence (own resolution, cover-fit into the 16:9 frame) holding bars
+    // plus a sprite, placed with a transform and an effect over stripes.
+    v.push(scene_with_sequences(
+        "nested_transform_effect",
+        &[0.5],
+        |p| {
+            let seq = add_sequence(
+                p,
+                "Square",
+                Some((180, 180)),
+                vec![
+                    vec![full(Src::Bars)],
+                    vec![full(Src::Sprite).transform(xf(0.3, -0.3, 0.5, 0.5, 0.0, 1.0))],
+                ],
+            );
+            vec![
+                vec![full(Src::Stripes)],
+                vec![Layer::sequence(seq, 0.0, 0.0, 3.0)
+                    .transform(xf(0.2, 0.1, 0.7, 0.7, 10.0, 1.0))
+                    .effect("builtin:color_adjust", &[("saturation", 0.35)])],
+            ]
+        },
+    ));
+    // One "two-shot" sequence (bars for 1 s, then stripes for 1 s) placed twice in the same
+    // frame at different sequence times: shot 1 full-frame, shot 2 as a small overlay.
+    v.push(scene_with_sequences(
+        "nested_twice_different_times",
+        &[0.5],
+        |p| {
+            let seq = add_sequence(
+                p,
+                "Two-shot",
+                None,
+                vec![vec![
+                    Layer::new(Src::Bars, 0.0, 1.0),
+                    Layer::new(Src::Stripes, 1.0, 1.0),
+                ]],
+            );
+            vec![
+                vec![Layer::sequence(seq, 0.0, 0.0, 1.0)],
+                vec![Layer::sequence(seq, 0.0, 1.0, 1.0)
+                    .transform(xf(0.45, -0.4, 0.4, 0.4, 0.0, 1.0))],
+            ]
+        },
+    ));
+    // Transparency survives nesting: a sprite (transparent border, half-transparent band)
+    // inside a sequence still shows the stripes underneath through its transparent parts.
+    v.push(scene_with_sequences("nested_transparency", &[0.5], |p| {
+        let seq = add_sequence(
+            p,
+            "Sprite",
+            None,
+            vec![vec![
+                full(Src::Sprite).transform(xf(-0.1, 0.05, 0.8, 0.8, 12.0, 1.0))
+            ]],
+        );
+        vec![
+            vec![full(Src::Stripes)],
+            vec![Layer::sequence(seq, 0.0, 0.0, 3.0)],
+        ]
+    }));
+    // An adjustment layer inside a sequence affects only that sequence's own content.
+    v.push(scene_with_sequences("nested_adjust_inside", &[0.5], |p| {
+        let seq = add_sequence(
+            p,
+            "Graded",
+            None,
+            vec![
+                vec![full(Src::Bars)],
+                vec![Layer::adjustment(0.0, 3.0).effect(
+                    "builtin:color_adjust",
+                    &[("saturation", 0.0), ("contrast", 1.3)],
+                )],
+            ],
+        );
+        vec![
+            vec![full(Src::Stripes)],
+            vec![Layer::sequence(seq, 0.0, 0.0, 3.0).transform(xf(0.0, 0.0, 0.6, 0.6, 0.0, 1.0))],
+        ]
+    }));
+    // A crossfade from a sequence clip into a plain media clip.
+    v.push(scene_with_sequences(
+        "nested_transition_into_media",
+        &[1.5],
+        |p| {
+            let seq = add_sequence(p, "Bars", None, vec![vec![full(Src::Bars)]]);
+            vec![vec![
+                Layer::sequence(seq, 0.0, 0.0, 2.0).transition(TransitionKind::Crossfade, 1.0),
+                Layer::new(Src::Stripes, 2.0, 2.0),
+            ]]
+        },
+    ));
+
     v
 }
 
@@ -1328,37 +1587,86 @@ impl PreviewPipeline {
 
     fn render(&mut self, project: &Project, t: f64, images: &HashMap<Uuid, RgbaImage>) -> Vec<u8> {
         self.sync_assets(project);
-        let layers = eval::active_layers(project, t).expect("active_layers");
+        let steps = eval::active_steps(project, t).expect("active_steps");
         let captions = eval::active_captions(project, t);
 
-        let mut compose = Vec::new();
-        for layer in &layers {
-            let img = images
-                .get(&layer.media_id)
-                .expect("decoded source for media id");
-            let texture = self.upload(img.width(), img.height(), img.as_raw());
-            compose.push(ComposeLayer::from_active(
-                layer,
-                LayerSource::Texture {
-                    texture,
-                    width: img.width(),
-                    height: img.height(),
-                },
-                self.compositor.preview_layer_mask(layer),
-            ));
-        }
+        let mut host = PreviewHost {
+            device: &self.device,
+            queue: &self.queue,
+            compositor: &self.compositor,
+            images,
+        };
+        let mut scene = build_scene(project, steps, &mut host).unwrap_or_else(|e| match e {
+            SceneError::Eval(e) => panic!("build_scene: {e}"),
+            SceneError::Host(never) => match never {},
+        });
         for cap in &captions {
             let frame = render_caption(&cap.text, &cap.style_id, W, H).expect("render_caption");
             let texture = self.upload(W, H, &frame.pixels);
-            compose.push(ComposeLayer::caption(LayerSource::Texture {
-                texture,
-                width: W,
-                height: H,
-            }));
+            scene.push(SceneStep::Layer(ComposeLayer::caption(
+                LayerSource::Texture {
+                    texture,
+                    width: W,
+                    height: H,
+                },
+            )));
         }
         self.compositor
-            .composite(&self.packs, &compose)
+            .composite_steps(&self.packs, &scene)
             .expect("preview composite")
+    }
+}
+
+/// Stand-in for the wasm `SceneHost`: media layers come from pre-decoded images uploaded as
+/// textures (what `copy_external_image_to_texture` does for a `<video>`/`<img>`), masks
+/// resolve through `preview_layer_mask`.
+struct PreviewHost<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    compositor: &'a Compositor,
+    images: &'a HashMap<Uuid, RgbaImage>,
+}
+
+impl SceneHost for PreviewHost<'_> {
+    type Error = std::convert::Infallible;
+
+    fn media_layer(&mut self, layer: &ActiveLayer) -> Result<Option<ComposeLayer>, Self::Error> {
+        let (media_id, _, _) = layer.media().expect("media layer");
+        let img = self
+            .images
+            .get(&media_id)
+            .expect("decoded source for media id");
+        let (w, h) = (img.width(), img.height());
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("preview-standin-media"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        upload_layer_pixels(self.queue, &texture, w, h, img.as_raw());
+        Ok(Some(ComposeLayer::from_active(
+            layer,
+            LayerSource::Texture {
+                texture,
+                width: w,
+                height: h,
+            },
+            self.compositor.preview_layer_mask(layer),
+        )))
+    }
+
+    fn sequence_mask(&mut self, layer: &ActiveLayer) -> Option<ClipMask> {
+        self.compositor.preview_layer_mask(layer)
     }
 }
 
@@ -1497,6 +1805,14 @@ golden_tests!(
     golden_speed_2x_shortens_clip,
     golden_hidden_and_disabled_skipped,
     golden_gap_after_clip_black,
+    golden_adjust_over_two_layers,
+    golden_adjust_opacity_and_mask,
+    golden_adjust_layer_above_untouched,
+    golden_nested_transform_effect,
+    golden_nested_twice_different_times,
+    golden_nested_transparency,
+    golden_nested_adjust_inside,
+    golden_nested_transition_into_media,
 );
 
 // ---------------------------------------------------------------------------------------
@@ -1608,7 +1924,7 @@ fn preview_layer_mask_requires_registered_file_mattes() {
         let mut track = Track::new(TrackKind::Video, "V");
         track.clips.push(Clip::Video(clip));
         project.tracks.push(track);
-        let mut layers = eval::active_layers(&project, 0.5).expect("active_layers");
+        let mut layers = eval::leaf_media_layers(&project, 0.5).expect("leaf_media_layers");
         layers.remove(0)
     };
 

@@ -12,8 +12,12 @@ use crate::project::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod adjustment;
 mod motion;
 mod reframe;
+mod sequences;
+
+pub use sequences::ClipRef;
 
 /// Normalised rectangle (0..1, origin top-left, y down) in the clip's video frame, before any
 /// cover-fit crop. Used to pick the area `TrackMotion` follows.
@@ -40,6 +44,10 @@ pub enum Command {
         /// `AddTrack` + `AddClip{track_id}` atomically). Server-generates one if omitted.
         #[serde(default)]
         id: Option<Id>,
+        /// Add the track to this sequence's timeline instead of the root timeline
+        /// (schema v7). Caption tracks are root-only.
+        #[serde(default)]
+        sequence_id: Option<Id>,
     },
     AddClip {
         track_id: Id,
@@ -292,6 +300,61 @@ pub enum Command {
         clip_id: Id,
         target_aspect: f64,
     },
+    /// Create an empty nested sequence and its media item (schema v7). `width`/`height` of
+    /// `None` inherit the project size.
+    CreateSequence {
+        name: String,
+        #[serde(default)]
+        width: Option<u32>,
+        #[serde(default)]
+        height: Option<u32>,
+        /// Caller-supplied sequence id (like `AddTrack`'s `id`); generated if omitted.
+        #[serde(default)]
+        id: Option<Id>,
+    },
+    RenameSequence {
+        sequence_id: Id,
+        name: String,
+    },
+    /// Set a sequence's output size; `None` resets that axis to the project size.
+    SetSequenceSettings {
+        sequence_id: Id,
+        #[serde(default)]
+        width: Option<u32>,
+        #[serde(default)]
+        height: Option<u32>,
+    },
+    /// Remove a sequence and its media item. Fails with `SequenceInUse` while any clip
+    /// places it.
+    DeleteSequence {
+        sequence_id: Id,
+    },
+    /// Move clips (all on one timeline) into a new sequence and replace them with a single
+    /// clip (plus one audio clip if any were audio) placing it.
+    NestClips {
+        clips: Vec<ClipRef>,
+        name: String,
+    },
+    /// Inverse of `NestClips` for an untouched nested clip: copy the sequence's clips back
+    /// into the parent timeline and remove the placing clip. The sequence is kept.
+    UnnestClip {
+        track_id: Id,
+        clip_id: Id,
+    },
+    /// Add an adjustment layer clip to a video track (schema v7).
+    AddAdjustmentLayer {
+        track_id: Id,
+        position_secs: f64,
+        duration_secs: f64,
+    },
+    /// Edit an adjustment layer's span/opacity; at least one field must be `Some`.
+    SetAdjustmentLayer {
+        track_id: Id,
+        clip_id: Id,
+        position_secs: Option<f64>,
+        duration_secs: Option<f64>,
+        opacity: Option<f64>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -304,12 +367,36 @@ pub enum ExportPreset {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CommandOutcome {
-    MediaImported { media_id: Id },
-    TrackAdded { track_id: Id },
-    ClipAdded { clip_id: Id },
-    ClipSplit { left_id: Id, right_id: Id },
-    CaptionsGenerated { count: usize },
-    VoiceoverGenerated { media_id: Id, clip_id: Id },
+    MediaImported {
+        media_id: Id,
+    },
+    TrackAdded {
+        track_id: Id,
+    },
+    ClipAdded {
+        clip_id: Id,
+    },
+    ClipSplit {
+        left_id: Id,
+        right_id: Id,
+    },
+    CaptionsGenerated {
+        count: usize,
+    },
+    VoiceoverGenerated {
+        media_id: Id,
+        clip_id: Id,
+    },
+    SequenceCreated {
+        sequence_id: Id,
+        media_id: Id,
+    },
+    ClipsNested {
+        sequence_id: Id,
+        media_id: Id,
+        video_clip_id: Option<Id>,
+        audio_clip_id: Option<Id>,
+    },
     Applied,
 }
 
@@ -387,12 +474,42 @@ pub enum CommandError {
     Analysis(String),
     #[error("not yet implemented: {0}")]
     NotImplemented(&'static str),
+    #[error("sequence not found: {0}")]
+    SequenceNotFound(Id),
+    #[error("sequence id {0} already exists")]
+    DuplicateSequenceId(Id),
+    #[error("sequence {0} is still placed by at least one clip")]
+    SequenceInUse(Id),
+    #[error("placing sequence {0} here would make a sequence contain itself")]
+    SequenceCycle(Id),
+    #[error("not supported for sequences (schema v7): {0}")]
+    UnsupportedForSequence(&'static str),
+    #[error("cannot unnest: {0}")]
+    CannotUnnest(String),
+    #[error("cannot nest: {0}")]
+    InvalidNest(String),
+    #[error("clip {0} is not an adjustment layer")]
+    NotAdjustmentClip(Id),
+    #[error("invalid adjustment layer: {0}")]
+    InvalidAdjustment(String),
+    #[error("SetAdjustmentLayer requires at least one of position_secs/duration_secs/opacity")]
+    SetAdjustmentLayerRequiresChange,
+    #[error(
+        "TrimClip does not apply to adjustment layer {0} (it is defined in source time); \
+         use SetAdjustmentLayer"
+    )]
+    TrimAdjustment(Id),
 }
 
 pub fn apply_command(project: &mut Project, cmd: Command) -> Result<CommandOutcome, CommandError> {
     match cmd {
         Command::ImportMedia { path } => import_media(project, &path),
-        Command::AddTrack { kind, name, id } => add_track(project, kind, name, id),
+        Command::AddTrack {
+            kind,
+            name,
+            id,
+            sequence_id,
+        } => add_track(project, kind, name, id, sequence_id),
         Command::AddClip {
             track_id,
             media_id,
@@ -625,6 +742,44 @@ pub fn apply_command(project: &mut Project, cmd: Command) -> Result<CommandOutco
             clip_id,
             target_aspect,
         } => reframe::auto_reframe_clip(project, track_id, clip_id, target_aspect),
+        Command::CreateSequence {
+            name,
+            width,
+            height,
+            id,
+        } => sequences::create_sequence(project, name, width, height, id),
+        Command::RenameSequence { sequence_id, name } => {
+            sequences::rename_sequence(project, sequence_id, name)
+        }
+        Command::SetSequenceSettings {
+            sequence_id,
+            width,
+            height,
+        } => sequences::set_sequence_settings(project, sequence_id, width, height),
+        Command::DeleteSequence { sequence_id } => sequences::delete_sequence(project, sequence_id),
+        Command::NestClips { clips, name } => sequences::nest_clips(project, clips, name),
+        Command::UnnestClip { track_id, clip_id } => {
+            sequences::unnest_clip(project, track_id, clip_id)
+        }
+        Command::AddAdjustmentLayer {
+            track_id,
+            position_secs,
+            duration_secs,
+        } => adjustment::add_adjustment_layer(project, track_id, position_secs, duration_secs),
+        Command::SetAdjustmentLayer {
+            track_id,
+            clip_id,
+            position_secs,
+            duration_secs,
+            opacity,
+        } => adjustment::set_adjustment_layer(
+            project,
+            track_id,
+            clip_id,
+            position_secs,
+            duration_secs,
+            opacity,
+        ),
     }
 }
 
@@ -643,6 +798,7 @@ fn import_media(project: &mut Project, path: &str) -> Result<CommandOutcome, Com
         width: probed.width,
         height: probed.height,
         fps: probed.fps,
+        sequence_id: None,
     });
     Ok(CommandOutcome::MediaImported { media_id })
 }
@@ -652,10 +808,20 @@ fn add_track(
     kind: TrackKind,
     name: String,
     id: Option<Id>,
+    sequence_id: Option<Id>,
 ) -> Result<CommandOutcome, CommandError> {
     if let Some(wanted) = id {
-        if project.tracks.iter().any(|t| t.id == wanted) {
+        // Track ids are unique across the root timeline and every sequence.
+        if project.find_track(wanted).is_some() {
             return Err(CommandError::DuplicateTrackId(wanted));
+        }
+    }
+    if let Some(seq_id) = sequence_id {
+        if project.find_sequence(seq_id).is_none() {
+            return Err(CommandError::SequenceNotFound(seq_id));
+        }
+        if kind == TrackKind::Caption {
+            return Err(CommandError::UnsupportedForSequence("caption tracks"));
         }
     }
     let mut track = Track::new(kind, name);
@@ -663,7 +829,10 @@ fn add_track(
         track.id = id;
     }
     let track_id = track.id;
-    project.tracks.push(track);
+    let tracks = project
+        .container_tracks_mut(sequence_id)
+        .ok_or(CommandError::TrackNotFound(track_id))?;
+    tracks.push(track);
     Ok(CommandOutcome::TrackAdded { track_id })
 }
 
@@ -673,6 +842,7 @@ fn clip_kind_matches(track_kind: TrackKind, clip: &Clip) -> bool {
         (TrackKind::Video, Clip::Video(_))
             | (TrackKind::Audio, Clip::Audio(_))
             | (TrackKind::Caption, Clip::Caption(_))
+            | (TrackKind::Video, Clip::Adjustment(_))
     )
 }
 
@@ -681,6 +851,7 @@ fn clip_track_kind(clip: &Clip) -> TrackKind {
         Clip::Video(_) => TrackKind::Video,
         Clip::Audio(_) => TrackKind::Audio,
         Clip::Caption(_) => TrackKind::Caption,
+        Clip::Adjustment(_) => TrackKind::Video,
     }
 }
 
@@ -721,15 +892,26 @@ fn add_clip(
         return Err(CommandError::InvalidRange(source_out_secs, source_in_secs));
     }
 
-    let media_kind = project
+    let media = project
         .find_media(media_id)
-        .ok_or(CommandError::MediaNotFound(media_id))?
-        .kind;
-    let media_duration = project.find_media(media_id).unwrap().duration_secs;
+        .ok_or(CommandError::MediaNotFound(media_id))?;
+    let media_kind = media.kind;
+    let media_sequence = media.sequence_id;
+    // Derived for sequence media, so a nested clip can never reach past the inner timeline.
+    let media_duration = project.media_duration(media_id);
 
     if let Some(duration) = media_duration {
         if source_out_secs > duration {
             return Err(CommandError::ExceedsMediaDuration(duration));
+        }
+    }
+
+    // Placing a sequence must not make it contain itself (checked before the mutable borrow).
+    if let Some(seq_id) = media_sequence {
+        if let Some(container) = project.container_of_track(track_id) {
+            if project.would_create_cycle(container, seq_id) {
+                return Err(CommandError::SequenceCycle(seq_id));
+            }
         }
     }
 
@@ -741,6 +923,14 @@ fn add_clip(
         crate::project::MediaKind::Video => TrackKind::Video,
         crate::project::MediaKind::Audio => TrackKind::Audio,
         crate::project::MediaKind::Image => TrackKind::Video,
+        // A sequence's picture goes on a video track, its sound on an audio track.
+        crate::project::MediaKind::Sequence => {
+            if track.kind == TrackKind::Audio {
+                TrackKind::Audio
+            } else {
+                TrackKind::Video
+            }
+        }
     };
     if track.kind != expected_track_kind {
         return Err(CommandError::TrackKindMismatch(
@@ -837,6 +1027,18 @@ fn split_clip(
             right_c.duration_secs = end - at_secs;
             (Clip::Caption(c), Clip::Caption(right_c))
         }
+        Clip::Adjustment(mut a) => {
+            let mut right_a = a.clone();
+            right_a.id = right_id;
+            a.duration_secs = split_offset;
+            right_a.position_secs = at_secs;
+            right_a.duration_secs = end - at_secs;
+            let (left_kf, right_kf) = split_keyframes(&a.keyframes, split_offset);
+            a.keyframes = left_kf;
+            right_a.keyframes = right_kf;
+            right_a.effects = clone_effects_with_new_ids(&a.effects);
+            (Clip::Adjustment(a), Clip::Adjustment(right_a))
+        }
     };
 
     let left_id = left.id();
@@ -867,6 +1069,7 @@ fn trim_clip(
     let media_clip = match clip {
         Clip::Video(m) | Clip::Audio(m) => m,
         Clip::Caption(_) => return Err(CommandError::NotMediaClip(clip_id)),
+        Clip::Adjustment(_) => return Err(CommandError::TrimAdjustment(clip_id)),
     };
 
     let new_in = new_source_in_secs.unwrap_or(media_clip.source_in_secs);
@@ -880,7 +1083,7 @@ fn trim_clip(
 
     // Same bounds check `AddClip` enforces — trimming shouldn't be able to reach past the
     // media's probed duration just because `AddClip`'s check only ran once, at creation.
-    if let Some(duration) = project.find_media(media_id).and_then(|m| m.duration_secs) {
+    if let Some(duration) = project.media_duration(media_id) {
         if new_out > duration {
             return Err(CommandError::ExceedsMediaDuration(duration));
         }
@@ -902,7 +1105,9 @@ fn trim_clip(
         .ok_or(CommandError::ClipNotFound(clip_id, track_id))?;
     let media_clip = match clip {
         Clip::Video(m) | Clip::Audio(m) => m,
-        Clip::Caption(_) => unreachable!("caption already rejected above"),
+        Clip::Caption(_) | Clip::Adjustment(_) => {
+            unreachable!("non-media clips already rejected above")
+        }
     };
 
     media_clip.source_in_secs = new_in;
@@ -939,6 +1144,18 @@ fn move_clip(
                 clip_track_kind(&clip),
             ));
         }
+        // Moving a sequence clip into another timeline must not create a cycle.
+        let placed_sequence = clip
+            .as_media()
+            .and_then(|m| project.find_media(m.media_id))
+            .and_then(|media| media.sequence_id);
+        if let (Some(seq_id), Some(container)) =
+            (placed_sequence, project.container_of_track(dest_track_id))
+        {
+            if project.would_create_cycle(container, seq_id) {
+                return Err(CommandError::SequenceCycle(seq_id));
+            }
+        }
     }
 
     let duration = clip.duration_secs();
@@ -960,10 +1177,7 @@ fn move_clip(
         .position(|c| c.id() == clip_id)
         .unwrap();
     let mut moved = src_track.clips.remove(idx);
-    match &mut moved {
-        Clip::Video(m) | Clip::Audio(m) => m.position_secs = new_position_secs,
-        Clip::Caption(c) => c.position_secs = new_position_secs,
-    }
+    moved.set_position_secs(new_position_secs);
 
     let dest_track = project.find_track_mut(dest_track_id).unwrap();
     dest_track.clips.push(moved);
@@ -994,10 +1208,7 @@ fn delete_clip(
         let gap = removed.duration_secs();
         for clip in track.clips.iter_mut() {
             if clip.position_secs() >= gap_start {
-                match clip {
-                    Clip::Video(m) | Clip::Audio(m) => m.position_secs -= gap,
-                    Clip::Caption(c) => c.position_secs -= gap,
-                }
+                clip.set_position_secs(clip.position_secs() - gap);
             }
         }
     }
@@ -1145,6 +1356,7 @@ fn generate_captions(
             TrackKind::Caption,
         ));
     }
+    reject_sequence_media(project, media_id, "GenerateCaptions")?;
 
     let transcript = transcribe_media(project, media_id)?;
     let mut count = 0usize;
@@ -1318,12 +1530,18 @@ fn rename_track(
 }
 
 fn delete_track(project: &mut Project, track_id: Id) -> Result<CommandOutcome, CommandError> {
-    let idx = project
-        .tracks
+    // Acts within the track's own timeline (root or sequence).
+    let container = project
+        .container_of_track(track_id)
+        .ok_or(CommandError::TrackNotFound(track_id))?;
+    let tracks = project
+        .container_tracks_mut(container)
+        .ok_or(CommandError::TrackNotFound(track_id))?;
+    let idx = tracks
         .iter()
         .position(|t| t.id == track_id)
         .ok_or(CommandError::TrackNotFound(track_id))?;
-    project.tracks.remove(idx);
+    tracks.remove(idx);
     Ok(CommandOutcome::Applied)
 }
 
@@ -1332,17 +1550,23 @@ fn move_track(
     track_id: Id,
     new_index: usize,
 ) -> Result<CommandOutcome, CommandError> {
-    let idx = project
-        .tracks
+    // Reorders within the track's own timeline (root or sequence).
+    let container = project
+        .container_of_track(track_id)
+        .ok_or(CommandError::TrackNotFound(track_id))?;
+    let tracks = project
+        .container_tracks_mut(container)
+        .ok_or(CommandError::TrackNotFound(track_id))?;
+    let idx = tracks
         .iter()
         .position(|t| t.id == track_id)
         .ok_or(CommandError::TrackNotFound(track_id))?;
-    let clamped = new_index.min(project.tracks.len() - 1);
+    let clamped = new_index.min(tracks.len() - 1);
     if clamped == idx {
         return Ok(CommandOutcome::Applied);
     }
-    let track = project.tracks.remove(idx);
-    project.tracks.insert(clamped, track);
+    let track = tracks.remove(idx);
+    tracks.insert(clamped, track);
     Ok(CommandOutcome::Applied)
 }
 
@@ -1366,6 +1590,10 @@ fn set_clip_enabled(
             m.enabled = enabled;
             Ok(CommandOutcome::Applied)
         }
+        Clip::Adjustment(a) => {
+            a.enabled = enabled;
+            Ok(CommandOutcome::Applied)
+        }
         Clip::Caption(_) => Err(CommandError::NotMediaClip(clip_id)),
     }
 }
@@ -1385,6 +1613,22 @@ fn media_clip_mut(
         .ok_or(CommandError::ClipNotFound(clip_id, track_id))?;
     clip.as_media_mut()
         .ok_or(CommandError::NotMediaClip(clip_id))
+}
+
+/// Any clip (media, adjustment or caption) by track + id; the caller matches on the kind.
+fn any_clip_mut(
+    project: &mut Project,
+    track_id: Id,
+    clip_id: Id,
+) -> Result<&mut Clip, CommandError> {
+    let track = project
+        .find_track_mut(track_id)
+        .ok_or(CommandError::TrackNotFound(track_id))?;
+    track
+        .clips
+        .iter_mut()
+        .find(|c| c.id() == clip_id)
+        .ok_or(CommandError::ClipNotFound(clip_id, track_id))
 }
 
 fn validate_transform(t: &ClipTransform) -> Result<ClipTransform, CommandError> {
@@ -1496,8 +1740,21 @@ fn set_clip_keyframes(
     keyframes: Vec<KeyframeTrack>,
 ) -> Result<CommandOutcome, CommandError> {
     let keyframes = validate_keyframes(keyframes)?;
-    let clip = media_clip_mut(project, track_id, clip_id)?;
-    clip.keyframes = keyframes;
+    match any_clip_mut(project, track_id, clip_id)? {
+        Clip::Video(m) | Clip::Audio(m) => m.keyframes = keyframes,
+        Clip::Adjustment(a) => {
+            if keyframes
+                .iter()
+                .any(|k| k.property != AnimProperty::Opacity)
+            {
+                return Err(CommandError::InvalidKeyframes(
+                    "adjustment layers only support opacity keyframes".into(),
+                ));
+            }
+            a.keyframes = keyframes;
+        }
+        Clip::Caption(_) => return Err(CommandError::NotMediaClip(clip_id)),
+    }
     Ok(CommandOutcome::Applied)
 }
 
@@ -1508,8 +1765,21 @@ fn set_clip_effects(
     effects: Vec<EffectInstance>,
 ) -> Result<CommandOutcome, CommandError> {
     let effects = validate_effects(project, effects)?;
-    let clip = media_clip_mut(project, track_id, clip_id)?;
-    clip.effects = effects;
+    match any_clip_mut(project, track_id, clip_id)? {
+        Clip::Video(m) | Clip::Audio(m) => m.effects = effects,
+        Clip::Adjustment(a) => {
+            // WASM frame plugins run on CPU pixels of a decoded source frame; an adjustment
+            // layer's input exists only on the GPU.
+            if let Some(e) = effects.iter().find(|e| e.effect_id.starts_with("wasm:")) {
+                return Err(CommandError::InvalidEffects(format!(
+                    "WASM plugin effect '{}' is not supported on adjustment layers",
+                    e.effect_id
+                )));
+            }
+            a.effects = effects;
+        }
+        Clip::Caption(_) => return Err(CommandError::NotMediaClip(clip_id)),
+    }
     Ok(CommandOutcome::Applied)
 }
 
@@ -1806,8 +2076,11 @@ fn set_clip_mask(
     if let Some(ref m) = mask {
         validate_mask(m)?;
     }
-    let clip = media_clip_mut(project, track_id, clip_id)?;
-    clip.mask = mask;
+    match any_clip_mut(project, track_id, clip_id)? {
+        Clip::Video(m) | Clip::Audio(m) => m.mask = mask,
+        Clip::Adjustment(a) => a.mask = mask,
+        Clip::Caption(_) => return Err(CommandError::NotMediaClip(clip_id)),
+    }
     Ok(CommandOutcome::Applied)
 }
 
@@ -1845,6 +2118,21 @@ fn default_background_removal() -> BackgroundRemoval {
     }
 }
 
+/// Commands that analyse decoded source frames (or apply to a clip's own audio/pixels)
+/// have no meaning on a nested sequence in v7; refuse instead of guessing.
+fn reject_sequence_media(
+    project: &Project,
+    media_id: Id,
+    command: &'static str,
+) -> Result<(), CommandError> {
+    match project.find_media(media_id) {
+        Some(m) if m.kind == crate::project::MediaKind::Sequence => {
+            Err(CommandError::UnsupportedForSequence(command))
+        }
+        _ => Ok(()),
+    }
+}
+
 fn decode_clip_frame(
     project: &Project,
     clip: &MediaClip,
@@ -1875,6 +2163,9 @@ fn decode_clip_frame(
         crate::project::MediaKind::Audio => Err(CommandError::Analysis(
             "clip media has no video frames".into(),
         )),
+        crate::project::MediaKind::Sequence => Err(CommandError::UnsupportedForSequence(
+            "GenerateBackgroundMatte",
+        )),
     }
 }
 
@@ -1902,6 +2193,7 @@ fn generate_background_matte(
         .ok_or(CommandError::NotMediaClip(clip_id))?
         .clone();
 
+    reject_sequence_media(project, clip.media_id, "GenerateBackgroundMatte")?;
     let mid_source = (clip.source_in_secs + clip.source_out_secs) * 0.5;
     let frame = decode_clip_frame(project, &clip, mid_source)?;
 
@@ -1947,6 +2239,13 @@ fn set_clip_audio_denoise(
             track.kind,
             TrackKind::Audio,
         ));
+    }
+    if let Some(media_id) = track
+        .find_clip(clip_id)
+        .and_then(Clip::as_media)
+        .map(|m| m.media_id)
+    {
+        reject_sequence_media(project, media_id, "SetClipAudioDenoise")?;
     }
     let config = match config {
         None => None,
@@ -2177,7 +2476,7 @@ fn generate_sticker(
 }
 
 fn find_media_clip_mut(project: &mut Project, clip_id: Id) -> Option<&mut MediaClip> {
-    for track in &mut project.tracks {
+    for track in project.all_tracks_mut() {
         for clip in &mut track.clips {
             if clip.id() == clip_id {
                 return clip.as_media_mut();
@@ -2265,6 +2564,7 @@ fn centred_reframe(
         .ok_or(CommandError::ClipNotFound(clip_id, track_id))?
         .as_media()
         .ok_or(CommandError::NotMediaClip(clip_id))?;
+    reject_sequence_media(project, clip.media_id, "AutoReframeClip")?;
     let media = project
         .find_media(clip.media_id)
         .ok_or(CommandError::MediaNotFound(clip.media_id))?;
@@ -2324,6 +2624,7 @@ fn generate_voiceover(
         width: probed.width,
         height: probed.height,
         fps: probed.fps,
+        sequence_id: None,
     });
 
     // The only way this can still fail here is `add_clip`'s overlap check (track/media
@@ -2414,6 +2715,7 @@ mod tests {
                 kind: TrackKind::Video,
                 name: "V1".into(),
                 id: Some(wanted_id),
+                sequence_id: None,
             },
         )
         .unwrap();
@@ -2448,6 +2750,7 @@ mod tests {
                 kind: TrackKind::Audio,
                 name: "A1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -2508,6 +2811,7 @@ mod tests {
                 kind: TrackKind::Audio,
                 name: "A1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -2578,6 +2882,7 @@ mod tests {
                 kind: TrackKind::Audio,
                 name: "A1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -2642,6 +2947,7 @@ mod tests {
                 kind: TrackKind::Video,
                 name: "V1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -2674,6 +2980,7 @@ mod tests {
                 kind: TrackKind::Caption,
                 name: "C1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -2753,6 +3060,7 @@ mod tests {
                 kind: TrackKind::Caption,
                 name: "C1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -2796,6 +3104,7 @@ mod tests {
                 kind: TrackKind::Video,
                 name: "V1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -2809,6 +3118,7 @@ mod tests {
                 kind: TrackKind::Caption,
                 name: "C1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -2875,6 +3185,7 @@ mod tests {
                 kind: TrackKind::Audio,
                 name: "A1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -2888,6 +3199,7 @@ mod tests {
                 kind: TrackKind::Audio,
                 name: "A2".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -2967,6 +3279,7 @@ mod tests {
             width: None,
             height: None,
             fps: None,
+            sequence_id: None,
         });
         let track_id = match apply_command(
             &mut project,
@@ -2974,6 +3287,7 @@ mod tests {
                 kind: TrackKind::Video,
                 name: "V1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -3007,6 +3321,7 @@ mod tests {
             width: None,
             height: None,
             fps: None,
+            sequence_id: None,
         });
         let track_id = match apply_command(
             &mut project,
@@ -3014,6 +3329,7 @@ mod tests {
                 kind: TrackKind::Audio,
                 name: "A1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -3063,6 +3379,7 @@ mod tests {
                 kind: TrackKind::Caption,
                 name: "C1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -3109,6 +3426,7 @@ mod tests {
             width: None,
             height: None,
             fps: None,
+            sequence_id: None,
         });
         let track_id = match apply_command(
             &mut project,
@@ -3116,6 +3434,7 @@ mod tests {
                 kind: TrackKind::Audio,
                 name: "A1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -3173,6 +3492,7 @@ mod tests {
                 kind: TrackKind::Video,
                 name: "V1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -3243,6 +3563,7 @@ mod tests {
                 kind: TrackKind::Video,
                 name: "V1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -3288,6 +3609,7 @@ mod tests {
                 kind: TrackKind::Video,
                 name: "V1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -3315,6 +3637,7 @@ mod tests {
                 kind: TrackKind::Video,
                 name: "V1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -3336,6 +3659,7 @@ mod tests {
                 kind: TrackKind::Video,
                 name: name.into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -3456,6 +3780,7 @@ mod tests {
                 kind: TrackKind::Audio,
                 name: "A1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -3504,6 +3829,7 @@ mod tests {
                 kind: TrackKind::Caption,
                 name: "C1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -3564,6 +3890,7 @@ mod tests {
                 kind: TrackKind::Audio,
                 name: "A1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -3647,6 +3974,7 @@ mod tests {
                 kind: TrackKind::Audio,
                 name: "A1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -3694,6 +4022,7 @@ mod tests {
                 kind: TrackKind::Caption,
                 name: "C1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -3740,6 +4069,7 @@ mod tests {
                 kind: TrackKind::Video,
                 name: "V1".into(),
                 id: Some(wanted_id),
+                sequence_id: None,
             },
         )
         .unwrap();
@@ -3750,6 +4080,7 @@ mod tests {
                 kind: TrackKind::Audio,
                 name: "A1".into(),
                 id: Some(wanted_id),
+                sequence_id: None,
             },
         )
         .unwrap_err();
@@ -3765,6 +4096,7 @@ mod tests {
                 kind: TrackKind::Caption,
                 name: "C1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -3842,6 +4174,7 @@ mod tests {
                 kind: TrackKind::Audio,
                 name: "A1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -4160,6 +4493,7 @@ mod tests {
                 kind: TrackKind::Video,
                 name: "V1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -4177,6 +4511,7 @@ mod tests {
             width: Some(1280),
             height: Some(720),
             fps: Some(30.0),
+            sequence_id: None,
         });
         project.media.push(crate::project::MediaItem {
             id: media_b,
@@ -4186,6 +4521,7 @@ mod tests {
             width: Some(1280),
             height: Some(720),
             fps: Some(30.0),
+            sequence_id: None,
         });
         let clip_a = Id::new_v4();
         let clip_b = Id::new_v4();
@@ -4281,6 +4617,7 @@ mod tests {
                 kind: TrackKind::Video,
                 name: "V1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -4448,6 +4785,7 @@ mod tests {
                 kind: TrackKind::Video,
                 name: "V1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()
@@ -4492,6 +4830,7 @@ mod tests {
                 kind: TrackKind::Audio,
                 name: "A1".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .unwrap()

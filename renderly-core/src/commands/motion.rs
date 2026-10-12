@@ -80,6 +80,11 @@ pub(super) fn resolve(
             "clip media has no video frames".into(),
         ));
     }
+    if media.kind == MediaKind::Sequence {
+        return Err(CommandError::UnsupportedForSequence(
+            "TrackMotion / StabilizeClip",
+        ));
+    }
     Ok(VideoClip {
         clip,
         path: media.path.clone(),
@@ -903,6 +908,7 @@ mod tests {
             width: Some(W as u32),
             height: Some(H as u32),
             fps: Some(FPS),
+            sequence_id: None,
         });
         let track_id = match apply_command(
             &mut project,
@@ -910,6 +916,7 @@ mod tests {
                 kind: TrackKind::Video,
                 name: "V".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .expect("track")
@@ -1185,6 +1192,7 @@ mod tests {
             width: Some(64),
             height: Some(64),
             fps: None,
+            sequence_id: None,
         });
         let tid = match apply_command(
             &mut project,
@@ -1192,6 +1200,7 @@ mod tests {
                 kind: TrackKind::Video,
                 name: "V".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .expect("track")

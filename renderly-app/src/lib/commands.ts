@@ -16,8 +16,13 @@ export function importMedia(path: string) {
   return { command: "ImportMedia", path };
 }
 
-export function addTrack(kind: TrackKind, name: string, id: string | null = null) {
-  return { command: "AddTrack", kind, name, id };
+export function addTrack(
+  kind: TrackKind,
+  name: string,
+  id: string | null = null,
+  sequenceId: string | null = null,
+) {
+  return { command: "AddTrack", kind, name, id, sequence_id: sequenceId };
 }
 
 export function addClip(
@@ -395,5 +400,77 @@ export function generateVoiceover(
     position_secs: positionSecs,
     output_path: outputPath,
     provider,
+  };
+}
+
+// ---- Schema v7: nested sequences and adjustment layers ------------------------------------
+
+export function createSequence(
+  name: string,
+  opts: { width?: number | null; height?: number | null; id?: string | null } = {},
+) {
+  return {
+    command: "CreateSequence",
+    name,
+    width: opts.width ?? null,
+    height: opts.height ?? null,
+    id: opts.id ?? null,
+  };
+}
+
+export function renameSequence(sequenceId: string, name: string) {
+  return { command: "RenameSequence", sequence_id: sequenceId, name };
+}
+
+/** Both sizes are set as given: null resets that axis to the project size. */
+export function setSequenceSettings(
+  sequenceId: string,
+  size: { width?: number | null; height?: number | null },
+) {
+  return {
+    command: "SetSequenceSettings",
+    sequence_id: sequenceId,
+    width: size.width ?? null,
+    height: size.height ?? null,
+  };
+}
+
+export function deleteSequence(sequenceId: string) {
+  return { command: "DeleteSequence", sequence_id: sequenceId };
+}
+
+export function nestClips(clips: { trackId: string; clipId: string }[], name: string) {
+  return {
+    command: "NestClips",
+    clips: clips.map((c) => ({ track_id: c.trackId, clip_id: c.clipId })),
+    name,
+  };
+}
+
+export function unnestClip(trackId: string, clipId: string) {
+  return { command: "UnnestClip", track_id: trackId, clip_id: clipId };
+}
+
+export function addAdjustmentLayer(trackId: string, positionSecs: number, durationSecs: number) {
+  return {
+    command: "AddAdjustmentLayer",
+    track_id: trackId,
+    position_secs: positionSecs,
+    duration_secs: durationSecs,
+  };
+}
+
+export function setAdjustmentLayer(
+  trackId: string,
+  clipId: string,
+  fields: { positionSecs?: number | null; durationSecs?: number | null; opacity?: number | null },
+) {
+  return {
+    command: "SetAdjustmentLayer",
+    track_id: trackId,
+    clip_id: clipId,
+    position_secs: fields.positionSecs ?? null,
+    duration_secs: fields.durationSecs ?? null,
+    opacity: fields.opacity ?? null,
   };
 }

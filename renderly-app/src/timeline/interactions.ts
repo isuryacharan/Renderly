@@ -235,7 +235,10 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
           store.select(hitSel);
         }
 
-        if (store.toolMode === "select" && hit.edge === "left" && hit.clip.type === "caption") {
+        // Adjustment layers have no source range to trim (TrimClip is rejected for them):
+        // their edges behave like the body (move only).
+        const edge = hit.clip.type === "adjustment" ? "body" : hit.edge;
+        if (store.toolMode === "select" && edge === "left" && hit.clip.type === "caption") {
           dragStateRef.current = {
             mode: "trim-left-caption",
             trackId: hit.trackId,
@@ -244,7 +247,11 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
             origPos: hit.clip.position_secs,
             origDur: hit.clip.duration_secs,
           };
-        } else if (store.toolMode === "select" && hit.edge === "left" && hit.clip.type !== "caption") {
+        } else if (
+          store.toolMode === "select" &&
+          edge === "left" &&
+          (hit.clip.type === "video" || hit.clip.type === "audio")
+        ) {
           dragStateRef.current = {
             mode: "trim-left",
             trackId: hit.trackId,
@@ -254,7 +261,7 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
             origOut: hit.clip.source_out_secs,
             origPos: hit.clip.position_secs,
           };
-        } else if (store.toolMode === "select" && hit.edge === "right") {
+        } else if (store.toolMode === "select" && edge === "right" && hit.clip.type !== "adjustment") {
           dragStateRef.current = {
             mode: "trim-right",
             trackId: hit.trackId,
@@ -320,7 +327,8 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
           store.scrollX,
           store.scrollY,
         );
-        if (hit?.edge === "left" || hit?.edge === "right") canvas.style.cursor = "ew-resize";
+        if (hit && hit.clip.type !== "adjustment" && (hit.edge === "left" || hit.edge === "right"))
+          canvas.style.cursor = "ew-resize";
         else if (hit) canvas.style.cursor = "grab";
         else canvas.style.cursor = "default";
         return;
@@ -413,7 +421,7 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
         else if (x < 100) store.panBy(-10, 0);
       } else {
         const clip = findClip(project, drag.trackId, drag.clipId);
-        if (!clip) return;
+        if (!clip || clip.type === "adjustment") return;
 
         if (drag.mode === "trim-right") {
           const raw =
@@ -558,7 +566,7 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
       }
 
       const clip = findClip(project, drag.trackId, drag.clipId);
-      if (!clip) return;
+      if (!clip || clip.type === "adjustment") return;
 
       if (drag.mode === "trim-right") {
         if (clip.type === "caption") {

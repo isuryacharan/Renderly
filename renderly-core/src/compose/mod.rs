@@ -3,13 +3,18 @@
 //! Phase 3.1 adds per-layer user transform (translate / scale / rotate) and opacity.
 //! Phase 3.4 runs builtin effect chains on each layer before the cover+transform draw.
 //! Phase 3 adds dual-texture WGSL transitions.
+//! Schema v7 adds adjustment-layer steps and nested sequences rendered offscreen
+//! (see [`SceneStep`] / [`SequenceScene`]).
 
 pub mod effects;
 pub mod eval;
 mod transition;
 
 pub use effects::{builtin_effect_ids, default_params, BUILTIN_EFFECT_IDS};
-pub use eval::{active_captions, active_layers, ActiveCaption, ActiveLayer, EvalError};
+pub use eval::{
+    active_captions, active_steps, leaf_media_layers, sequence_steps, ActiveCaption, ActiveLayer,
+    ActiveSource, ComposeStep, EvalError, InstanceKey,
+};
 
 use crate::frame::RgbaFrame;
 use crate::packs::LoadedPack;
@@ -54,6 +59,11 @@ pub enum LayerSource {
         width: u32,
         height: u32,
     },
+    /// A nested sequence (schema v7): its own steps are composited offscreen at the
+    /// sequence's resolution over a transparent background, and the result is then this
+    /// layer's picture — transform / effects / mask / transition / opacity apply to it like
+    /// to any decoded frame.
+    Sequence(Box<SequenceScene>),
 }
 
 impl LayerSource {
@@ -61,6 +71,7 @@ impl LayerSource {
         match self {
             Self::Frame(f) => f.width,
             Self::Texture { width, .. } => *width,
+            Self::Sequence(scene) => scene.width,
         }
     }
 
@@ -68,8 +79,138 @@ impl LayerSource {
         match self {
             Self::Frame(f) => f.height,
             Self::Texture { height, .. } => *height,
+            Self::Sequence(scene) => scene.height,
         }
     }
+}
+
+/// The contents of a nested sequence at one instant, ready to composite.
+pub struct SequenceScene {
+    pub width: u32,
+    pub height: u32,
+    pub steps: Vec<SceneStep>,
+}
+
+/// An adjustment layer ready to composite: `effects` run on everything composited so far,
+/// and the result is mixed with the unadjusted picture by `opacity` x `mask`.
+pub struct ComposeAdjustment {
+    pub effects: Vec<EffectInstance>,
+    pub opacity: f32,
+    /// Output-frame (canvas) UVs.
+    pub mask: Option<ClipMask>,
+}
+
+/// One compositing step: a layer or an adjustment, bottom to top.
+pub enum SceneStep {
+    Layer(ComposeLayer),
+    Adjustment(ComposeAdjustment),
+}
+
+impl SceneStep {
+    /// Build an adjustment step from the evaluated [`ComposeStep::Adjustment`] fields.
+    pub fn adjustment(effects: Vec<EffectInstance>, opacity: f32, mask: Option<ClipMask>) -> Self {
+        Self::Adjustment(ComposeAdjustment {
+            effects,
+            opacity,
+            mask,
+        })
+    }
+
+    fn as_ref(&self) -> StepRef<'_> {
+        match self {
+            Self::Layer(l) => StepRef::Layer(l),
+            Self::Adjustment(a) => StepRef::Adjustment(a),
+        }
+    }
+}
+
+/// What a host (native export, the wasm preview, a test stand-in) supplies to turn evaluated
+/// steps into compositor input. [`build_scene`] owns the shared part — adjustment steps,
+/// recursing into nested sequences at their own resolution — so every host assembles
+/// sequences identically and preview/export cannot drift.
+pub trait SceneHost {
+    type Error;
+
+    /// The ready-to-composite layer for a media-sampling [`ActiveLayer`] (usually
+    /// [`ComposeLayer::from_active`] over a decoded frame or element texture and the host's
+    /// mask resolution), or `None` to skip it this frame (decode ended, element not ready).
+    fn media_layer(&mut self, layer: &ActiveLayer) -> Result<Option<ComposeLayer>, Self::Error>;
+
+    /// The mask applied to a nested-sequence layer's picture.
+    fn sequence_mask(&mut self, layer: &ActiveLayer) -> Option<ClipMask>;
+}
+
+/// Failure assembling a scene: evaluation, or the host's own error.
+#[derive(Debug)]
+pub enum SceneError<E> {
+    Eval(EvalError),
+    Host(E),
+}
+
+impl<E> From<EvalError> for SceneError<E> {
+    fn from(e: EvalError) -> Self {
+        Self::Eval(e)
+    }
+}
+
+/// Turn evaluated steps (see [`active_steps`]) into compositor steps via `host`, recursing
+/// into nested sequences. Does not add captions.
+pub fn build_scene<H: SceneHost>(
+    project: &crate::project::Project,
+    steps: Vec<ComposeStep>,
+    host: &mut H,
+) -> Result<Vec<SceneStep>, SceneError<H::Error>> {
+    let mut scene = Vec::with_capacity(steps.len() + 1);
+    for step in steps {
+        let layer = match step {
+            ComposeStep::Adjustment {
+                effects,
+                opacity,
+                mask,
+            } => {
+                scene.push(SceneStep::adjustment(effects, opacity, mask));
+                continue;
+            }
+            ComposeStep::Layer(layer) => layer,
+        };
+        match &layer.source {
+            ActiveSource::Media { .. } => {
+                if let Some(composed) = host.media_layer(&layer).map_err(SceneError::Host)? {
+                    scene.push(SceneStep::Layer(composed));
+                }
+            }
+            ActiveSource::Sequence {
+                sequence_id,
+                time_secs,
+                instance,
+            } => {
+                let seq = project
+                    .find_sequence(*sequence_id)
+                    .ok_or(EvalError::SequenceNotFound(*sequence_id))?;
+                let (width, height) = project.sequence_size(seq);
+                let inner = sequence_steps(project, *sequence_id, *time_secs, instance)?;
+                let inner = build_scene(project, inner, host)?;
+                let mask = host.sequence_mask(&layer);
+                scene.push(SceneStep::Layer(ComposeLayer::from_active(
+                    &layer,
+                    LayerSource::Sequence(Box::new(SequenceScene {
+                        width,
+                        height,
+                        steps: inner,
+                    })),
+                    mask,
+                )));
+            }
+        }
+    }
+    Ok(scene)
+}
+
+/// Borrowed view over a step, so plain `&[ComposeLayer]` callers need no conversion.
+#[derive(Clone, Copy)]
+enum StepRef<'a> {
+    Layer(&'a ComposeLayer),
+    Adjustment(&'a ComposeAdjustment),
 }
 
 /// One composited layer: decoded (or caption) pixels plus evaluated transform at frame time.
@@ -257,6 +398,32 @@ pub struct Compositor {
     // calls instead of allocating one per layer per frame (playback holds a decoded frame
     // at the same size for many consecutive frames, so the steady state is near-100% reuse).
     layer_pool: TexturePool,
+    // v7: render-target textures for nested sequences and adjustment scratch, pooled per
+    // size the same way so a steady-state frame allocates nothing.
+    target_pool: TexturePool,
+}
+
+/// Textures a frame borrowed from the pools; handed back after the commands are submitted
+/// (they must stay alive, and un-reused, until then).
+#[derive(Default)]
+struct FrameScratch {
+    uploads: Vec<wgpu::Texture>,
+    targets: Vec<wgpu::Texture>,
+}
+
+/// A colour target the steps are composited into: the main output, or a nested sequence's
+/// offscreen texture. `width`/`height` drive cover-fit and the effect/transition RT sizes.
+struct Target {
+    view: wgpu::TextureView,
+    width: u32,
+    height: u32,
+}
+
+/// A layer's picture after upload / nested rendering, ready for effects + the draw pass.
+struct Prepared {
+    view: wgpu::TextureView,
+    width: u32,
+    height: u32,
 }
 
 const TEXTURE_POOL_MAX_PER_SIZE: usize = 8;
@@ -577,6 +744,7 @@ impl Compositor {
             effects,
             transitions,
             layer_pool: TexturePool::default(),
+            target_pool: TexturePool::default(),
         })
     }
 
@@ -588,16 +756,32 @@ impl Compositor {
         packs: &[LoadedPack],
         layers: &[ComposeLayer],
     ) -> Result<(), ComposeError> {
+        self.compose_inner(packs, layers.iter().map(StepRef::Layer))
+    }
+
+    /// As [`Self::compose_to_texture`] for a full v7 step list (layers, adjustment layers,
+    /// nested sequences).
+    pub fn compose_steps_to_texture(
+        &mut self,
+        packs: &[LoadedPack],
+        steps: &[SceneStep],
+    ) -> Result<(), ComposeError> {
+        self.compose_inner(packs, steps.iter().map(SceneStep::as_ref))
+    }
+
+    fn compose_inner<'a, I: Iterator<Item = StepRef<'a>>>(
+        &mut self,
+        packs: &[LoadedPack],
+        steps: I,
+    ) -> Result<(), ComposeError> {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("compose-gpu"),
             });
-        let keep_alive = self.encode_layers(packs, layers, &mut encoder)?;
+        let scratch = self.encode_root(packs, steps, &mut encoder)?;
         self.queue.submit(Some(encoder.finish()));
-        for texture in keep_alive {
-            self.layer_pool.give_back(texture);
-        }
+        self.recycle(scratch);
         Ok(())
     }
 
@@ -610,13 +794,31 @@ impl Compositor {
         packs: &[LoadedPack],
         layers: &[ComposeLayer],
     ) -> Result<Vec<u8>, ComposeError> {
+        self.composite_inner(packs, layers.iter().map(StepRef::Layer))
+    }
+
+    /// As [`Self::composite`] for a full v7 step list (layers, adjustment layers, nested
+    /// sequences).
+    pub fn composite_steps(
+        &mut self,
+        packs: &[LoadedPack],
+        steps: &[SceneStep],
+    ) -> Result<Vec<u8>, ComposeError> {
+        self.composite_inner(packs, steps.iter().map(SceneStep::as_ref))
+    }
+
+    fn composite_inner<'a, I: Iterator<Item = StepRef<'a>>>(
+        &mut self,
+        packs: &[LoadedPack],
+        steps: I,
+    ) -> Result<Vec<u8>, ComposeError> {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("export-frame"),
             });
 
-        let keep_alive = self.encode_layers(packs, layers, &mut encoder)?;
+        let scratch = self.encode_root(packs, steps, &mut encoder)?;
 
         let bytes_per_row = self.width * 4;
         let padded_bytes_per_row =
@@ -645,9 +847,7 @@ impl Compositor {
         );
 
         self.queue.submit(Some(encoder.finish()));
-        for texture in keep_alive {
-            self.layer_pool.give_back(texture);
-        }
+        self.recycle(scratch);
 
         let slice = self.readback_buffer.slice(..);
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -681,26 +881,65 @@ impl Compositor {
         Ok(out)
     }
 
-    fn encode_layers(
+    /// Return a finished frame's borrowed textures to their pools.
+    fn recycle(&mut self, scratch: FrameScratch) {
+        for texture in scratch.uploads {
+            self.layer_pool.give_back(texture);
+        }
+        for texture in scratch.targets {
+            self.target_pool.give_back(texture);
+        }
+    }
+
+    fn encode_root<'a, I: Iterator<Item = StepRef<'a>>>(
         &mut self,
         packs: &[LoadedPack],
-        layers: &[ComposeLayer],
+        steps: I,
         encoder: &mut wgpu::CommandEncoder,
-    ) -> Result<Vec<wgpu::Texture>, ComposeError> {
-        // Clear once up front.
+    ) -> Result<FrameScratch, ComposeError> {
+        let target = Target {
+            view: self.output_view.clone(),
+            width: self.width,
+            height: self.height,
+        };
+        let mut scratch = FrameScratch::default();
+        // The root frame starts opaque black; nested sequences start transparent.
+        self.encode_steps(
+            packs,
+            steps,
+            &target,
+            wgpu::Color {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            },
+            encoder,
+            &mut scratch,
+        )?;
+        Ok(scratch)
+    }
+
+    /// Clear `target`, then composite `steps` (first = bottom) onto it. Every target is
+    /// treated as premultiplied-alpha accumulation: the root is opaque (alpha 1, so
+    /// premultiplied == straight) and nested-sequence targets start transparent.
+    fn encode_steps<'a, I: Iterator<Item = StepRef<'a>>>(
+        &mut self,
+        packs: &[LoadedPack],
+        steps: I,
+        target: &Target,
+        clear: wgpu::Color,
+        encoder: &mut wgpu::CommandEncoder,
+        scratch: &mut FrameScratch,
+    ) -> Result<(), ComposeError> {
         {
             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("composite-clear"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.output_view,
+                    view: &target.view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(clear),
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
@@ -712,98 +951,148 @@ impl Compositor {
             });
         }
 
-        let mut keep_alive: Vec<wgpu::Texture> = Vec::with_capacity(layers.len());
-
-        let mut i = 0;
-        while i < layers.len() {
-            let pair = layers.get(i).and_then(|a| {
-                let ta = a.transition?;
-                if ta.is_incoming {
-                    return None;
+        let mut steps = steps.peekable();
+        while let Some(step) = steps.next() {
+            let layer = match step {
+                StepRef::Adjustment(adjustment) => {
+                    self.draw_adjustment(packs, adjustment, target, encoder, scratch)?;
+                    continue;
                 }
-                let b = layers.get(i + 1)?;
-                let tb = b.transition?;
-                if !tb.is_incoming || ta.kind != tb.kind {
-                    return None;
-                }
-                Some((ta.kind, ta.progress))
-            });
+                StepRef::Layer(layer) => layer,
+            };
 
-            if let Some((kind, progress)) = pair {
+            let pair = match (layer.transition, steps.peek().copied()) {
+                (Some(ta), Some(StepRef::Layer(incoming))) if !ta.is_incoming => {
+                    match incoming.transition {
+                        Some(tb) if tb.is_incoming && ta.kind == tb.kind => {
+                            Some((incoming, ta.kind, ta.progress))
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+
+            if let Some((incoming, kind, progress)) = pair {
+                steps.next();
+                // Prepare both pictures first: preparing a nested sequence can itself use the
+                // shared transition render targets, which must not be clobbered between the
+                // two draws below.
+                let prep_out = self.prepare_layer(packs, layer, encoder, scratch)?;
+                let prep_in = self.prepare_layer(packs, incoming, encoder, scratch)?;
                 self.transitions
-                    .ensure_rts(&self.device, self.width, self.height);
-                self.draw_layer_to_transition_rt(
+                    .ensure_rts(&self.device, target.width, target.height);
+                self.draw_prepared(
                     packs,
-                    &layers[i],
-                    true,
+                    layer,
+                    &prep_out,
+                    target,
+                    DrawDest::TransitionA,
                     encoder,
-                    &mut keep_alive,
                 )?;
-                self.draw_layer_to_transition_rt(
+                self.draw_prepared(
                     packs,
-                    &layers[i + 1],
-                    false,
+                    incoming,
+                    &prep_in,
+                    target,
+                    DrawDest::TransitionB,
                     encoder,
-                    &mut keep_alive,
                 )?;
                 self.transitions
-                    .blend(&self.device, encoder, &self.output_view, kind, progress)?;
-                i += 2;
+                    .blend(&self.device, encoder, &target.view, kind, progress)?;
                 continue;
             }
 
-            self.draw_layer_to_output(packs, &layers[i], encoder, &mut keep_alive)?;
-            i += 1;
+            let prepared = self.prepare_layer(packs, layer, encoder, scratch)?;
+            self.draw_prepared(packs, layer, &prepared, target, DrawDest::Main, encoder)?;
         }
 
-        Ok(keep_alive)
+        Ok(())
     }
 
-    fn draw_layer_to_output(
+    /// Adjustment layer: run its effect chain on the accumulation so far and mix the result
+    /// back by `opacity` x `mask`. No-op (no passes, no allocation) when nothing would
+    /// change: no effective effects, or zero opacity.
+    fn draw_adjustment(
         &mut self,
         packs: &[LoadedPack],
-        layer: &ComposeLayer,
+        adjustment: &ComposeAdjustment,
+        target: &Target,
         encoder: &mut wgpu::CommandEncoder,
-        keep_alive: &mut Vec<wgpu::Texture>,
+        scratch: &mut FrameScratch,
     ) -> Result<(), ComposeError> {
-        self.draw_layer(packs, layer, DrawTarget::Output, encoder, keep_alive)
-    }
-
-    fn draw_layer_to_transition_rt(
-        &mut self,
-        packs: &[LoadedPack],
-        layer: &ComposeLayer,
-        to_a: bool,
-        encoder: &mut wgpu::CommandEncoder,
-        keep_alive: &mut Vec<wgpu::Texture>,
-    ) -> Result<(), ComposeError> {
-        self.draw_layer(
-            packs,
-            layer,
-            if to_a {
-                DrawTarget::TransitionA
-            } else {
-                DrawTarget::TransitionB
-            },
+        let opacity = adjustment.opacity.clamp(0.0, 1.0);
+        if opacity <= 0.0 || !self.effects.has_work(&adjustment.effects, packs) {
+            return Ok(());
+        }
+        // Effects expect straight alpha; the accumulation is premultiplied (alpha == 1 at
+        // the root, where this is an exact copy).
+        let straight = self.take_target(target.width, target.height);
+        let straight_view = straight.create_view(&Default::default());
+        scratch.targets.push(straight);
+        self.effects
+            .unpremultiply(&self.device, encoder, &target.view, &straight_view)?;
+        let wrote = self.effects.apply(
+            &self.device,
+            &self.queue,
             encoder,
-            keep_alive,
-        )
+            &straight_view,
+            target.width,
+            target.height,
+            &adjustment.effects,
+            None,
+            packs,
+        )?;
+        if wrote {
+            self.effects.mix_adjustment(
+                &self.device,
+                &self.queue,
+                encoder,
+                &straight_view,
+                &target.view,
+                opacity,
+                adjustment.mask.as_ref(),
+            )?;
+        }
+        Ok(())
     }
 
-    fn draw_layer(
+    fn take_target(&mut self, width: u32, height: u32) -> wgpu::Texture {
+        match self.target_pool.take(width, height) {
+            Some(texture) => texture,
+            None => self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("compose-target"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            }),
+        }
+    }
+
+    /// Turn a layer's source into a sampleable view: upload a decoded frame, wrap an external
+    /// texture, or composite a nested sequence offscreen.
+    fn prepare_layer(
         &mut self,
         packs: &[LoadedPack],
         layer: &ComposeLayer,
-        target: DrawTarget,
         encoder: &mut wgpu::CommandEncoder,
-        keep_alive: &mut Vec<wgpu::Texture>,
-    ) -> Result<(), ComposeError> {
-        let src_w = layer.source.width();
-        let src_h = layer.source.height();
+        scratch: &mut FrameScratch,
+    ) -> Result<Prepared, ComposeError> {
+        let width = layer.source.width();
+        let height = layer.source.height();
         // Frame sources go through the pooled upload textures (returned to the pool after
-        // submit via `keep_alive`); Texture sources are externally owned and bound directly
+        // submit via `scratch`); Texture sources are externally owned and bound directly
         // — the caller keeps them alive across the frame, so they never enter the pool.
-        let uploaded_view = match &layer.source {
+        let view = match &layer.source {
             LayerSource::Frame(frame) => {
                 let texture = match self.layer_pool.take(frame.width, frame.height) {
                     Some(texture) => {
@@ -838,17 +1127,77 @@ impl Compositor {
                     ),
                 };
                 let view = texture.create_view(&Default::default());
-                keep_alive.push(texture);
+                scratch.uploads.push(texture);
                 view
             }
             LayerSource::Texture { texture, .. } => texture.create_view(&Default::default()),
+            LayerSource::Sequence(scene) => {
+                return self.render_sequence(packs, scene, encoder, scratch);
+            }
         };
+        Ok(Prepared {
+            view,
+            width,
+            height,
+        })
+    }
+
+    /// Composite a nested sequence's steps into a transparent offscreen target at the
+    /// sequence's resolution, then convert the premultiplied accumulation to straight alpha
+    /// so the result can go through the ordinary effect / mask / draw path.
+    fn render_sequence(
+        &mut self,
+        packs: &[LoadedPack],
+        scene: &SequenceScene,
+        encoder: &mut wgpu::CommandEncoder,
+        scratch: &mut FrameScratch,
+    ) -> Result<Prepared, ComposeError> {
+        let (width, height) = (scene.width.max(1), scene.height.max(1));
+        let accumulation = self.take_target(width, height);
+        let target = Target {
+            view: accumulation.create_view(&Default::default()),
+            width,
+            height,
+        };
+        scratch.targets.push(accumulation);
+        self.encode_steps(
+            packs,
+            scene.steps.iter().map(SceneStep::as_ref),
+            &target,
+            wgpu::Color::TRANSPARENT,
+            encoder,
+            scratch,
+        )?;
+
+        let straight = self.take_target(width, height);
+        let view = straight.create_view(&Default::default());
+        scratch.targets.push(straight);
+        self.effects
+            .unpremultiply(&self.device, encoder, &target.view, &view)?;
+        Ok(Prepared {
+            view,
+            width,
+            height,
+        })
+    }
+
+    fn draw_prepared(
+        &mut self,
+        packs: &[LoadedPack],
+        layer: &ComposeLayer,
+        prepared: &Prepared,
+        target: &Target,
+        dest: DrawDest,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<(), ComposeError> {
+        let (src_w, src_h) = (prepared.width, prepared.height);
+        let uploaded_view = &prepared.view;
 
         let use_effects = self.effects.apply(
             &self.device,
             &self.queue,
             encoder,
-            &uploaded_view,
+            uploaded_view,
             src_w,
             src_h,
             &layer.effects,
@@ -856,7 +1205,7 @@ impl Compositor {
             packs,
         )?;
 
-        let params = layer_params(src_w, src_h, self.width, self.height, &layer.transform);
+        let params = layer_params(src_w, src_h, target.width, target.height, &layer.transform);
         let params_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -868,7 +1217,7 @@ impl Compositor {
         let sample_view = if use_effects {
             self.effects.result_view()
         } else {
-            &uploaded_view
+            uploaded_view
         };
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -890,11 +1239,11 @@ impl Compositor {
             ],
         });
 
-        let clear = matches!(target, DrawTarget::TransitionA | DrawTarget::TransitionB);
-        let dest_view = match target {
-            DrawTarget::Output => &self.output_view,
-            DrawTarget::TransitionA => self.transitions.view_a(),
-            DrawTarget::TransitionB => self.transitions.view_b(),
+        let clear = matches!(dest, DrawDest::TransitionA | DrawDest::TransitionB);
+        let dest_view = match dest {
+            DrawDest::Main => &target.view,
+            DrawDest::TransitionA => self.transitions.view_a(),
+            DrawDest::TransitionB => self.transitions.view_b(),
         };
 
         {
@@ -932,8 +1281,8 @@ impl Compositor {
     }
 }
 
-enum DrawTarget {
-    Output,
+enum DrawDest {
+    Main,
     TransitionA,
     TransitionB,
 }
@@ -1551,5 +1900,349 @@ mod tests {
         assert!(ids.contains(&"builtin:lut_warm"));
         assert!(ids.contains(&"builtin:glitch"));
         assert!(ids.contains(&"builtin:chroma_key"));
+    }
+
+    // ---- schema v7: adjustment layers and nested sequences ------------------------------
+
+    fn layer(frame: RgbaFrame) -> ComposeLayer {
+        ComposeLayer {
+            source: LayerSource::Frame(frame),
+            transform: ClipTransform::default(),
+            effects: vec![],
+            mask: None,
+            transition: None,
+        }
+    }
+
+    fn solid_rgba(w: u32, h: u32, rgba: [u8; 4]) -> RgbaFrame {
+        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        for px in pixels.as_chunks_mut::<4>().0 {
+            *px = rgba;
+        }
+        RgbaFrame {
+            width: w,
+            height: h,
+            pixels,
+        }
+    }
+
+    fn sequence_layer(w: u32, h: u32, steps: Vec<SceneStep>) -> SceneStep {
+        SceneStep::Layer(ComposeLayer {
+            source: LayerSource::Sequence(Box::new(SequenceScene {
+                width: w,
+                height: h,
+                steps,
+            })),
+            transform: ClipTransform::default(),
+            effects: vec![],
+            mask: None,
+            transition: None,
+        })
+    }
+
+    fn max_diff(a: &[u8], b: &[u8]) -> u8 {
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| x.abs_diff(*y))
+            .max()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn adjustment_applies_effects_to_everything_beneath_it_only() {
+        let mut c = match Compositor::new(16, 16) {
+            Ok(c) => c,
+            Err(ComposeError::NoAdapter) => return,
+            Err(e) => panic!("{e}"),
+        };
+        let grey = SceneStep::adjustment(
+            vec![effect(
+                "builtin:color_adjust",
+                [("saturation".into(), 0.0)].into_iter().collect(),
+            )],
+            1.0,
+            None,
+        );
+        let steps = vec![
+            SceneStep::Layer(layer(solid_frame(16, 16, 255, 0, 0))),
+            grey,
+            // Above the adjustment: must stay green.
+            SceneStep::Layer(ComposeLayer {
+                transform: ClipTransform {
+                    scale_x: 0.5,
+                    scale_y: 0.5,
+                    ..ClipTransform::default()
+                },
+                ..layer(solid_frame(16, 16, 0, 255, 0))
+            }),
+        ];
+        let out = c.composite_steps(&[], &steps).unwrap();
+        let px = |x: usize, y: usize| &out[(y * 16 + x) * 4..(y * 16 + x) * 4 + 4];
+        // Corner: only red beneath -> greyed (r == g == b, non-zero luma).
+        let corner = px(0, 0);
+        assert!(
+            corner[0] == corner[1] && corner[1] == corner[2],
+            "{corner:?}"
+        );
+        assert!(corner[0] > 30, "{corner:?}");
+        // Centre: the layer above the adjustment is untouched green.
+        assert_eq!(px(8, 8), &[0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn adjustment_opacity_zero_and_inert_effects_are_identity() {
+        let mut c = match Compositor::new(16, 16) {
+            Ok(c) => c,
+            Err(ComposeError::NoAdapter) => return,
+            Err(e) => panic!("{e}"),
+        };
+        let base = c
+            .composite(&[], &[layer(solid_frame(16, 16, 40, 80, 120))])
+            .unwrap();
+        let strong = effect(
+            "builtin:color_adjust",
+            [("exposure".into(), 2.0)].into_iter().collect(),
+        );
+        let mut disabled = strong.clone();
+        disabled.enabled = false;
+        for adj in [
+            SceneStep::adjustment(vec![strong.clone()], 0.0, None),
+            SceneStep::adjustment(vec![disabled], 1.0, None),
+            SceneStep::adjustment(vec![], 1.0, None),
+        ] {
+            let out = c
+                .composite_steps(
+                    &[],
+                    &[
+                        SceneStep::Layer(layer(solid_frame(16, 16, 40, 80, 120))),
+                        adj,
+                    ],
+                )
+                .unwrap();
+            assert_eq!(out, base);
+        }
+        // And an effective adjustment at half opacity lands strictly between.
+        let half = c
+            .composite_steps(
+                &[],
+                &[
+                    SceneStep::Layer(layer(solid_frame(16, 16, 40, 80, 120))),
+                    SceneStep::adjustment(vec![strong.clone()], 0.5, None),
+                ],
+            )
+            .unwrap();
+        let full = c
+            .composite_steps(
+                &[],
+                &[
+                    SceneStep::Layer(layer(solid_frame(16, 16, 40, 80, 120))),
+                    SceneStep::adjustment(vec![strong], 1.0, None),
+                ],
+            )
+            .unwrap();
+        assert!(half[0] > base[0] && half[0] < full[0], "{half:?} {full:?}");
+    }
+
+    #[test]
+    fn adjustment_mask_limits_where_it_applies() {
+        let mut c = match Compositor::new(16, 16) {
+            Ok(c) => c,
+            Err(ComposeError::NoAdapter) => return,
+            Err(e) => panic!("{e}"),
+        };
+        let adj = SceneStep::adjustment(
+            vec![effect(
+                "builtin:color_adjust",
+                [("saturation".into(), 0.0)].into_iter().collect(),
+            )],
+            1.0,
+            // Left half of the canvas.
+            Some(ClipMask {
+                enabled: true,
+                invert: false,
+                feather: 0.0,
+                kind: crate::project::ClipMaskKind::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 0.5,
+                    height: 1.0,
+                },
+            }),
+        );
+        let out = c
+            .composite_steps(
+                &[],
+                &[SceneStep::Layer(layer(solid_frame(16, 16, 255, 0, 0))), adj],
+            )
+            .unwrap();
+        let left = &out[(8 * 16 + 2) * 4..(8 * 16 + 2) * 4 + 4];
+        let right = &out[(8 * 16 + 13) * 4..(8 * 16 + 13) * 4 + 4];
+        assert!(left[0] == left[1] && left[1] == left[2], "{left:?}");
+        assert_eq!(right, &[255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn opaque_nested_sequence_matches_the_flat_equivalent_exactly() {
+        let mut c = match Compositor::new(32, 32) {
+            Ok(c) => c,
+            Err(ComposeError::NoAdapter) => return,
+            Err(e) => panic!("{e}"),
+        };
+        let flat = c
+            .composite(&[], &[layer(solid_frame(32, 32, 10, 200, 90))])
+            .unwrap();
+        let nested = c
+            .composite_steps(
+                &[],
+                &[sequence_layer(
+                    32,
+                    32,
+                    vec![SceneStep::Layer(layer(solid_frame(32, 32, 10, 200, 90)))],
+                )],
+            )
+            .unwrap();
+        assert_eq!(
+            flat, nested,
+            "nesting an opaque layer must not change a pixel"
+        );
+    }
+
+    #[test]
+    fn nesting_preserves_transparency() {
+        let mut c = match Compositor::new(32, 32) {
+            Ok(c) => c,
+            Err(ComposeError::NoAdapter) => return,
+            Err(e) => panic!("{e}"),
+        };
+        let backdrop = || SceneStep::Layer(layer(solid_frame(32, 32, 0, 0, 255)));
+        let half_red = || solid_rgba(32, 32, [255, 0, 0, 128]);
+        let flat = c
+            .composite_steps(&[], &[backdrop(), SceneStep::Layer(layer(half_red()))])
+            .unwrap();
+        let nested = c
+            .composite_steps(
+                &[],
+                &[
+                    backdrop(),
+                    sequence_layer(32, 32, vec![SceneStep::Layer(layer(half_red()))]),
+                ],
+            )
+            .unwrap();
+        // The sequence rendered over transparent (not black): the blue backdrop shows through
+        // the half-transparent red just like the flat composite (8-bit premultiply round trip
+        // allows a few LSB).
+        assert!(
+            max_diff(&flat, &nested) <= 3,
+            "{:?} vs {:?}",
+            &flat[..4],
+            &nested[..4]
+        );
+        assert!(
+            nested[2] > 100,
+            "backdrop blue survives: {:?}",
+            &nested[..4]
+        );
+
+        // A fully transparent nested layer leaves the backdrop untouched.
+        let clear = c
+            .composite_steps(
+                &[],
+                &[
+                    backdrop(),
+                    sequence_layer(
+                        32,
+                        32,
+                        vec![SceneStep::Layer(layer(solid_rgba(32, 32, [255, 0, 0, 0])))],
+                    ),
+                ],
+            )
+            .unwrap();
+        assert_eq!(&clear[..4], &[0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn sequence_at_its_own_resolution_is_cover_fitted() {
+        let mut c = match Compositor::new(32, 18) {
+            Ok(c) => c,
+            Err(ComposeError::NoAdapter) => return,
+            Err(e) => panic!("{e}"),
+        };
+        // A 16x16 sequence into a 32x18 frame: cover-fit fills the whole frame.
+        let out = c
+            .composite_steps(
+                &[],
+                &[sequence_layer(
+                    16,
+                    16,
+                    vec![SceneStep::Layer(layer(solid_frame(16, 16, 200, 100, 50)))],
+                )],
+            )
+            .unwrap();
+        assert_eq!(&out[..4], &[200, 100, 50, 255]);
+        let last = out.len() - 4;
+        assert_eq!(&out[last..], &[200, 100, 50, 255]);
+    }
+
+    #[test]
+    fn nested_sequences_and_adjustments_reuse_pooled_targets_across_frames() {
+        let mut c = match Compositor::new(16, 16) {
+            Ok(c) => c,
+            Err(ComposeError::NoAdapter) => return,
+            Err(e) => panic!("{e}"),
+        };
+        let grey = || {
+            SceneStep::adjustment(
+                vec![effect(
+                    "builtin:color_adjust",
+                    [("saturation".into(), 0.0)].into_iter().collect(),
+                )],
+                1.0,
+                None,
+            )
+        };
+        let frame = |c: &mut Compositor| {
+            c.composite_steps(
+                &[],
+                &[
+                    sequence_layer(
+                        16,
+                        16,
+                        vec![
+                            SceneStep::Layer(layer(solid_frame(16, 16, 255, 0, 0))),
+                            grey(),
+                        ],
+                    ),
+                    grey(),
+                ],
+            )
+            .unwrap();
+        };
+        frame(&mut c);
+        let pooled = |c: &Compositor| c.target_pool.free.values().map(Vec::len).sum::<usize>();
+        let after_first = pooled(&c);
+        assert!(after_first > 0, "targets are returned to the pool");
+        for _ in 0..3 {
+            frame(&mut c);
+        }
+        assert_eq!(
+            pooled(&c),
+            after_first,
+            "steady state allocates no new targets (they are taken from and returned to the pool)"
+        );
+    }
+
+    #[test]
+    fn no_pool_targets_are_used_without_sequences_or_adjustments() {
+        let mut c = match Compositor::new(16, 16) {
+            Ok(c) => c,
+            Err(ComposeError::NoAdapter) => return,
+            Err(e) => panic!("{e}"),
+        };
+        c.composite(&[], &[layer(solid_frame(16, 16, 1, 2, 3))])
+            .unwrap();
+        assert!(
+            c.target_pool.free.values().all(Vec::is_empty),
+            "plain layers must not touch the v7 target pool"
+        );
     }
 }

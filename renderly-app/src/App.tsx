@@ -36,6 +36,8 @@ export function App() {
       const items = useEditorStore.getState().project?.media ?? [];
       for (const item of items) {
         if (cancelled) return;
+        // A nested sequence has no file to thumbnail or waveform.
+        if (item.kind === "sequence") continue;
         if (useEditorStore.getState().mediaAssets[item.id]) continue;
         try {
           const assets = await ipc.getMediaAssets(item.id);

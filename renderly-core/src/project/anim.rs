@@ -1,6 +1,8 @@
 //! Keyframe evaluation for Phase 3 — interpolates clip transform / volume / speed.
 
-use super::{clamp_clip_speed, AnimProperty, ClipTransform, Easing, KeyframeTrack, MediaClip};
+use super::{
+    clamp_clip_speed, AdjustmentClip, AnimProperty, ClipTransform, Easing, KeyframeTrack, MediaClip,
+};
 
 /// Evaluate the effective transform at `timeline_secs` (absolute on the project timeline).
 pub fn evaluate_transform(clip: &MediaClip, timeline_secs: f64) -> ClipTransform {
@@ -21,6 +23,19 @@ pub fn evaluate_transform(clip: &MediaClip, timeline_secs: f64) -> ClipTransform
         }
     }
     t
+}
+
+/// Effective opacity of an adjustment layer at absolute timeline time `t`.
+pub fn evaluate_adjustment_opacity(clip: &AdjustmentClip, timeline_secs: f64) -> f64 {
+    let local = (timeline_secs - clip.position_secs).max(0.0);
+    for track in &clip.keyframes {
+        if track.property == AnimProperty::Opacity {
+            if let Some(v) = sample_track(track, local) {
+                return v.clamp(0.0, 1.0);
+            }
+        }
+    }
+    clip.opacity.clamp(0.0, 1.0)
 }
 
 /// Effective gain in dB: base `gain_db` plus optional `Volume` keyframe track

@@ -181,8 +181,6 @@ struct PingPongRt {
     /// Kept alive so `view` remains valid.
     _texture: wgpu::Texture,
     view: wgpu::TextureView,
-    width: u32,
-    height: u32,
 }
 
 /// GPU resources for the builtin effect chain (owned by [`super::Compositor`]).
@@ -201,10 +199,32 @@ pub struct EffectProcessor {
     pack_lut_cache: HashMap<String, PackLutGpu>,
     matte_cache: HashMap<String, wgpu::TextureView>,
     dummy_matte_view: Option<wgpu::TextureView>,
-    ping: Option<PingPongRt>,
-    pong: Option<PingPongRt>,
+    /// Ping/pong render targets per size, so alternating sizes within a frame (a nested
+    /// sequence at its own resolution) reuses them instead of reallocating every layer.
+    rts: HashMap<(u32, u32), [PingPongRt; 2]>,
+    /// Size of the ping/pong pair the last [`Self::apply`] wrote to.
+    cur_size: (u32, u32),
     /// After a successful write, index of the RT holding the result (0=ping, 1=pong).
     result_slot: u8,
+    unpremul_pipeline: wgpu::RenderPipeline,
+    adjust_mix_pipeline: wgpu::RenderPipeline,
+    adjust_mix_bind_group_layout: wgpu::BindGroupLayout,
+    /// Unused 16-byte uniform for passes that share the single-texture effect layout.
+    dummy_uniform: wgpu::Buffer,
+}
+
+/// Distinct ping/pong sizes kept alive before the cache is reset.
+const MAX_RT_SIZES: usize = 4;
+
+/// Matches `MixParams` in adjust_mix.wgsl.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MixUniform {
+    bounds: [f32; 4],
+    feather: f32,
+    invert: f32,
+    mode: u32,
+    opacity: f32,
 }
 
 impl EffectProcessor {
@@ -402,6 +422,62 @@ impl EffectProcessor {
             "mask",
             include_str!("mask.wgsl"),
         );
+        let unpremul_pipeline = make_effect_pipeline(
+            device,
+            &pipeline_layout,
+            "unpremul",
+            include_str!("unpremul.wgsl"),
+        );
+
+        // adjust_mix: bindings 0/1 = unadjusted/adjusted picture, 2 = sampler, 3 = params,
+        // 4 = matte (the dummy 1x1 white matte when no raster mask is in use).
+        let tex_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let adjust_mix_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("adjust-mix"),
+                entries: &[
+                    tex_entry(0),
+                    tex_entry(1),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    tex_entry(4),
+                ],
+            });
+        let adjust_mix_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("adjust-mix"),
+                bind_group_layouts: &[Some(&adjust_mix_bind_group_layout)],
+                immediate_size: 0,
+            });
+        let adjust_mix_pipeline = make_effect_pipeline(
+            device,
+            &adjust_mix_pipeline_layout,
+            "adjust_mix",
+            include_str!("adjust_mix.wgsl"),
+        );
 
         Self {
             sampler,
@@ -418,31 +494,53 @@ impl EffectProcessor {
             pack_lut_cache: HashMap::new(),
             matte_cache: HashMap::new(),
             dummy_matte_view: None,
-            ping: None,
-            pong: None,
+            rts: HashMap::new(),
+            cur_size: (0, 0),
             result_slot: 0,
+            unpremul_pipeline,
+            adjust_mix_pipeline,
+            adjust_mix_bind_group_layout,
+            dummy_uniform: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("effect-dummy-uniform"),
+                contents: &[0u8; 16],
+                usage: wgpu::BufferUsages::UNIFORM,
+            }),
         }
     }
 
     fn ensure_rts(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        let needs = |rt: &Option<PingPongRt>| {
-            rt.as_ref()
-                .map(|r| r.width != width || r.height != height)
-                .unwrap_or(true)
-        };
-        if needs(&self.ping) {
-            self.ping = Some(create_rt(device, "effect-ping", width, height));
+        self.cur_size = (width, height);
+        if self.rts.contains_key(&self.cur_size) {
+            return;
         }
-        if needs(&self.pong) {
-            self.pong = Some(create_rt(device, "effect-pong", width, height));
+        if self.rts.len() >= MAX_RT_SIZES {
+            self.rts.clear();
         }
+        self.rts.insert(
+            self.cur_size,
+            [
+                create_rt(device, "effect-ping", width, height),
+                create_rt(device, "effect-pong", width, height),
+            ],
+        );
+    }
+
+    /// View of ping (0) or pong (1) at the size of the last [`Self::apply`].
+    fn slot_view(&self, slot: u8) -> &wgpu::TextureView {
+        &self
+            .rts
+            .get(&self.cur_size)
+            .expect("effect RTs for the current size")[slot as usize]
+            .view
     }
 
     pub fn result_view(&self) -> &wgpu::TextureView {
-        match self.result_slot {
-            0 => &self.ping.as_ref().expect("effect ping RT").view,
-            _ => &self.pong.as_ref().expect("effect pong RT").view,
-        }
+        self.slot_view(self.result_slot)
+    }
+
+    /// True when `effects` would write anything (some enabled, resolvable effect).
+    pub(super) fn has_work(&self, effects: &[EffectInstance], packs: &[LoadedPack]) -> bool {
+        has_enabled_effects(effects, packs)
     }
 
     /// Run enabled effects on `src_view` into ping-pong RTs. Returns `false` when nothing
@@ -637,43 +735,7 @@ impl EffectProcessor {
         }
 
         if let Some(mask) = mask.filter(|m| m.enabled) {
-            let u = match &mask.kind {
-                ClipMaskKind::None => MaskUniform {
-                    bounds: [0.0; 4],
-                    feather: 0.0,
-                    invert: 0.0,
-                    mode: 0,
-                    _pad0: 0.0,
-                },
-                ClipMaskKind::Rect {
-                    x,
-                    y,
-                    width,
-                    height,
-                } => MaskUniform {
-                    bounds: [*x as f32, *y as f32, *width as f32, *height as f32],
-                    feather: mask.feather as f32,
-                    invert: if mask.invert { 1.0 } else { 0.0 },
-                    mode: 0,
-                    _pad0: 0.0,
-                },
-                ClipMaskKind::Ellipse { cx, cy, rx, ry } => MaskUniform {
-                    bounds: [*cx as f32, *cy as f32, *rx as f32, *ry as f32],
-                    feather: mask.feather as f32,
-                    invert: if mask.invert { 1.0 } else { 0.0 },
-                    mode: 1,
-                    _pad0: 0.0,
-                },
-                ClipMaskKind::Raster { .. }
-                | ClipMaskKind::Generated { .. }
-                | ClipMaskKind::Luma { .. } => MaskUniform {
-                    bounds: [0.0; 4],
-                    feather: mask.feather as f32,
-                    invert: if mask.invert { 1.0 } else { 0.0 },
-                    mode: 2,
-                    _pad0: 0.0,
-                },
-            };
+            let u = mask_uniform(mask);
 
             let matte_view = if u.mode == 2 {
                 self.ensure_matte_view(device, queue, &mask.kind)?
@@ -693,6 +755,143 @@ impl EffectProcessor {
         }
 
         Ok(wrote)
+    }
+
+    /// Convert a premultiplied-alpha texture into straight alpha (`dest` = `src` with colour
+    /// divided by alpha). Both must be the same size; `dest` is overwritten. Used to hand a
+    /// nested sequence's transparent accumulation to the straight-alpha layer path, and to
+    /// give adjustment effects straight-alpha input. Exact copy where alpha is 1.
+    pub(super) fn unpremultiply(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        src_view: &wgpu::TextureView,
+        dest_view: &wgpu::TextureView,
+    ) -> Result<(), ComposeError> {
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("unpremul-bind"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(src_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.dummy_uniform.as_entire_binding(),
+                },
+            ],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("unpremultiply"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: dest_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.unpremul_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.draw(0..6, 0..1);
+        Ok(())
+    }
+
+    /// Finish an adjustment layer: write `mix(unadjusted, adjusted, opacity x mask)` into
+    /// `dest_view` (premultiplied). `unadjusted_view` is the straight-alpha copy of `dest`
+    /// that was fed to [`Self::apply`]; the adjusted picture is that call's
+    /// [`Self::result_view`], so call this immediately after a successful `apply`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn mix_adjustment(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        unadjusted_view: &wgpu::TextureView,
+        dest_view: &wgpu::TextureView,
+        opacity: f32,
+        mask: Option<&ClipMask>,
+    ) -> Result<(), ComposeError> {
+        // A `None`-kind mask means "no restriction" here (there is nothing to restrict by).
+        let mask = mask.filter(|m| m.enabled && m.kind != ClipMaskKind::None);
+        let m = mask.map(mask_uniform);
+        let uniform = MixUniform {
+            bounds: m.map(|m| m.bounds).unwrap_or([0.0; 4]),
+            feather: m.map(|m| m.feather).unwrap_or(0.0),
+            invert: m.map(|m| m.invert).unwrap_or(0.0),
+            // 3 = no mask.
+            mode: m.map(|m| m.mode).unwrap_or(3),
+            opacity,
+        };
+        let matte_view = match (m, mask) {
+            (Some(m), Some(mask)) if m.mode == 2 => {
+                self.ensure_matte_view(device, queue, &mask.kind)?
+            }
+            _ => self.ensure_dummy_matte(device, queue)?,
+        };
+        let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("adjust-mix-params"),
+            contents: bytemuck::bytes_of(&uniform),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("adjust-mix-bind"),
+            layout: &self.adjust_mix_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(unadjusted_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(self.result_view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&matte_view),
+                },
+            ],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("adjust-mix"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: dest_view,
+                resolve_target: None,
+                // Every pixel is written (blend off), so the old contents are not needed.
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.adjust_mix_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.draw(0..6, 0..1);
+        Ok(())
     }
 
     fn ensure_matte_view(
@@ -891,9 +1090,9 @@ impl EffectProcessor {
             let input_view = if input_is_src {
                 src_view
             } else if input_slot == 0 {
-                &self.ping.as_ref().unwrap().view
+                self.slot_view(0)
             } else {
-                &self.pong.as_ref().unwrap().view
+                self.slot_view(1)
             };
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("mask-bind"),
@@ -924,9 +1123,9 @@ impl EffectProcessor {
         };
 
         let dest_view = if dest_slot == 0 {
-            &self.ping.as_ref().unwrap().view
+            self.slot_view(0)
         } else {
-            &self.pong.as_ref().unwrap().view
+            self.slot_view(1)
         };
 
         {
@@ -1026,9 +1225,9 @@ impl EffectProcessor {
             let input_view = if input_is_src {
                 src_view
             } else if input_slot == 0 {
-                &self.ping.as_ref().unwrap().view
+                self.slot_view(0)
             } else {
-                &self.pong.as_ref().unwrap().view
+                self.slot_view(1)
             };
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("pack-lut-bind"),
@@ -1059,9 +1258,9 @@ impl EffectProcessor {
         };
 
         let dest_view = if dest_slot == 0 {
-            &self.ping.as_ref().unwrap().view
+            self.slot_view(0)
         } else {
-            &self.pong.as_ref().unwrap().view
+            self.slot_view(1)
         };
 
         {
@@ -1122,9 +1321,9 @@ impl EffectProcessor {
             let input_view = if input_is_src {
                 src_view
             } else if input_slot == 0 {
-                &self.ping.as_ref().unwrap().view
+                self.slot_view(0)
             } else {
-                &self.pong.as_ref().unwrap().view
+                self.slot_view(1)
             };
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("effect-bind"),
@@ -1147,9 +1346,9 @@ impl EffectProcessor {
         };
 
         let dest_view = if dest_slot == 0 {
-            &self.ping.as_ref().unwrap().view
+            self.slot_view(0)
         } else {
-            &self.pong.as_ref().unwrap().view
+            self.slot_view(1)
         };
 
         {
@@ -1179,6 +1378,47 @@ impl EffectProcessor {
     }
 }
 
+/// Shader parameters for `mask.wgsl` / `adjust_mix.wgsl` (mode 0 rect, 1 ellipse, 2 raster).
+fn mask_uniform(mask: &ClipMask) -> MaskUniform {
+    match &mask.kind {
+        ClipMaskKind::None => MaskUniform {
+            bounds: [0.0; 4],
+            feather: 0.0,
+            invert: 0.0,
+            mode: 0,
+            _pad0: 0.0,
+        },
+        ClipMaskKind::Rect {
+            x,
+            y,
+            width,
+            height,
+        } => MaskUniform {
+            bounds: [*x as f32, *y as f32, *width as f32, *height as f32],
+            feather: mask.feather as f32,
+            invert: if mask.invert { 1.0 } else { 0.0 },
+            mode: 0,
+            _pad0: 0.0,
+        },
+        ClipMaskKind::Ellipse { cx, cy, rx, ry } => MaskUniform {
+            bounds: [*cx as f32, *cy as f32, *rx as f32, *ry as f32],
+            feather: mask.feather as f32,
+            invert: if mask.invert { 1.0 } else { 0.0 },
+            mode: 1,
+            _pad0: 0.0,
+        },
+        ClipMaskKind::Raster { .. }
+        | ClipMaskKind::Generated { .. }
+        | ClipMaskKind::Luma { .. } => MaskUniform {
+            bounds: [0.0; 4],
+            feather: mask.feather as f32,
+            invert: if mask.invert { 1.0 } else { 0.0 },
+            mode: 2,
+            _pad0: 0.0,
+        },
+    }
+}
+
 fn create_rt(device: &wgpu::Device, label: &str, width: u32, height: u32) -> PingPongRt {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
@@ -1198,8 +1438,6 @@ fn create_rt(device: &wgpu::Device, label: &str, width: u32, height: u32) -> Pin
     PingPongRt {
         _texture: texture,
         view,
-        width,
-        height,
     }
 }
 

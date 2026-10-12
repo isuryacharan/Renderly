@@ -16,7 +16,8 @@ export function InspectorPanel() {
         <h2>Properties</h2>
       </div>
       <div className="panel-body">
-        {!track || !clip ? (
+        {!track || !clip || clip.type === "adjustment" ? (
+          // Adjustment layers get their inspector in the sequences UI work (schema v7 phase B).
           <ProjectInspector />
         ) : clip.type === "caption" ? (
           <CaptionInspector key={clip.id} track={track} clip={clip} />

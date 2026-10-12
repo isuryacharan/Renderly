@@ -64,8 +64,7 @@ enum CliCommand {
 
 fn load_project(path: &PathBuf) -> Result<Project> {
     let data = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    serde_json::from_str(&data)
-        .with_context(|| format!("parsing project JSON at {}", path.display()))
+    Project::from_json(&data).with_context(|| format!("loading project {}", path.display()))
 }
 
 fn save_project(path: &PathBuf, project: &Project) -> Result<()> {

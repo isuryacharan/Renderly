@@ -301,6 +301,10 @@ pub fn request_assets(
     kind: MediaKind,
     dir: PathBuf,
 ) {
+    // A nested sequence has no file to thumbnail or waveform (schema v7).
+    if kind == MediaKind::Sequence {
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         let media_id_for_log = media_id.clone();
         let result = tauri::async_runtime::spawn_blocking(move || {

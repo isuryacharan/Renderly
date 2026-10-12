@@ -1,4 +1,4 @@
-// TS mirror of renderly-core's project schema v6 (docs/project-schema.md). Keep in sync.
+// TS mirror of renderly-core's project schema v7 (docs/project-schema.md). Keep in sync.
 
 export interface Project {
   schema_version: number;
@@ -7,6 +7,8 @@ export interface Project {
   settings: ProjectSettings;
   media: MediaItem[];
   tracks: Track[];
+  /** Nested sequences (schema v7); each is placed through its `kind: "sequence"` media item. */
+  sequences?: Sequence[];
   asset_pack_paths?: string[];
   wasm_plugin_paths?: string[];
   multicam_groups?: MulticamGroup[];
@@ -79,7 +81,16 @@ export interface ProjectSettings {
   duck_db: number;
 }
 
-export type MediaKind = "video" | "audio" | "image";
+export type MediaKind = "video" | "audio" | "image" | "sequence";
+
+/** A nested timeline (schema v7). `width`/`height` of null inherit the project size. */
+export interface Sequence {
+  id: string;
+  name: string;
+  width?: number | null;
+  height?: number | null;
+  tracks: Track[];
+}
 
 export interface MediaItem {
   id: string;
@@ -89,6 +100,8 @@ export interface MediaItem {
   width: number | null;
   height: number | null;
   fps: number | null;
+  /** Present iff `kind === "sequence"`; path is empty and duration/size are derived. */
+  sequence_id?: string | null;
 }
 
 export type TrackKind = "video" | "audio" | "caption";
@@ -204,7 +217,23 @@ export interface CaptionClip {
   style_id: string;
 }
 
-export type Clip = MediaClip | CaptionClip;
+/** Effects applied to everything composited beneath it (schema v7). Video tracks only. */
+export interface AdjustmentClip {
+  type: "adjustment";
+  id: string;
+  position_secs: number;
+  duration_secs: number;
+  enabled: boolean;
+  /** 0..1 mix between the unadjusted and adjusted picture. */
+  opacity?: number;
+  effects?: EffectInstance[];
+  /** Limits where the adjustment applies; UVs are output-frame (canvas) coordinates. */
+  mask?: ClipMask | null;
+  /** Only `opacity` keyframes apply. */
+  keyframes?: KeyframeTrack[];
+}
+
+export type Clip = MediaClip | CaptionClip | AdjustmentClip;
 
 export function clipId(clip: Clip): string {
   return clip.id;
@@ -215,13 +244,41 @@ export function clipPositionSecs(clip: Clip): number {
 }
 
 export function clipDurationSecs(clip: Clip): number {
-  if (clip.type === "caption") return clip.duration_secs;
+  if (clip.type === "caption" || clip.type === "adjustment") return clip.duration_secs;
   const speed = clip.speed && clip.speed > 0 ? clip.speed : 1;
   return (clip.source_out_secs - clip.source_in_secs) / speed;
 }
 
 export function clipEndSecs(clip: Clip): number {
   return clipPositionSecs(clip) + clipDurationSecs(clip);
+}
+
+/** End of the last enabled video/audio/adjustment clip in a sequence (mirrors the engine). */
+export function sequenceDurationSecs(project: Project, sequenceId: string): number {
+  const seq = project.sequences?.find((s) => s.id === sequenceId);
+  if (!seq) return 0;
+  let end = 0;
+  for (const track of seq.tracks) {
+    for (const clip of track.clips) {
+      if (clip.type === "caption" || !clip.enabled) continue;
+      end = Math.max(end, clipEndSecs(clip));
+    }
+  }
+  return end;
+}
+
+/** Duration of a media item; sequence media is derived from its inner timeline. */
+export function mediaDurationSecs(project: Project, media: MediaItem): number | null {
+  if (media.kind === "sequence") {
+    return media.sequence_id ? sequenceDurationSecs(project, media.sequence_id) : null;
+  }
+  return media.duration_secs;
+}
+
+/** Name shown for a sequence media item; undefined for ordinary file-backed media. */
+export function sequenceMediaName(project: Project, media: MediaItem): string | undefined {
+  if (media.kind !== "sequence") return undefined;
+  return project.sequences?.find((s) => s.id === media.sequence_id)?.name ?? "Sequence";
 }
 
 export const CAPTION_STYLES = [

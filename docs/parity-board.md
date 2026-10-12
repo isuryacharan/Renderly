@@ -20,8 +20,8 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 | Keyframe animation + easing curves | ✅ | `project/anim.rs`; transform, opacity, volume |
 | Speed ramp with pitch-corrected audio | ✅ | `SetClipSpeed` |
 | Undo/redo | ✅ | Shared with agent edits over the bridge |
-| Nested sequences / compound clips | ⬜ | Schema change — discuss in an issue first |
-| Adjustment layers | ⬜ | Effects applied to everything below a track |
+| Nested sequences / compound clips | 🟡 | schema v7; `CreateSequence`, `NestClips`, `UnnestClip`. Engine, export, preview and CLI/MCP done; app UI (open a sequence, nest from the timeline) not yet. [schema-v7-design.md](schema-v7-design.md) |
+| Adjustment layers | 🟡 | schema v7; `AddAdjustmentLayer`, `SetAdjustmentLayer`. Renders in export and preview; the app shows the clip but has no menu or inspector for it yet |
 
 ## Rendering & effects
 

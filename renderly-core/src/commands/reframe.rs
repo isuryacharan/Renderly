@@ -656,6 +656,7 @@ mod tests {
             width: Some(dims.0),
             height: Some(dims.1),
             fps: (kind == MediaKind::Video).then_some(FPS),
+            sequence_id: None,
         });
         let track_id = match apply_command(
             &mut project,
@@ -663,6 +664,7 @@ mod tests {
                 kind: TrackKind::Video,
                 name: "V".into(),
                 id: None,
+                sequence_id: None,
             },
         )
         .expect("track")

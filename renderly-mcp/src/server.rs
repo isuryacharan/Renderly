@@ -251,7 +251,7 @@ impl RenderlyMcp {
     fn open_project_impl(&self, req: OpenProjectRequest) -> Result<String, String> {
         let path = PathBuf::from(&req.path);
         let data = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        let project: Project = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+        let project = Project::from_json(&data).map_err(|e| e.to_string())?;
         *self.session.lock().map_err(|e| e.to_string())? = Some(Session { path, project });
         Ok(format!("opened {}", req.path))
     }
@@ -583,7 +583,8 @@ impl ServerHandler for RenderlyMcp {
             "Renderly MCP — drive video edits through the command API. \
                  Open or create a project first, then apply_command with JSON commands \
                  (ImportMedia, AddTrack, AddClip, GenerateCaptions, GenerateVoiceover, \
-                 SetAudioFade, SetTrackAudioRole, Export, …). \
+                 SetAudioFade, SetTrackAudioRole, Export, …; nested timelines with \
+                 CreateSequence / NestClips, adjustment layers with AddAdjustmentLayer). \
                  When the Renderly desktop app is running on the same project, edits go \
                  through the live bridge (shared undo + live GUI). Use get_editor_status \
                  to check. Perception: probe_media, get_transcript, render_frame, \
@@ -703,6 +704,59 @@ mod tests {
 
             let shown = mcp.get_project_impl().unwrap();
             assert!(shown.contains("\"V1\""));
+            std::fs::remove_file(&path).ok();
+        });
+    }
+
+    #[test]
+    fn headless_sequence_and_adjustment_commands_round_trip() {
+        on_worker(|| {
+            let path = temp_path("sequences");
+            let mcp = RenderlyMcp::new();
+            mcp.new_project_impl(NewProjectRequest {
+                path: path.clone(),
+                name: "seq".into(),
+                width: 1280,
+                height: 720,
+                fps: 30.0,
+            })
+            .unwrap();
+
+            let created = mcp
+                .apply_command_impl(ApplyCommandRequest {
+                    command: serde_json::json!({ "command": "CreateSequence", "name": "Intro" }),
+                })
+                .unwrap();
+            assert!(created.contains("SequenceCreated"), "{created}");
+            let track = mcp
+                .apply_command_impl(ApplyCommandRequest {
+                    command: serde_json::json!({
+                        "command": "AddTrack", "kind": "video", "name": "V1"
+                    }),
+                })
+                .unwrap();
+            assert!(track.contains("TrackAdded"), "{track}");
+
+            let project = project_of(&mcp);
+            let track_id = project.tracks[0].id;
+            let adjusted = mcp
+                .apply_command_impl(ApplyCommandRequest {
+                    command: serde_json::json!({
+                        "command": "AddAdjustmentLayer", "track_id": track_id,
+                        "position_secs": 0.0, "duration_secs": 2.0
+                    }),
+                })
+                .unwrap();
+            assert!(adjusted.contains("ClipAdded"), "{adjusted}");
+
+            // v7 content survives the save and re-open (which validates the file).
+            let data = std::fs::read_to_string(&path).unwrap();
+            let reloaded = Project::from_json(&data).unwrap();
+            assert_eq!(reloaded.sequences.len(), 1);
+            assert!(matches!(
+                reloaded.tracks[0].clips[0],
+                renderly_core::project::Clip::Adjustment(_)
+            ));
             std::fs::remove_file(&path).ok();
         });
     }

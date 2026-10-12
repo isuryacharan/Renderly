@@ -199,12 +199,14 @@ impl LoadedPack {
 /// before those effects can render. Pure data walk.
 pub fn referenced_pack_luts(project: &crate::project::Project) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
-    for track in &project.tracks {
+    for track in project.all_tracks() {
         for clip in &track.clips {
-            let Some(media) = clip.as_media() else {
-                continue;
+            let effects = match clip {
+                crate::project::Clip::Video(m) | crate::project::Clip::Audio(m) => &m.effects,
+                crate::project::Clip::Adjustment(a) => &a.effects,
+                crate::project::Clip::Caption(_) => continue,
             };
-            for effect in &media.effects {
+            for effect in effects {
                 if let Some((pack, lut)) = parse_pack_lut_id(&effect.effect_id) {
                     let pair = (pack.to_string(), lut.to_string());
                     if !out.contains(&pair) {

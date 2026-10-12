@@ -67,8 +67,16 @@ pub fn project_matte_requests(project: &Project) -> Vec<MatteRequest> {
             }
         }
     };
-    for track in &project.tracks {
+    // Root timeline first, then every sequence (nested clips and adjustment layers carry
+    // masks too).
+    for track in project.all_tracks() {
         for clip in &track.clips {
+            if let Some(adjustment) = clip.as_adjustment() {
+                if let Some(mask) = adjustment.mask.as_ref() {
+                    push(&mask.kind);
+                }
+                continue;
+            }
             let Some(media) = clip.as_media() else {
                 continue;
             };

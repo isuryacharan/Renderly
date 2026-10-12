@@ -1,18 +1,20 @@
 //! Decode-free timeline evaluation: "which layers are active at time `t`, with what source
 //! times, keyframed params, and transition progress" — the parity-critical logic shared by
 //! the native export/preview path (`export::FrameRenderer`) and the wasm preview compositor
-//! (`renderly-wasm`). See docs/preview-webview.md P2.
+//! (`renderly-wasm`). See docs/preview-webview.md P2. Schema v7 adds adjustment layers
+//! ([`ComposeStep::Adjustment`]) and nested sequences ([`ActiveSource::Sequence`], evaluated
+//! recursively with [`sequence_steps`]).
 //!
 //! This module deliberately has **no** decode/IO dependency: it only reads `Project` state
-//! (paths, keyframes, transitions) and produces [`ActiveLayer`]/[`ActiveCaption`] descriptors.
-//! Callers are responsible for turning `ActiveLayer::path`/`source_time` into actual pixels
+//! (paths, keyframes, transitions) and produces [`ComposeStep`]/[`ActiveCaption`] descriptors.
+//! Callers are responsible for turning an [`ActiveSource`] into actual pixels
 //! (FFmpeg decode natively, `<video>`/`<img>` elements in the browser) — never re-derive which
 //! layers are active or their transform/transition params independently, or preview and
 //! export will drift apart.
 
 use crate::project::{
-    evaluate_transform, Clip, ClipMask, ClipTransform, EffectInstance, MediaKind, Project,
-    TrackKind,
+    evaluate_transform, Clip, ClipMask, ClipTransform, EffectInstance, Id, MediaClip, MediaKind,
+    Project, Track, TrackKind, MAX_SEQUENCE_DEPTH,
 };
 use std::path::PathBuf;
 use thiserror::Error;
@@ -23,26 +25,128 @@ pub enum EvalError {
     MediaNotFound(uuid::Uuid),
     #[error("media {0} is not video")]
     NotVideo(uuid::Uuid),
+    #[error("sequence not found: {0}")]
+    SequenceNotFound(uuid::Uuid),
+    #[error("sequence {0} is nested deeper than the limit of {MAX_SEQUENCE_DEPTH}")]
+    SequenceTooDeep(uuid::Uuid),
+}
+
+/// Identity of one layer instance for decoder / `<video>` element reuse: the chain of
+/// decoder keys from the root timeline down to the layer — one entry per enclosing nested
+/// sequence layer, then the layer's own decoder key. The same media can be needed at two
+/// different times in one frame (a sequence placed twice, or a clip both nested and on the
+/// root); each such use has a distinct key, so decoders never fight over one reader.
+///
+/// A root-level layer's key is just `[decoder_key]`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct InstanceKey(Vec<Id>);
+
+impl InstanceKey {
+    /// The key of a layer at the root timeline.
+    pub fn root(decoder_key: Id) -> Self {
+        Self(vec![decoder_key])
+    }
+
+    /// This prefix extended by one more link.
+    pub fn with(&self, id: Id) -> Self {
+        let mut v = self.0.clone();
+        v.push(id);
+        Self(v)
+    }
+
+    pub fn depth(&self) -> usize {
+        self.0.len()
+    }
+
+    /// True for a layer inside at least one nested sequence.
+    pub fn is_nested(&self) -> bool {
+        self.0.len() > 1
+    }
+
+    pub fn ids(&self) -> &[Id] {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for InstanceKey {
+    /// Stable string form (`id/id/...`), the key the wasm preview and its JS host exchange.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, id) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str("/")?;
+            }
+            write!(f, "{id}")?;
+        }
+        Ok(())
+    }
+}
+
+/// What an [`ActiveLayer`] samples.
+#[derive(Debug, Clone)]
+pub enum ActiveSource {
+    /// A decoded video frame or still image. `media_id` is what the wasm preview keys its
+    /// `<video>`/`<img>` pool by; the native path decodes `path` at `source_time`.
+    Media {
+        media_id: Id,
+        path: PathBuf,
+        source_time: f64,
+    },
+    /// A nested sequence rendered at `time_secs` (sequence time). `instance` is the key
+    /// prefix for the layers inside it: pass it to [`sequence_steps`] to evaluate them.
+    Sequence {
+        sequence_id: Id,
+        time_secs: f64,
+        instance: InstanceKey,
+    },
 }
 
 /// One layer to be composited at a given time, bottom-to-top by track order (see
-/// `compose::Compositor::composite`'s doc comment). Decode-free: `path`/`source_time`
-/// describe *what* to decode, not decoded pixels.
+/// `compose::Compositor::composite`'s doc comment). Decode-free: `source` describes *what*
+/// to draw, not decoded pixels.
 #[derive(Debug, Clone)]
 pub struct ActiveLayer {
-    /// Decoder/element cache key (usually track id; crossfade incoming uses a derived key so
-    /// two decoders/elements can be open at once during a transition).
+    /// Decoder/element cache key within its container (usually the track id; the incoming
+    /// side of a transition uses a derived key so two decoders/elements can be open at once).
     pub decoder_key: uuid::Uuid,
-    /// The media item this layer samples — the wasm preview keys its `<video>`/`<img>`
-    /// element pool by media id (the native path keys decoders by `decoder_key`/`path`).
-    pub media_id: uuid::Uuid,
-    pub path: PathBuf,
-    pub source_time: f64,
+    /// Container-qualified key: unique per simultaneously active layer in the whole frame,
+    /// including layers inside nested sequences.
+    pub instance: InstanceKey,
+    pub source: ActiveSource,
     pub transform: ClipTransform,
     pub effects: Vec<EffectInstance>,
     pub transition: Option<crate::compose::LayerTransition>,
     pub mask: Option<ClipMask>,
     pub background_removal: Option<crate::project::BackgroundRemoval>,
+}
+
+impl ActiveLayer {
+    /// `(media_id, path, source_time)` when this layer samples media rather than a sequence.
+    pub fn media(&self) -> Option<(Id, &std::path::Path, f64)> {
+        match &self.source {
+            ActiveSource::Media {
+                media_id,
+                path,
+                source_time,
+            } => Some((*media_id, path.as_path(), *source_time)),
+            ActiveSource::Sequence { .. } => None,
+        }
+    }
+}
+
+/// One step of the compositing stack at time `t`, bottom to top.
+// `Layer` carries the whole evaluated layer (it is built once per active layer per frame and
+// consumed immediately), so boxing it would only add an allocation per layer.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum ComposeStep {
+    Layer(ActiveLayer),
+    /// Apply `effects` to everything composited so far, then mix with the unadjusted
+    /// picture by `opacity` (and `mask`).
+    Adjustment {
+        effects: Vec<EffectInstance>,
+        opacity: f32,
+        mask: Option<ClipMask>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -51,19 +155,112 @@ pub struct ActiveCaption {
     pub style_id: String,
 }
 
-/// Evaluate which video-track layers are active at `t`, with per-layer source time, keyframed
-/// transform/opacity, and transition progress. Tracks are iterated in project order
-/// (first = bottom); within a transition window both the outgoing and incoming clip are
-/// emitted so the caller can blend them.
-pub fn active_layers(project: &Project, t: f64) -> Result<Vec<ActiveLayer>, EvalError> {
-    let mut layers = Vec::new();
+/// Evaluate the root timeline at `t`: which video-track layers and adjustment layers are
+/// active, with per-layer source time, keyframed transform/opacity, and transition progress.
+/// Tracks are iterated in project order (first = bottom); within a transition window both
+/// the outgoing and incoming clip are emitted so the caller can blend them.
+pub fn active_steps(project: &Project, t: f64) -> Result<Vec<ComposeStep>, EvalError> {
+    container_steps(project, &project.tracks, t, &InstanceKey::default())
+}
 
-    for track in &project.tracks {
+/// Evaluate the inside of a nested sequence layer: `time_secs` and `instance` come from the
+/// layer's [`ActiveSource::Sequence`]. Fails with [`EvalError::SequenceTooDeep`] beyond
+/// [`MAX_SEQUENCE_DEPTH`] nested levels.
+pub fn sequence_steps(
+    project: &Project,
+    sequence_id: Id,
+    time_secs: f64,
+    instance: &InstanceKey,
+) -> Result<Vec<ComposeStep>, EvalError> {
+    if instance.depth() > MAX_SEQUENCE_DEPTH {
+        return Err(EvalError::SequenceTooDeep(sequence_id));
+    }
+    let seq = project
+        .find_sequence(sequence_id)
+        .ok_or(EvalError::SequenceNotFound(sequence_id))?;
+    container_steps(project, &seq.tracks, time_secs, instance)
+}
+
+/// Every media-sampling layer active at root time `t`, including those inside nested
+/// sequences (flattened, bottom to top per container). For hosts that must open a decoder /
+/// element per leaf regardless of how the picture is assembled (prefetch, the preview's
+/// element manager).
+pub fn leaf_media_layers(project: &Project, t: f64) -> Result<Vec<ActiveLayer>, EvalError> {
+    let mut out = Vec::new();
+    collect_leaves(project, active_steps(project, t)?, &mut out)?;
+    Ok(out)
+}
+
+fn collect_leaves(
+    project: &Project,
+    steps: Vec<ComposeStep>,
+    out: &mut Vec<ActiveLayer>,
+) -> Result<(), EvalError> {
+    for step in steps {
+        let ComposeStep::Layer(layer) = step else {
+            continue;
+        };
+        match &layer.source {
+            ActiveSource::Media { .. } => out.push(layer),
+            ActiveSource::Sequence {
+                sequence_id,
+                time_secs,
+                instance,
+            } => {
+                let inner = sequence_steps(project, *sequence_id, *time_secs, instance)?;
+                collect_leaves(project, inner, out)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Resolve a media id to what a layer samples at `source_time`. `child_prefix` is the
+/// instance-key prefix for layers inside it when the media is a sequence.
+fn resolve_source(
+    project: &Project,
+    media_id: Id,
+    source_time: f64,
+    child_prefix: InstanceKey,
+) -> Result<ActiveSource, EvalError> {
+    let media = project
+        .find_media(media_id)
+        .ok_or(EvalError::MediaNotFound(media_id))?;
+    match media.kind {
+        MediaKind::Video | MediaKind::Image => Ok(ActiveSource::Media {
+            media_id,
+            path: media.path.clone(),
+            source_time,
+        }),
+        MediaKind::Sequence => {
+            let sequence_id = media.sequence_id.ok_or(EvalError::NotVideo(media_id))?;
+            if child_prefix.depth() > MAX_SEQUENCE_DEPTH {
+                return Err(EvalError::SequenceTooDeep(sequence_id));
+            }
+            Ok(ActiveSource::Sequence {
+                sequence_id,
+                time_secs: source_time,
+                instance: child_prefix,
+            })
+        }
+        MediaKind::Audio => Err(EvalError::NotVideo(media_id)),
+    }
+}
+
+fn container_steps(
+    project: &Project,
+    tracks: &[Track],
+    t: f64,
+    prefix: &InstanceKey,
+) -> Result<Vec<ComposeStep>, EvalError> {
+    let mut steps = Vec::new();
+
+    for track in tracks {
         if track.kind != TrackKind::Video || track.hidden {
             continue;
         }
 
-        let mut video_clips: Vec<&crate::project::MediaClip> = track
+        let mut video_clips: Vec<&MediaClip> = track
             .clips
             .iter()
             .filter_map(|c| match c {
@@ -102,27 +299,34 @@ pub fn active_layers(project: &Project, t: f64) -> Result<Vec<ActiveLayer>, Eval
             }
 
             let u = ((t - window_start) / d).clamp(0.0, 1.0) as f32;
-            let out_media = project
-                .find_media(v.media_id)
-                .ok_or(EvalError::MediaNotFound(v.media_id))?;
-            let in_media = project
-                .find_media(incoming.media_id)
-                .ok_or(EvalError::MediaNotFound(incoming.media_id))?;
-            if out_media.kind != MediaKind::Video && out_media.kind != MediaKind::Image {
-                return Err(EvalError::NotVideo(v.media_id));
-            }
-            if in_media.kind != MediaKind::Video && in_media.kind != MediaKind::Image {
-                return Err(EvalError::NotVideo(incoming.media_id));
-            }
 
             let out_xf = evaluate_transform(v, t);
             let in_xf = evaluate_transform(incoming, incoming.position_secs);
 
-            layers.push(ActiveLayer {
+            // Distinct from track.id so decoders/elements keep a second stream open.
+            let incoming_key = uuid::Uuid::from_u128(track.id.as_u128() ^ 0xC0_FF_EE_51_u128);
+            let out_instance = prefix.with(track.id);
+            let in_instance = prefix.with(incoming_key);
+            // Resolve both sources before pushing either, so an error leaves no half pair.
+            let out_source = resolve_source(
+                project,
+                v.media_id,
+                v.source_time_at(t),
+                out_instance.clone(),
+            )
+            .map_err(|e| not_video_for(e, v.media_id))?;
+            let in_source = resolve_source(
+                project,
+                incoming.media_id,
+                incoming.source_in_secs + (t - window_start) * incoming.speed_factor(),
+                in_instance.clone(),
+            )
+            .map_err(|e| not_video_for(e, incoming.media_id))?;
+
+            steps.push(ComposeStep::Layer(ActiveLayer {
                 decoder_key: track.id,
-                media_id: v.media_id,
-                path: out_media.path.clone(),
-                source_time: v.source_time_at(t),
+                instance: out_instance,
+                source: out_source,
                 transform: out_xf,
                 effects: v.effects.clone(),
                 transition: Some(crate::compose::LayerTransition {
@@ -132,13 +336,11 @@ pub fn active_layers(project: &Project, t: f64) -> Result<Vec<ActiveLayer>, Eval
                 }),
                 mask: v.mask.clone(),
                 background_removal: v.background_removal.clone(),
-            });
-            layers.push(ActiveLayer {
-                // Distinct from track.id so decoders/elements keep a second stream open.
-                decoder_key: uuid::Uuid::from_u128(track.id.as_u128() ^ 0xC0_FF_EE_51_u128),
-                media_id: incoming.media_id,
-                path: in_media.path.clone(),
-                source_time: incoming.source_in_secs + (t - window_start) * incoming.speed_factor(),
+            }));
+            steps.push(ComposeStep::Layer(ActiveLayer {
+                decoder_key: incoming_key,
+                instance: in_instance,
+                source: in_source,
                 transform: in_xf,
                 effects: incoming.effects.clone(),
                 transition: Some(crate::compose::LayerTransition {
@@ -148,7 +350,7 @@ pub fn active_layers(project: &Project, t: f64) -> Result<Vec<ActiveLayer>, Eval
                 }),
                 mask: incoming.mask.clone(),
                 background_removal: incoming.background_removal.clone(),
-            });
+            }));
             handled = true;
             break;
         }
@@ -157,36 +359,60 @@ pub fn active_layers(project: &Project, t: f64) -> Result<Vec<ActiveLayer>, Eval
         }
 
         for clip in &track.clips {
-            let Clip::Video(v) = clip else { continue };
-            if !v.enabled || !multicam_angle_active(project, v) {
-                continue;
-            }
-            let start = v.position_secs;
-            let end = start + v.timeline_duration_secs();
-            if t >= start && t < end {
-                let media = project
-                    .find_media(v.media_id)
-                    .ok_or(EvalError::MediaNotFound(v.media_id))?;
-                if media.kind != MediaKind::Video && media.kind != MediaKind::Image {
-                    return Err(EvalError::NotVideo(v.media_id));
+            match clip {
+                Clip::Video(v) => {
+                    if !v.enabled || !multicam_angle_active(project, v) {
+                        continue;
+                    }
+                    let start = v.position_secs;
+                    let end = start + v.timeline_duration_secs();
+                    if t >= start && t < end {
+                        let instance = prefix.with(track.id);
+                        let source = resolve_source(
+                            project,
+                            v.media_id,
+                            v.source_time_at(t),
+                            instance.clone(),
+                        )
+                        .map_err(|e| not_video_for(e, v.media_id))?;
+                        steps.push(ComposeStep::Layer(ActiveLayer {
+                            decoder_key: track.id,
+                            instance,
+                            source,
+                            transform: evaluate_transform(v, t),
+                            effects: v.effects.clone(),
+                            transition: None,
+                            mask: v.mask.clone(),
+                            background_removal: v.background_removal.clone(),
+                        }));
+                        break;
+                    }
                 }
-                layers.push(ActiveLayer {
-                    decoder_key: track.id,
-                    media_id: v.media_id,
-                    path: media.path.clone(),
-                    source_time: v.source_time_at(t),
-                    transform: evaluate_transform(v, t),
-                    effects: v.effects.clone(),
-                    transition: None,
-                    mask: v.mask.clone(),
-                    background_removal: v.background_removal.clone(),
-                });
-                break;
+                Clip::Adjustment(a) => {
+                    if a.enabled && t >= a.position_secs && t < a.position_secs + a.duration_secs {
+                        steps.push(ComposeStep::Adjustment {
+                            effects: a.effects.clone(),
+                            opacity: a.opacity_at(t) as f32,
+                            mask: a.mask.clone(),
+                        });
+                        break;
+                    }
+                }
+                Clip::Audio(_) | Clip::Caption(_) => {}
             }
         }
     }
 
-    Ok(layers)
+    Ok(steps)
+}
+
+/// A non-video media kind in a transition/clip surfaces as `NotVideo` carrying the clip's
+/// media id (matches the pre-v7 error shape).
+fn not_video_for(e: EvalError, media_id: Id) -> EvalError {
+    match e {
+        EvalError::NotVideo(_) => EvalError::NotVideo(media_id),
+        other => other,
+    }
 }
 
 /// True when the clip is not in a multicam group, or is the group's active angle.
@@ -233,6 +459,17 @@ mod tests {
         Clip, ClipTransition, MediaClip, MediaItem, Project, Settings, Track, TransitionKind,
     };
 
+    /// Root-level media/sequence layers only (adjustment steps are asserted on separately).
+    fn layers_at(project: &Project, t: f64) -> Result<Vec<ActiveLayer>, EvalError> {
+        Ok(active_steps(project, t)?
+            .into_iter()
+            .filter_map(|s| match s {
+                ComposeStep::Layer(l) => Some(l),
+                ComposeStep::Adjustment { .. } => None,
+            })
+            .collect())
+    }
+
     fn base_project() -> Project {
         let mut project = Project::new("eval-test", Settings::default());
         project.tracks.push(Track::new(TrackKind::Video, "V1"));
@@ -249,6 +486,7 @@ mod tests {
             width: Some(1920),
             height: Some(1080),
             fps: Some(30.0),
+            sequence_id: None,
         });
         id
     }
@@ -256,7 +494,7 @@ mod tests {
     #[test]
     fn active_layers_empty_project_has_no_layers() {
         let project = base_project();
-        let layers = active_layers(&project, 0.0).unwrap();
+        let layers = layers_at(&project, 0.0).unwrap();
         assert!(layers.is_empty());
     }
 
@@ -276,11 +514,12 @@ mod tests {
         };
         project.tracks[0].clips.push(Clip::Video(clip));
 
-        let layers = active_layers(&project, 3.0).unwrap();
+        let layers = layers_at(&project, 3.0).unwrap();
         assert_eq!(layers.len(), 1);
-        assert_eq!(layers[0].path, PathBuf::from("a.mp4"));
+        let (_, path, source_time) = layers[0].media().unwrap();
+        assert_eq!(path, std::path::Path::new("a.mp4"));
         // source_time_at(3.0) for a clip starting at 2.0 with source_in 0.0 and speed 1x = 1.0.
-        assert!((layers[0].source_time - 1.0).abs() < 1e-9);
+        assert!((source_time - 1.0).abs() < 1e-9);
         assert!(layers[0].transition.is_none());
     }
 
@@ -299,8 +538,8 @@ mod tests {
         };
         project.tracks[0].clips.push(Clip::Video(clip));
 
-        assert!(active_layers(&project, 0.5).unwrap().is_empty());
-        assert!(active_layers(&project, 8.0).unwrap().is_empty());
+        assert!(layers_at(&project, 0.5).unwrap().is_empty());
+        assert!(layers_at(&project, 8.0).unwrap().is_empty());
     }
 
     #[test]
@@ -318,7 +557,7 @@ mod tests {
         };
         project.tracks[0].clips.push(Clip::Video(clip));
 
-        let err = active_layers(&project, 0.0).unwrap_err();
+        let err = layers_at(&project, 0.0).unwrap_err();
         assert_eq!(err, EvalError::MediaNotFound(missing_id));
     }
 
@@ -338,7 +577,7 @@ mod tests {
         project.tracks[0].clips.push(Clip::Video(clip));
         project.tracks[0].hidden = true;
 
-        assert!(active_layers(&project, 1.0).unwrap().is_empty());
+        assert!(layers_at(&project, 1.0).unwrap().is_empty());
     }
 
     #[test]
@@ -374,7 +613,7 @@ mod tests {
         project.tracks[0].clips.push(Clip::Video(clip_b));
 
         // Mid-transition: t = 3.5 is inside [3.0, 4.0) window.
-        let layers = active_layers(&project, 3.5).unwrap();
+        let layers = layers_at(&project, 3.5).unwrap();
         assert_eq!(layers.len(), 2);
         assert!(layers[0].transition.as_ref().unwrap().progress > 0.0);
         assert!(!layers[0].transition.as_ref().unwrap().is_incoming);
@@ -402,5 +641,323 @@ mod tests {
         let caps = active_captions(&project, 2.0);
         assert_eq!(caps.len(), 1);
         assert_eq!(caps[0].text, "hello");
+    }
+
+    // ---- schema v7: adjustment layers and nested sequences -------------------------------
+
+    use crate::project::{AdjustmentClip, Sequence};
+
+    /// Register a sequence (one video track holding `clips`) and its media item; returns the
+    /// sequence id and its media id.
+    fn add_sequence(project: &mut Project, clips: Vec<Clip>) -> (uuid::Uuid, uuid::Uuid) {
+        let id = uuid::Uuid::new_v4();
+        let media_id = uuid::Uuid::new_v4();
+        let mut track = Track::new(TrackKind::Video, "inner");
+        track.clips = clips;
+        project.sequences.push(Sequence {
+            id,
+            name: "S".into(),
+            width: None,
+            height: None,
+            tracks: vec![track],
+        });
+        project.media.push(MediaItem {
+            id: media_id,
+            path: PathBuf::new(),
+            kind: MediaKind::Sequence,
+            duration_secs: None,
+            width: None,
+            height: None,
+            fps: None,
+            sequence_id: Some(id),
+        });
+        (id, media_id)
+    }
+
+    fn media_clip(media_id: uuid::Uuid, position: f64, dur: f64) -> MediaClip {
+        MediaClip {
+            id: uuid::Uuid::new_v4(),
+            media_id,
+            position_secs: position,
+            source_in_secs: 0.0,
+            source_out_secs: dur,
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn adjustment_steps_interleave_with_layers_in_track_order() {
+        let mut project = base_project();
+        let media = add_media(&mut project, MediaKind::Video, "a.mp4");
+        project.tracks[0]
+            .clips
+            .push(Clip::Video(media_clip(media, 0.0, 5.0)));
+        let mut adj_track = Track::new(TrackKind::Video, "adj");
+        let mut adj = AdjustmentClip::new(2.0, 2.0);
+        adj.opacity = 0.5;
+        adj_track.clips.push(Clip::Adjustment(adj));
+        project.tracks.push(adj_track);
+        let mut top = Track::new(TrackKind::Video, "top");
+        top.clips.push(Clip::Video(media_clip(media, 0.0, 5.0)));
+        project.tracks.push(top);
+
+        // Before the adjustment starts: two layers, no adjustment step.
+        let steps = active_steps(&project, 1.0).unwrap();
+        assert_eq!(steps.len(), 2);
+        // During: layer, adjustment, layer (bottom to top).
+        let steps = active_steps(&project, 2.5).unwrap();
+        assert_eq!(steps.len(), 3);
+        assert!(matches!(steps[0], ComposeStep::Layer(_)));
+        match &steps[1] {
+            ComposeStep::Adjustment { opacity, .. } => assert!((opacity - 0.5).abs() < 1e-6),
+            other => panic!("expected adjustment, got {other:?}"),
+        }
+        assert!(matches!(steps[2], ComposeStep::Layer(_)));
+        // The end is exclusive, and a disabled or hidden adjustment contributes nothing.
+        assert_eq!(active_steps(&project, 4.0).unwrap().len(), 2);
+        if let Clip::Adjustment(a) = &mut project.tracks[1].clips[0] {
+            a.enabled = false;
+        }
+        assert_eq!(active_steps(&project, 2.5).unwrap().len(), 2);
+        if let Clip::Adjustment(a) = &mut project.tracks[1].clips[0] {
+            a.enabled = true;
+        }
+        project.tracks[1].hidden = true;
+        assert_eq!(active_steps(&project, 2.5).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn adjustment_opacity_follows_keyframes() {
+        use crate::project::{AnimProperty, Easing, Keyframe, KeyframeTrack};
+        let mut project = base_project();
+        let mut adj = AdjustmentClip::new(1.0, 4.0);
+        adj.keyframes.push(KeyframeTrack {
+            property: AnimProperty::Opacity,
+            keys: vec![
+                Keyframe {
+                    time_secs: 0.0,
+                    value: 1.0,
+                    easing: Easing::Linear,
+                    handle_left: None,
+                    handle_right: None,
+                },
+                Keyframe {
+                    time_secs: 2.0,
+                    value: 0.0,
+                    easing: Easing::Linear,
+                    handle_left: None,
+                    handle_right: None,
+                },
+            ],
+        });
+        project.tracks[0].clips.push(Clip::Adjustment(adj));
+        let opacity_at = |t: f64| match &active_steps(&project, t).unwrap()[0] {
+            ComposeStep::Adjustment { opacity, .. } => *opacity,
+            other => panic!("expected adjustment, got {other:?}"),
+        };
+        assert!((opacity_at(1.0) - 1.0).abs() < 1e-6);
+        assert!(
+            (opacity_at(2.0) - 0.5).abs() < 1e-6,
+            "local t=1 of a 0..2 fade"
+        );
+        assert!(opacity_at(4.0).abs() < 1e-6, "held after the last key");
+    }
+
+    #[test]
+    fn sequence_clip_maps_time_and_exposes_inner_layers() {
+        let mut project = base_project();
+        let media = add_media(&mut project, MediaKind::Video, "inner.mp4");
+        // Inside the sequence, the clip runs 2..6 of the sequence timeline.
+        let (seq_id, seq_media) =
+            add_sequence(&mut project, vec![Clip::Video(media_clip(media, 2.0, 4.0))]);
+        // Outer clip plays sequence time 1.0.. at 2x, placed at root t=10.
+        let mut outer = media_clip(seq_media, 10.0, 0.0);
+        outer.source_in_secs = 1.0;
+        outer.source_out_secs = 5.0;
+        outer.speed = 2.0;
+        project.tracks[0].clips.push(Clip::Video(outer));
+
+        let steps = active_steps(&project, 11.0).unwrap();
+        assert_eq!(steps.len(), 1);
+        let ComposeStep::Layer(layer) = &steps[0] else {
+            panic!()
+        };
+        let ActiveSource::Sequence {
+            sequence_id,
+            time_secs,
+            instance,
+        } = &layer.source
+        else {
+            panic!("expected a sequence layer")
+        };
+        assert_eq!(*sequence_id, seq_id);
+        // 1 s into the outer clip at 2x -> sequence time 1.0 + 2.0.
+        assert!((time_secs - 3.0).abs() < 1e-9);
+        assert_eq!(instance.depth(), 1);
+
+        let inner = sequence_steps(&project, *sequence_id, *time_secs, instance).unwrap();
+        assert_eq!(inner.len(), 1);
+        let ComposeStep::Layer(inner_layer) = &inner[0] else {
+            panic!()
+        };
+        let (_, path, source_time) = inner_layer.media().unwrap();
+        assert_eq!(path, std::path::Path::new("inner.mp4"));
+        // Sequence time 3.0 is 1 s into the inner clip (which starts at 2.0).
+        assert!((source_time - 1.0).abs() < 1e-9);
+        assert_eq!(inner_layer.instance.depth(), 2);
+        assert!(inner_layer.instance.is_nested());
+        assert!(!layer.instance.is_nested());
+
+        // Past the end of the inner timeline the sequence layer is still emitted (it renders
+        // transparent), but evaluates to no inner layers.
+        let late = sequence_steps(&project, seq_id, 9.0, instance).unwrap();
+        assert!(late.is_empty());
+    }
+
+    #[test]
+    fn same_sequence_twice_gets_distinct_instance_keys() {
+        let mut project = base_project();
+        let media = add_media(&mut project, MediaKind::Video, "inner.mp4");
+        let (_, seq_media) =
+            add_sequence(&mut project, vec![Clip::Video(media_clip(media, 0.0, 4.0))]);
+        project.tracks[0]
+            .clips
+            .push(Clip::Video(media_clip(seq_media, 0.0, 4.0)));
+        let mut second = Track::new(TrackKind::Video, "V2");
+        let mut shifted = media_clip(seq_media, 0.0, 2.0);
+        shifted.source_in_secs = 2.0;
+        shifted.source_out_secs = 4.0;
+        second.clips.push(Clip::Video(shifted));
+        project.tracks.push(second);
+
+        let leaves = leaf_media_layers(&project, 1.0).unwrap();
+        assert_eq!(leaves.len(), 2, "one inner layer per placement");
+        assert_ne!(leaves[0].instance, leaves[1].instance);
+        assert_ne!(
+            leaves[0].instance.to_string(),
+            leaves[1].instance.to_string()
+        );
+        // Same media, two different source times in one frame.
+        let times: Vec<f64> = leaves.iter().map(|l| l.media().unwrap().2).collect();
+        assert!(
+            (times[0] - 1.0).abs() < 1e-9 && (times[1] - 3.0).abs() < 1e-9,
+            "{times:?}"
+        );
+        assert!(leaves.iter().all(|l| l.instance.is_nested()));
+    }
+
+    #[test]
+    fn eval_fails_cleanly_on_cycles_and_excess_depth() {
+        // A sequence placing itself (a hand-edited file): bounded by the depth cap.
+        let mut project = base_project();
+        let (seq_id, seq_media) = add_sequence(&mut project, vec![]);
+        project.sequences[0].tracks[0]
+            .clips
+            .push(Clip::Video(media_clip(seq_media, 0.0, 4.0)));
+        project.tracks[0]
+            .clips
+            .push(Clip::Video(media_clip(seq_media, 0.0, 4.0)));
+        let err = leaf_media_layers(&project, 1.0).unwrap_err();
+        assert_eq!(err, EvalError::SequenceTooDeep(seq_id));
+
+        // Unknown sequence referenced by sequence media.
+        let mut project = base_project();
+        let ghost = uuid::Uuid::new_v4();
+        let media_id = uuid::Uuid::new_v4();
+        project.media.push(MediaItem {
+            id: media_id,
+            path: PathBuf::new(),
+            kind: MediaKind::Sequence,
+            duration_secs: None,
+            width: None,
+            height: None,
+            fps: None,
+            sequence_id: Some(ghost),
+        });
+        project.tracks[0]
+            .clips
+            .push(Clip::Video(media_clip(media_id, 0.0, 4.0)));
+        let steps = active_steps(&project, 1.0).unwrap();
+        let ComposeStep::Layer(l) = &steps[0] else {
+            panic!()
+        };
+        let ActiveSource::Sequence {
+            sequence_id,
+            time_secs,
+            instance,
+        } = &l.source
+        else {
+            panic!()
+        };
+        assert_eq!(
+            sequence_steps(&project, *sequence_id, *time_secs, instance).unwrap_err(),
+            EvalError::SequenceNotFound(ghost)
+        );
+    }
+
+    #[test]
+    fn transition_between_sequence_clip_and_media_clip_pairs_the_layers() {
+        let mut project = base_project();
+        let media = add_media(&mut project, MediaKind::Video, "b.mp4");
+        let inner_media = add_media(&mut project, MediaKind::Video, "inner.mp4");
+        let (_, seq_media) = add_sequence(
+            &mut project,
+            vec![Clip::Video(media_clip(inner_media, 0.0, 4.0))],
+        );
+        let mut seq_clip = media_clip(seq_media, 0.0, 4.0);
+        seq_clip.outgoing_transition = Some(ClipTransition {
+            kind: TransitionKind::Crossfade,
+            duration_secs: 1.0,
+        });
+        project.tracks[0].clips.push(Clip::Video(seq_clip));
+        project.tracks[0]
+            .clips
+            .push(Clip::Video(media_clip(media, 4.0, 4.0)));
+
+        let steps = active_steps(&project, 3.5).unwrap();
+        assert_eq!(steps.len(), 2);
+        let (ComposeStep::Layer(out), ComposeStep::Layer(inc)) = (&steps[0], &steps[1]) else {
+            panic!()
+        };
+        assert!(matches!(out.source, ActiveSource::Sequence { .. }));
+        assert!(matches!(inc.source, ActiveSource::Media { .. }));
+        assert!(!out.transition.unwrap().is_incoming);
+        assert!(inc.transition.unwrap().is_incoming);
+        // The two sides never share an instance key (a second decoder/element is needed).
+        assert_ne!(out.instance, inc.instance);
+        // Sequence on the incoming side works too.
+        let mut project2 = base_project();
+        let media2 = add_media(&mut project2, MediaKind::Video, "b.mp4");
+        let (_, seq_media2) = add_sequence(
+            &mut project2,
+            vec![Clip::Video(media_clip(media2, 0.0, 4.0))],
+        );
+        let mut first = media_clip(media2, 0.0, 4.0);
+        first.outgoing_transition = Some(ClipTransition {
+            kind: TransitionKind::Crossfade,
+            duration_secs: 1.0,
+        });
+        project2.tracks[0].clips.push(Clip::Video(first));
+        project2.tracks[0]
+            .clips
+            .push(Clip::Video(media_clip(seq_media2, 4.0, 4.0)));
+        let steps = active_steps(&project2, 3.5).unwrap();
+        let ComposeStep::Layer(inc) = &steps[1] else {
+            panic!()
+        };
+        assert!(matches!(inc.source, ActiveSource::Sequence { .. }));
+    }
+
+    #[test]
+    fn instance_key_display_is_stable_and_unique() {
+        let a = uuid::Uuid::new_v4();
+        let b = uuid::Uuid::new_v4();
+        let root = InstanceKey::root(a);
+        assert_eq!(root.to_string(), a.to_string());
+        let nested = root.with(b);
+        assert_eq!(nested.to_string(), format!("{a}/{b}"));
+        assert_ne!(root, nested);
+        assert_eq!(nested.ids(), &[a, b]);
     }
 }

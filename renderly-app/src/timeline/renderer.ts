@@ -3,7 +3,13 @@
 // docs/architecture.md). No DOM/event handling here either — see interactions.ts.
 
 import { fileName, formatTimecode } from "../lib/format";
-import { clipDurationSecs, type Project, type Selection, type Track } from "../lib/types";
+import {
+  clipDurationSecs,
+  sequenceMediaName,
+  type Project,
+  type Selection,
+  type Track,
+} from "../lib/types";
 import {
   clipLeft,
   CLIP_BOTTOM_PAD,
@@ -586,9 +592,15 @@ export function renderTimeline(canvas: HTMLCanvasElement, state: TimelineRenderS
         if (cw > 24) ctx.fillText(clip.text.slice(0, Math.floor(cw / 6)), x + 8, cy + ch / 2 + 3.5);
         ctx.restore();
       } else {
-        const label = fileName(
-          project.media.find((m) => m.id === clip.media_id)?.path ?? track.kind,
-        );
+        const media = clip.type === "adjustment" ? undefined : project.media.find((m) => m.id === clip.media_id);
+        // Adjustment layers render as a plain labelled block; a nested sequence shows its name
+        // like a media item (schema v7 phase A - the real timeline UI comes with phase B).
+        const label =
+          clip.type === "adjustment"
+            ? "Adjustment"
+            : media
+              ? (sequenceMediaName(project, media) ?? fileName(media.path))
+              : fileName(track.kind);
         drawClipLabelChip(ctx, label, x, cy, cw);
         // Duration, bottom-right, monospace.
         if (cw > 64) {

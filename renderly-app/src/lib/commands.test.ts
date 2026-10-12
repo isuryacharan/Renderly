@@ -68,6 +68,14 @@ const samples: Record<string, unknown> = {
   TrackMotion: c.trackMotion(T, K, 12, { region: { x: 0.1, y: 0.1, width: 0.5, height: 0.5 }, trackRotationScale: true }),
   StabilizeClip: c.stabilizeClip(T, K, { strength: 0.5, sampleCount: 90 }),
   AutoReframeClip: c.autoReframeClip(T, K, 9 / 16),
+  CreateSequence: c.createSequence("Intro", { width: 640, height: 360, id: "seq-1" }),
+  RenameSequence: c.renameSequence("seq-1", "Outro"),
+  SetSequenceSettings: c.setSequenceSettings("seq-1", { width: 640, height: null }),
+  DeleteSequence: c.deleteSequence("seq-1"),
+  NestClips: c.nestClips([{ trackId: T, clipId: K }], "Nested"),
+  UnnestClip: c.unnestClip(T, K),
+  AddAdjustmentLayer: c.addAdjustmentLayer(T, 1, 2),
+  SetAdjustmentLayer: c.setAdjustmentLayer(T, K, { opacity: 0.5 }),
 };
 
 describe("command builders vs docs/command-api.md", () => {
@@ -119,7 +127,41 @@ describe("builder payloads", () => {
   });
 
   it("addTrack defaults id to null so the server generates one", () => {
-    expect(c.addTrack("audio", "A")).toEqual({ command: "AddTrack", kind: "audio", name: "A", id: null });
+    expect(c.addTrack("audio", "A")).toEqual({
+      command: "AddTrack",
+      kind: "audio",
+      name: "A",
+      id: null,
+      sequence_id: null,
+    });
+  });
+
+  it("addTrack can target a sequence's timeline", () => {
+    expect(c.addTrack("video", "V", null, "seq-1").sequence_id).toBe("seq-1");
+  });
+
+  it("nestClips maps camelCase refs to the ClipRef wire shape", () => {
+    expect(c.nestClips([{ trackId: "t", clipId: "k" }], "n")).toEqual({
+      command: "NestClips",
+      clips: [{ track_id: "t", clip_id: "k" }],
+      name: "n",
+    });
+  });
+
+  it("sequence/adjustment optionals serialise None as null", () => {
+    expect(c.createSequence("s")).toEqual({
+      command: "CreateSequence",
+      name: "s",
+      width: null,
+      height: null,
+      id: null,
+    });
+    expect(c.setSequenceSettings("s", {})).toMatchObject({ width: null, height: null });
+    expect(c.setAdjustmentLayer("t", "k", { opacity: 0 })).toMatchObject({
+      position_secs: null,
+      duration_secs: null,
+      opacity: 0,
+    });
   });
 
   it("moveClip defaults new_track_id to null (same-track move)", () => {

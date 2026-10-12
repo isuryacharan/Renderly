@@ -706,7 +706,7 @@ async fn open_project(
     let project: Project =
         tauri::async_runtime::spawn_blocking(move || -> Result<Project, String> {
             let data = std::fs::read_to_string(&read_path).map_err(|e| e.to_string())?;
-            serde_json::from_str(&data).map_err(|e| e.to_string())
+            Project::from_json(&data).map_err(|e| format!("{}: {e}", read_path.display()))
         })
         .await
         .map_err(|e| e.to_string())??;
@@ -727,7 +727,14 @@ async fn open_project(
             assets_dir.clone(),
         );
     }
-    allow_media_assets(&app, project.media.iter().map(|m| m.path.as_path()));
+    allow_media_assets(
+        &app,
+        project
+            .media
+            .iter()
+            .filter(|m| m.kind != renderly_core::project::MediaKind::Sequence)
+            .map(|m| m.path.as_path()),
+    );
 
     *state.session.lock() = Some(Session {
         path: path_buf.clone(),
@@ -840,7 +847,7 @@ async fn rename_project(path: String, new_name: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let path = PathBuf::from(&path);
         let data = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        let mut project: Project = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+        let mut project = Project::from_json(&data).map_err(|e| e.to_string())?;
         project.name = name;
         let out = serde_json::to_string_pretty(&project).map_err(|e| e.to_string())?;
         std::fs::write(&path, out).map_err(|e| e.to_string())
@@ -882,7 +889,7 @@ async fn project_thumbnail(app: AppHandle, path: String) -> Result<Option<String
             return Ok(Some(thumb.to_string_lossy().into_owned()));
         }
         let data = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        let project: Project = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+        let project = Project::from_json(&data).map_err(|e| e.to_string())?;
         // Small preview for gallery cards — Custom keeps aspect, scales height down.
         let h = 180u32;
         let w = ((project.settings.width as f64 / project.settings.height as f64) * h as f64)

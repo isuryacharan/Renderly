@@ -383,3 +383,161 @@ fn export_real_video() {
     assert!(stdout(&out).contains("exported"), "{}", stdout(&out));
     assert!(std::fs::metadata(&o).unwrap().len() > 0);
 }
+
+/// Schema v7 end to end: nest clips into a sequence, add an adjustment layer, export.
+#[test]
+fn nest_clips_adjustment_layer_and_export() {
+    if !renderly_core::media::ffmpeg_available() {
+        eprintln!("skipping v7 export test: ffmpeg not on PATH");
+        return;
+    }
+    let dir = TempDir::new();
+    let src = dir.path("src.mp4");
+    let status = Command::new(renderly_core::media::ffmpeg_path().unwrap())
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=1:size=320x240:rate=30",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+        ])
+        .arg(&src)
+        .status()
+        .expect("ffmpeg");
+    assert!(status.success());
+
+    let p = new_project(&dir, &["--fps", "10"]);
+    let (t1, t2, t3) = (
+        uuid::Uuid::new_v4().to_string(),
+        uuid::Uuid::new_v4().to_string(),
+        uuid::Uuid::new_v4().to_string(),
+    );
+    // Tracks with caller-supplied ids so a script can reference them.
+    let script = dir.path("setup.json");
+    std::fs::write(
+        &script,
+        json!([
+            {"command":"ImportMedia","path":src.to_string_lossy()},
+            {"command":"AddTrack","kind":"video","name":"V1","id":t1},
+            {"command":"AddTrack","kind":"video","name":"V2","id":t2},
+            {"command":"AddTrack","kind":"video","name":"FX","id":t3},
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let out = run(&["apply-script".as_ref(), p.as_os_str(), script.as_os_str()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let media_id = read_json(&p)["media"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let mut clip_ids = Vec::new();
+    for (track, pos) in [(&t1, 0.0), (&t2, 0.2)] {
+        let out = apply(
+            &p,
+            &json!({
+                "command": "AddClip", "track_id": track, "media_id": media_id,
+                "position_secs": pos, "source_in_secs": 0.0, "source_out_secs": 0.5,
+            })
+            .to_string(),
+        );
+        assert!(out.status.success(), "{}", stderr(&out));
+        let v = read_json(&p);
+        let track_json = v["tracks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == *track)
+            .unwrap();
+        clip_ids.push(track_json["clips"][0]["id"].as_str().unwrap().to_string());
+    }
+
+    // Nest both clips: they move into a new sequence and one clip replaces them.
+    let out = apply(
+        &p,
+        &json!({
+            "command": "NestClips",
+            "name": "Combo",
+            "clips": [
+                {"track_id": t1, "clip_id": clip_ids[0]},
+                {"track_id": t2, "clip_id": clip_ids[1]},
+            ],
+        })
+        .to_string(),
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("ClipsNested"), "{}", stdout(&out));
+    let v = read_json(&p);
+    assert_eq!(
+        v["schema_version"],
+        renderly_core::project::SCHEMA_VERSION as u64
+    );
+    assert_eq!(v["sequences"].as_array().unwrap().len(), 1);
+    assert_eq!(v["sequences"][0]["name"], "Combo");
+    assert_eq!(v["sequences"][0]["tracks"].as_array().unwrap().len(), 2);
+    let seq_media = v["media"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["kind"] == "sequence")
+        .expect("a sequence media item");
+    assert_eq!(seq_media["sequence_id"], v["sequences"][0]["id"]);
+
+    // An adjustment layer over the whole thing, desaturating it.
+    let out = apply(
+        &p,
+        &json!({"command":"AddAdjustmentLayer","track_id":t3,"position_secs":0.0,"duration_secs":0.7})
+            .to_string(),
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let v = read_json(&p);
+    let fx_track = v["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == t3)
+        .unwrap();
+    assert_eq!(fx_track["clips"][0]["type"], "adjustment");
+    let adj_id = fx_track["clips"][0]["id"].as_str().unwrap().to_string();
+    let out = apply(
+        &p,
+        &json!({
+            "command": "SetClipEffects", "track_id": t3, "clip_id": adj_id,
+            "effects": [{
+                "id": uuid::Uuid::new_v4().to_string(),
+                "effect_id": "builtin:color_adjust",
+                "params": {"saturation": 0.0}
+            }],
+        })
+        .to_string(),
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let o = dir.path("out.mp4");
+    let out = run(&["export".as_ref(), p.as_os_str(), o.as_os_str()]);
+    if !out.status.success() {
+        if stderr(&out).contains("no suitable GPU adapter") {
+            eprintln!("skipping v7 export test: no GPU adapter");
+            return;
+        }
+        panic!("export failed: {}", stderr(&out));
+    }
+    assert!(stdout(&out).contains("exported"), "{}", stdout(&out));
+    assert!(std::fs::metadata(&o).unwrap().len() > 0);
+
+    // A sequence still placed by a clip cannot be deleted; the failed command changes nothing.
+    let seq_id = v["sequences"][0]["id"].as_str().unwrap().to_string();
+    let out = apply(
+        &p,
+        &json!({"command":"DeleteSequence","sequence_id":seq_id}).to_string(),
+    );
+    assert_fails_unchanged(&p, &out, "still placed");
+}

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Film, Music, Plus, Search } from "lucide-react";
 import { useEditorStore, type ThumbnailAsset } from "../../store/editorStore";
 import { fileName } from "../../lib/format";
+import { mediaDurationSecs, sequenceMediaName } from "../../lib/types";
 import { pickAndImportMedia, importFromPath } from "../../lib/projectFlows";
 import { startMediaDrag } from "../../lib/dragMedia";
 import { assetUrl } from "../../lib/ipc";
@@ -102,9 +103,12 @@ export function MediaPanel() {
     return allItems.filter(
       (m) =>
         (kind === "all" || m.kind === kind) &&
-        (q === "" || fileName(m.path).toLowerCase().includes(q)),
+        (q === "" ||
+          (project ? (sequenceMediaName(project, m) ?? fileName(m.path)) : fileName(m.path))
+            .toLowerCase()
+            .includes(q)),
     );
-  }, [allItems, kind, query]);
+  }, [allItems, kind, query, project]);
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: allItems.length, video: 0, audio: 0, image: 0 };
     for (const m of allItems) c[m.kind] = (c[m.kind] ?? 0) + 1;
@@ -219,9 +223,13 @@ export function MediaPanel() {
                 </div>
               )}
               <div className="media-meta">
-                <div className="name">{fileName(item.path)}</div>
+                <div className="name">
+                  {project ? (sequenceMediaName(project, item) ?? fileName(item.path)) : fileName(item.path)}
+                </div>
                 <div className="sub">
-                  {mediaMetaLine(item)}
+                  {mediaMetaLine(
+                    project ? { ...item, duration_secs: mediaDurationSecs(project, item) } : item,
+                  )}
                   {pendingThumb ? " · generating…" : ""}
                 </div>
               </div>

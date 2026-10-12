@@ -571,6 +571,26 @@ disk ──► Tauri command (project-scoped read) ──► JS (previewAssets.t
   depth may differ by a LSB or two from the `image` crate's decode), and translucent matte
   PNGs (canvas readback un-premultiplies; `image` ignores alpha).
 
+## Nested sequences and adjustment layers (schema v7)
+
+The wasm compositor renders both with the same Rust code as export (`compose::eval::active_steps`
+-> `compose::build_scene` -> `Compositor::compose_steps_to_texture`; `WasmCompositor` is a
+`SceneHost` supplying only element pixels). Because the same media can be needed at two
+different times in one frame (a sequence placed twice), layers **inside** a nested sequence are
+supplied to `render(t, sources)` per **instance key** (`InstanceKey::to_string()`), not per media
+id; root-timeline layers keep their `<media id>` / `<media id>#incoming` keys unchanged.
+
+`WasmCompositor::active_media_layers(t)` returns, as JSON, every media element the frame needs:
+`[{ key, media_id, source_time, rate, nested, incoming }]` - the `sources` key to fill, the media
+time to show, and the media-seconds-per-timeline-second rate (clip speed x enclosing sequence
+clips' speeds, measured by evaluating the Rust timeline a hair later, so JS never re-derives
+trim/speed math). `webviewPreviewEngine.ts` keeps one `<video>` per nested instance key
+(`nestedPool`: lazily created, seeked/rate-matched/played from that list, pre-seeked from a
+lookahead call, torn down after a grace period) and hands them to `render` under those keys;
+still images reuse the shared image element under the instance key. Projects without sequences
+never call it. Mattes and pack LUTs need no JS change: `required_assets()` walks every
+timeline. The Canvas2D fallback does not render sequences or adjustment layers.
+
 ## Risks
 
 - **WebKitGTK (Linux)**: WebGPU/WebCodecs lag Chromium. There is no native fallback left

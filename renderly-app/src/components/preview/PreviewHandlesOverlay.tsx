@@ -163,7 +163,9 @@ export function PreviewHandlesOverlay({
         .find((t) => t.id === drag.trackId)
         ?.clips.find((c) => c.id === drag.clipId);
       const t =
-        clip && clip.type !== "caption" ? resolveTransform(clip.transform) : drag.startTransform;
+        clip && (clip.type === "video" || clip.type === "audio")
+          ? resolveTransform(clip.transform)
+          : drag.startTransform;
       void dispatch(setClipTransform(drag.trackId, drag.clipId, t));
     },
     [dispatch, setDragging],

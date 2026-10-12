@@ -81,7 +81,12 @@ pub fn representative_frame_time(project: &Project) -> f64 {
             }
             let is_content = project
                 .find_media(v.media_id)
-                .map(|m| matches!(m.kind, MediaKind::Video | MediaKind::Image))
+                .map(|m| {
+                    matches!(
+                        m.kind,
+                        MediaKind::Video | MediaKind::Image | MediaKind::Sequence
+                    )
+                })
                 .unwrap_or(false);
             if !is_content {
                 continue;
@@ -323,6 +328,7 @@ mod tests {
             width: Some(1920),
             height: Some(1080),
             fps: Some(30.0),
+            sequence_id: None,
         });
         id
     }

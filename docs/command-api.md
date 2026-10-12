@@ -1,6 +1,6 @@
 # Command API
 
-Status: **current** (matches project schema v6). This is the source of truth for the `Command` enum and
+Status: **current** (matches project schema v7). This is the source of truth for the `Command` enum and
 `apply_command` in `renderly-core`. GUI, CLI, and MCP must all dispatch through this exact
 set (see AGENTS.md §0.1) — none of them may mutate `Project` state any other way.
 
@@ -9,7 +9,7 @@ set (see AGENTS.md §0.1) — none of them may mutate `Project` state any other 
 ```rust
 pub enum Command {
     ImportMedia { path: String },
-    AddTrack { kind: TrackKind, name: String, id: Option<Id> },
+    AddTrack { kind: TrackKind, name: String, id: Option<Id>, sequence_id: Option<Id> },
     AddClip { track_id: Id, media_id: Id, position_secs: f64, source_in_secs: f64, source_out_secs: f64 },
     SplitClip { track_id: Id, clip_id: Id, at_secs: f64 },
     TrimClip { track_id: Id, clip_id: Id, new_source_in_secs: Option<f64>, new_source_out_secs: Option<f64> },
@@ -50,8 +50,18 @@ pub enum Command {
     TrackMotion { track_id: Id, clip_id: Id, sample_count: u32, region: Option<TrackRegion>, track_rotation_scale: bool },
     StabilizeClip { track_id: Id, clip_id: Id, strength: Option<f64>, sample_count: Option<u32> },
     AutoReframeClip { track_id: Id, clip_id: Id, target_aspect: f64 },
+    CreateSequence { name: String, width: Option<u32>, height: Option<u32>, id: Option<Id> },
+    RenameSequence { sequence_id: Id, name: String },
+    SetSequenceSettings { sequence_id: Id, width: Option<u32>, height: Option<u32> },
+    DeleteSequence { sequence_id: Id },
+    NestClips { clips: Vec<ClipRef>, name: String },
+    UnnestClip { track_id: Id, clip_id: Id },
+    AddAdjustmentLayer { track_id: Id, position_secs: f64, duration_secs: f64 },
+    SetAdjustmentLayer { track_id: Id, clip_id: Id, position_secs: Option<f64>, duration_secs: Option<f64>, opacity: Option<f64> },
     Export { output_path: String, preset: ExportPreset },
 }
+
+pub struct ClipRef { pub track_id: Id, pub clip_id: Id }
 
 pub fn apply_command(project: &mut Project, cmd: Command) -> Result<CommandOutcome, CommandError>;
 ```
@@ -71,7 +81,15 @@ See [architecture.md](architecture.md) "Tauri command surface".
 
 `CommandOutcome` carries whatever the caller needs back (e.g. `ImportMedia` returns the new
 `media_id`; edit commands return `Ok(CommandOutcome::Applied)`; `GenerateVoiceover` returns
-`media_id` and `clip_id`; `Export` drives the render pipeline).
+`media_id` and `clip_id`; `CreateSequence` returns `SequenceCreated { sequence_id,
+media_id }`; `NestClips` returns `ClipsNested { sequence_id, media_id, video_clip_id?,
+audio_clip_id? }`; `Export` drives the render pipeline).
+
+**Timelines and addressing (schema v7).** A project has one root timeline (`Project::tracks`)
+and any number of nested sequences, each with its own tracks. Track ids are unique across
+all of them, so every command that takes a `track_id` addresses a track inside a sequence
+the same way as one on the root — no extra parameter. `MoveTrack`/`DeleteTrack` act within
+the track's own timeline. See [project-schema.md](project-schema.md) "Sequences".
 
 Every command except `Export` is a pure mutation of `Project` and must be representable in
 the project's command log for undo/redo (Phase 2+ feature; v0 just needs the enum to be
@@ -88,29 +106,36 @@ to `project.media`. Returns the new `media_id`. Does not place anything on a tra
 
 ### `AddTrack`
 Appends a new empty `Track` of the given `kind` (`video` | `audio` | `caption`) to
-`project.tracks`. Returns the new `track_id`. `id` is normally omitted (server generates
+`project.tracks` — or, when `sequence_id` is given (schema v7), to that sequence's tracks.
+Returns the new `track_id`. `id` is normally omitted (server generates
 one); the GUI supplies it for CapCut-style auto-track-on-drop, where an `AddTrack` and a
 following `AddClip{track_id}` in the same `apply_commands` batch need to agree on the new
 track's id before the server has actually created it (see "Batch application" below).
 
-- Errors: caller-supplied `id` collides with an existing track id.
+- Errors: caller-supplied `id` collides with an existing track id (in the root timeline or
+  any sequence), `sequence_id` not found (`SequenceNotFound`), or a `caption` track requested
+  inside a sequence (`UnsupportedForSequence` — caption tracks are root-only in v7).
 
 ### `AddClip`
 Adds a `VideoClip`/`AudioClip` (matching the target track's kind) referencing `media_id` to
 `track_id`, placed at `position_secs`, sourced from `[source_in_secs, source_out_secs)` of
-the media.
+the media. **Sequence media** (schema v7, `kind: "sequence"`) may go on a video track (its
+picture) or an audio track (its mixed sound); the source range is in the sequence's own time
+and is checked against its derived duration.
 
 - Errors: `track_id`/`media_id` not found, track kind doesn't match media kind, resulting
   clip overlaps an existing clip on that track, `source_out_secs <= source_in_secs`, or the
   source range exceeds the media's probed duration (skipped if duration is unknown — see
-  project-schema.md).
+  project-schema.md), or placing the sequence would make it contain itself, directly or
+  through other sequences (`SequenceCycle`).
 
 ### `SplitClip`
 Splits the clip at timeline position `at_secs` into two clips with adjusted
 `source_in_secs`/`source_out_secs`, both keeping the same `media_id`. New clip on the right
 gets a fresh id; the left retains the original id. Media clips copy `transform`; keyframes
 are split at the cut (left keeps `t < split`, right remaps `t' = t - split`); effects are
-copied with new instance ids on the right clip.
+copied with new instance ids on the right clip. Adjustment layers split the same way
+(`duration_secs` divided at the cut, opacity keyframes split, effects re-id'd).
 
 - Errors: `at_secs` not strictly inside the clip's timeline span.
 
@@ -119,17 +144,20 @@ Adjusts `source_in_secs` and/or `source_out_secs` in place (ripple is not implie
 only changes which part of the source plays, not other clips' positions). At least one of
 the two optional fields must be `Some`.
 
-- Errors: `clip_id` is a caption clip (trim only applies to media clips), resulting
+- Errors: `clip_id` is a caption clip (trim only applies to media clips) or an adjustment
+  layer (`TrimAdjustment` — it has no source range; use `SetAdjustmentLayer`), resulting
   `source_out_secs <= source_in_secs`, new range exceeds media bounds, or the resulting
   on-timeline span (position unchanged, duration recomputed from the new range) overlaps a
   neighboring clip on the same track.
 
 ### `MoveClip`
 Changes a clip's `position_secs`, optionally moving it to a different track
-(`new_track_id`). Used for reordering clips to match the script.
+(`new_track_id`, which may be in another timeline — root or a sequence). Used for reordering
+clips to match the script. Works on adjustment layers (video tracks only).
 
 - Errors: destination track kind mismatch, resulting overlap with another clip on the
-  destination track.
+  destination track, or moving a sequence clip into a timeline that would make the sequence
+  contain itself (`SequenceCycle`).
 
 ### `DeleteClip`
 Removes a clip. If `ripple: true`, all subsequent clips on the same track shift left to
@@ -216,22 +244,23 @@ Sets a track's `name`.
 - Errors: track not found.
 
 ### `DeleteTrack` (GUI rebuild M1)
-Removes a track and all its clips.
+Removes a track and all its clips, from whichever timeline (root or sequence) owns it.
 
 - Errors: track not found.
 
 ### `MoveTrack` (drag-to-reorder)
-Reorders a track within `Project::tracks` — this array order *is* the compositing
+Reorders a track within its own timeline's track list (`Project::tracks` for a root track,
+the sequence's `tracks` for a sequence track) — this array order *is* the compositing
 z-order (index 0 = bottom of the stack). Removes the track from its current position and
-reinserts it at `new_index`, which is clamped to `0..tracks.len() - 1`. A no-op if the
+reinserts it at `new_index`, which is clamped to that list's `0..len - 1`. A no-op if the
 clamped index equals the track's current position.
 
 - Errors: track not found.
 
 ### `SetClipEnabled` (GUI rebuild M1)
-Soft-enables/disables a media clip (`VideoClip`/`AudioClip`) without deleting it — the
-existing `enabled` field on those clip types, now settable directly instead of only via
-`AddClip`'s default.
+Soft-enables/disables a media clip (`VideoClip`/`AudioClip`) or an adjustment layer without
+deleting it — the existing `enabled` field on those clip types, now settable directly
+instead of only via `AddClip`'s default.
 
 - Errors: track/clip not found, or the clip is a `CaptionClip` (no `enabled` field).
 
@@ -243,17 +272,22 @@ Replaces the static `transform` on a media clip (video or audio). Finite numbers
 
 ### `SetClipKeyframes` (Phase 3.1)
 Replaces all keyframe tracks on a media clip. Validates unique properties, non-negative
-finite times, finite values, opacity keys in `0..=1`; sorts keys by time on write.
+finite times, finite values, opacity keys in `0..=1`; sorts keys by time on write. On an
+adjustment layer only `opacity` keyframes are accepted.
 
-- Errors: track/clip not found, not a media clip, or invalid keyframe data.
+- Errors: track/clip not found, not a media clip or adjustment layer, invalid keyframe data,
+  or a non-opacity property on an adjustment layer (`InvalidKeyframes`).
 
 ### `SetClipEffects` (Phase 3.1 / 3.4 / 3)
 Replaces the effect-instance list on a media clip. Validates unique instance ids, known
 `effect_id`s (builtins, loaded `pack:…:lut:…`, loaded `wasm:…`), finite params, and clamps
 known params. GPU builtins and pack `.cube` LUTs run in the compositor; WASM frame effects run on the CPU
-frame before upload.
+frame before upload. Also accepted on adjustment layers (schema v7), where the chain runs on
+the composited picture beneath the layer; **WASM plugin effects are rejected there**
+(`InvalidEffects`) because they need CPU pixels of a decoded frame and an adjustment layer's
+input exists only on the GPU.
 
-- Errors: track/clip not found, not a media clip, or invalid effect list.
+- Errors: track/clip not found, not a media clip or adjustment layer, or invalid effect list.
 
 ### `SetClipTransition` (Phase 3.5 / 3)
 Sets or clears (`None`) the outgoing `ClipTransition` on a video media clip. Supports all
@@ -388,11 +422,102 @@ Backends:
 
 Errors: `InvalidDenoise` (unknown backend, non-finite strength), track not an audio track.
 
+### `SetClipMask` (Phase 4, extended in v7)
+Sets (`Some`) or clears (`None`) the mask on a media clip **or an adjustment layer**. On an
+adjustment layer the mask limits where the adjustment applies, and its UVs are output-frame
+(canvas) coordinates because the layer has no source frame; `raster`/`generated` mattes are
+stretched to the canvas.
+
+- Errors: track/clip not found, caption clip, invalid mask (`InvalidMask`).
+
+### `CreateSequence` (schema v7)
+Adds an empty nested sequence and its media item (`kind: "sequence"`) in one step, so the
+sequence can be placed with `AddClip` like any media. `width`/`height` of `None` inherit the
+project size. `id` (optional) lets a script reference the new sequence in later commands of
+the same batch; it is generated when omitted. Returns
+`SequenceCreated { sequence_id, media_id }`. Add tracks to it with
+`AddTrack { sequence_id }`.
+
+- Errors: `DuplicateSequenceId`, `InvalidDimensions` (a given size is `0`).
+
+### `RenameSequence` (schema v7)
+Sets the sequence's `name`.
+
+- Errors: `SequenceNotFound`.
+
+### `SetSequenceSettings` (schema v7)
+Sets the sequence's output size. Both fields are written exactly as given: `None` resets
+that axis to the project size (so to change one axis and keep the other, pass the current
+value of the other).
+
+- Errors: `SequenceNotFound`, `InvalidDimensions`.
+
+### `DeleteSequence` (schema v7)
+Removes the sequence and its media item.
+
+- Errors: `SequenceNotFound`; `SequenceInUse` while any clip, on any timeline, still places
+  it (delete or `UnnestClip` those clips first).
+
+### `NestClips` (schema v7)
+Moves the listed clips into a new sequence named `name` and replaces them with one clip
+placing it ("compound clip"). All clips must be on the same timeline (the root or one
+sequence). Relative times are preserved (the earliest clip starts at `0` inside the
+sequence) and so is layering: each source track becomes one track of the sequence, bottom to
+top, keeping its kind, name, audio role and flags; the moved clips keep their ids. A video
+clip (`source_in 0`, `source_out` = the nested span) replaces the video/adjustment clips —
+placed on the highest source video track with room, else on a new track at the top — and an
+audio clip replaces any audio clips (same rule). Returns
+`ClipsNested { sequence_id, media_id, video_clip_id?, audio_clip_id? }`. The command is
+atomic: on any error the project is unchanged.
+
+- Errors: empty `clips` or clips on different timelines (`InvalidNest`), `TrackNotFound` /
+  `ClipNotFound`, a caption clip (`UnsupportedForSequence`).
+
+### `UnnestClip` (schema v7)
+Inverse of `NestClips` for an untouched nested clip: copies the sequence's clips of the
+placing clip's kind (video/adjustment clips for a video clip, audio clips for an audio clip)
+back into the parent timeline on new tracks inserted just above the clip's track (same
+kinds, names, roles and flags; fresh clip and effect ids; times shifted by the clip's
+position) and removes the placing clip. The sequence itself is kept (it may be placed
+elsewhere; `DeleteSequence` removes it). Atomic.
+
+- Errors: `CannotUnnest(reason)` — the clip does not place a sequence, is trimmed, has a
+  speed change, effects, a mask, a transform, keyframes, a transition or background
+  removal (audio: gain, fades or denoise); `TrackNotFound` / `ClipNotFound`.
+
+### `AddAdjustmentLayer` (schema v7)
+Adds an adjustment layer (`Clip::Adjustment`, `opacity 1`, no effects) to a video track at
+`position_secs` for `duration_secs`. Give it effects with `SetClipEffects`, a mask with
+`SetClipMask`, opacity with `SetAdjustmentLayer` / opacity keyframes. Returns `ClipAdded`.
+
+- Errors: `TrackNotFound`, `TrackKindMismatch` (not a video track), `Overlap` with another
+  clip on the track, `InvalidDuration` (`duration_secs <= 0`), `InvalidAdjustment`
+  (`position_secs` negative or not finite).
+
+### `SetAdjustmentLayer` (schema v7)
+Updates an adjustment layer's `position_secs`, `duration_secs` and/or `opacity` (`0..=1`).
+At least one field must be `Some`; omitted fields are unchanged (like `SetCaption`).
+
+- Errors: `SetAdjustmentLayerRequiresChange`, `TrackNotFound`, `ClipNotFound`,
+  `NotAdjustmentClip`, `InvalidDuration`, `InvalidAdjustment` (bad position/opacity),
+  `Overlap`.
+
+### Commands that reject sequence media (schema v7)
+`TrackMotion`, `StabilizeClip`, `AutoReframeClip`, `GenerateBackgroundMatte`,
+`GenerateCaptions` and `SetClipAudioDenoise` reject a clip/media that is a nested sequence
+with `UnsupportedForSequence` instead of guessing (they analyse or process the clip's own
+decoded frames/audio; a sequence has none). Everything else — transform, keyframes,
+transitions, speed, masks, effects, gain, fades, split, trim, move — works on sequence
+clips unchanged.
+
 ### `Export`
 Renders the current `Project` timeline to `output_path` using `preset` (e.g.
 `TikTok9x16`, `Youtube16x9`, or a `Custom { width, height, fps }` variant). Muxes mixed
 audio (with fades and optional music ducking) and burns caption clips. Video layers honor
 evaluated transform+opacity, speed, transitions, and effects (builtin / pack / wasm).
+
+`Export` renders the **root** timeline (nested sequences are rendered recursively where
+clips place them; `timeline_duration` is the root's own length). `render_frame` likewise.
 
 `Export` does not mutate `Project`. Progress / cancel for interactive clients go through
 `renderly_core::export::export_project_with_progress` (GUI Tauri command + CLI status
@@ -458,6 +583,17 @@ remain follow-ups on top of the Phase 4 command surface above.
 
 - **Phase 4 improvement push** (non-breaking): `MoveTrack` — drag-to-reorder tracks/layers;
   reorders `Project::tracks` (the compositing z-order) in place.
+
+- **Schema v7** (additive; v1–v6 files load unchanged): nested sequences and adjustment
+  layers. Added `CreateSequence`, `RenameSequence`, `SetSequenceSettings`, `DeleteSequence`,
+  `NestClips`, `UnnestClip`, `AddAdjustmentLayer`, `SetAdjustmentLayer`; `AddTrack` gained
+  `sequence_id`; `MoveTrack`/`DeleteTrack` are container-scoped; `AddClip` accepts sequence
+  media (cycle-checked); `SetClipEffects`/`SetClipMask`/`SetClipKeyframes` (opacity only)/
+  `SetClipEnabled`/`MoveClip`/`SplitClip`/`DeleteClip` accept adjustment layers; new errors
+  `SequenceNotFound`, `DuplicateSequenceId`, `SequenceInUse`, `SequenceCycle`,
+  `UnsupportedForSequence`, `CannotUnnest`, `InvalidNest`, `NotAdjustmentClip`,
+  `InvalidAdjustment`, `SetAdjustmentLayerRequiresChange`, `TrimAdjustment`; new outcomes
+  `SequenceCreated`, `ClipsNested`. See [schema-v7-design.md](schema-v7-design.md).
 
 - **Phase 3.4** (non-breaking): `SetClipEffects` validates known builtin ids + param
   clamps; compositor executes `builtin:color_adjust` / `blur` / `lut_contrast` / `lut_warm`.

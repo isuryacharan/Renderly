@@ -1,7 +1,8 @@
 # Architecture
 
 Status: **Phase 3 complete; Phase 4 in progress.** Export drives FFmpeg subprocess
-decode/encode with an offscreen wgpu compositor. Schema **v5** covers clip transform /
+decode/encode with an offscreen wgpu compositor. Schema **v7** adds nested sequences and
+adjustment layers (see "Evaluation and compositing" below); schema v5 covered clip transform /
 keyframes (incl. Speed) / builtins (incl. glitch) / ten WGSL transitions / clip speed,
 asset packs (LUTs, stickers, SFX), and a wasmtime frame+audio plugin host. See
 [asset-pack.md](asset-pack.md) and [plugin-api.md](plugin-api.md). The preview renders
@@ -60,6 +61,30 @@ renderly-core/src/
   audio/         mixing, TTS, STT
   perceive/      frame render-to-image, transcript, scene/silence detection
 ```
+
+## Evaluation and compositing (schema v7)
+
+`renderly-core/src/compose/eval.rs` is the single, decode-free answer to "what is on screen at
+time `t`": `active_steps(project, t)` returns a bottom-to-top list of `ComposeStep`s — a
+`Layer(ActiveLayer)` for each active video-track clip (both halves of a transition window), or
+an `Adjustment { effects, opacity, mask }` for an active adjustment layer. An `ActiveLayer`
+samples an `ActiveSource`: `Media` (a file's frame/still at a source time) or `Sequence` (a
+nested timeline at a sequence time), and carries an `InstanceKey` (the chain of decoder keys
+from the root) so the same media needed twice in one frame gets two decoders/elements.
+`sequence_steps` evaluates the inside of a sequence layer; recursion is capped at
+`MAX_SEQUENCE_DEPTH = 8`. The module is cross-target (no fs/native deps).
+
+`compose::build_scene` turns steps into compositor input (`SceneStep`s) with a host-supplied
+`SceneHost`: the host only supplies pixels for `Media` layers (ffmpeg decode in
+`export::FrameRenderer`, `<video>`/`<img>` textures in `renderly-wasm`) and its mask policy;
+adjustment steps and the recursion into sequences are shared, so preview and export cannot
+drift. The `Compositor` runs an adjustment step as: accumulation -> straight-alpha copy ->
+effect chain -> `mix(unadjusted, adjusted, opacity x mask)` written back; and a nested sequence
+as: composite its steps into a pooled offscreen target at the sequence's resolution (cleared
+to transparent, premultiplied accumulation), convert to straight alpha, then draw it as a
+layer. Targets are pooled per size and reused across frames; a project with neither feature
+runs exactly the same passes as before. Audio expands nested audio clips recursively into leaf
+mix pieces (`export::collect_audio_clips`).
 
 ## `renderly-cli`
 

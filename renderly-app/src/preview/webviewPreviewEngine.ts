@@ -9,6 +9,9 @@
 //   cover-fit + transform math. No effects/masks/LUTs/captions — kept as the graceful-
 //   degradation path when WebGPU or the wasm module is unavailable.
 //
+// Nested sequences and adjustment layers (schema v7) render in "webgpu" mode only (they are
+// evaluated by the same Rust code as export); the Canvas2D fallback ignores them.
+//
 // The element pool, dual-mode clock (backend playback:tick slew / standalone rAF),
 // pre-seek, and seek-correction logic below are shared by both modes.
 
@@ -22,6 +25,9 @@ import type { PreviewAssetBackend } from "./previewAssets";
 interface WasmCompositorLike {
   set_project(json: string): void;
   render(timeSecs: number, sources: object): void;
+  /// JSON describing every media element a frame needs, including layers inside nested
+  /// sequences (schema v7) — see `NestedLayerInfo` and renderly-wasm's `active_media_layers`.
+  active_media_layers(timeSecs: number): string;
   // Host-supplied assets (previewAssets.ts): file-backed mattes and pack .cube LUTs.
   required_assets(): string;
   set_matte(key: string, width: number, height: number, rgba: Uint8Array): void;
@@ -60,6 +66,21 @@ export interface PreviewStats {
   /// docs/preview-webview.md).
   mode: PreviewMode;
 }
+
+/// One entry of `active_media_layers` (renderly-wasm): a media element some layer needs at a
+/// given time. Only `nested` entries (layers inside a nested sequence) are managed through
+/// `nestedPool`; root-timeline layers keep using the media-id keyed pools below.
+type NestedLayerInfo = {
+  /// Key the element must have in `render`'s `sources` object (the instance key for nested
+  /// layers: the same media can be live twice in one frame at different source times).
+  key: string;
+  media_id: string;
+  source_time: number;
+  /// Media seconds per timeline second (clip speed x enclosing sequence-clip speeds).
+  rate: number;
+  nested: boolean;
+  incoming: boolean;
+};
 
 type ActiveLayer = {
   trackId: string;
@@ -268,6 +289,8 @@ const SEEK_SETTLE_MS = 200;
 /// re-entering scrub or a slightly-early/late frame would tear down and immediately
 /// recreate the element, forcing a fresh decode each time.
 const SECONDARY_TEARDOWN_GRACE_MS = 2000;
+/// Same idea for elements serving layers inside nested sequences (`nestedPool`).
+const NESTED_TEARDOWN_GRACE_MS = 2000;
 
 export class WebviewPreviewEngine {
   private canvas: HTMLCanvasElement;
@@ -302,6 +325,18 @@ export class WebviewPreviewEngine {
   /// (active this frame or within the pre-seek horizon) — drives `SECONDARY_TEARDOWN_GRACE_MS`
   /// teardown in `manageElements`.
   private secondaryLastNeededPerf = new Map<string, number>();
+
+  /// `<video>` elements for layers inside nested sequences, keyed by the layer's instance key
+  /// (schema v7). One element per live instance - the same media may be needed at two
+  /// different times in one frame - created lazily from `active_media_layers` and torn down
+  /// after `NESTED_TEARDOWN_GRACE_MS` of disuse. Handed to `gpu.render` under the same key.
+  private nestedPool = new Map<
+    string,
+    { el: HTMLVideoElement; mediaId: string; cleanup: () => void; lastNeeded: number }
+  >();
+  /// Instance key -> media id for nested layers backed by a still image (the shared `imgPool`
+  /// element is handed to `gpu.render` under the instance key).
+  private nestedImageKeys = new Map<string, string>();
 
   private playing = false;
   private clockBaseSecs = 0;
@@ -550,6 +585,132 @@ export class WebviewPreviewEngine {
     for (const id of Array.from(this.secondaryVideoPool.keys())) {
       if (!wanted.has(id)) this.teardownSecondaryVideo(id);
     }
+    for (const [key, entry] of Array.from(this.nestedPool)) {
+      if (!wanted.has(entry.mediaId)) this.teardownNestedVideo(key);
+    }
+  }
+
+  /// Create (or return) the element serving one nested-layer instance. Mirrors the primary
+  /// pool's element setup (muted/hidden, 'seeked'/'loadeddata' redraw wiring).
+  private ensureNestedVideo(key: string, media: MediaItem): HTMLVideoElement {
+    const existing = this.nestedPool.get(key);
+    if (existing) return existing.el;
+    const el = document.createElement("video");
+    el.muted = true;
+    el.preload = "auto";
+    el.playsInline = true;
+    el.crossOrigin = "anonymous";
+    el.src = this.assetUrl(media.path);
+    el.style.display = "none";
+    document.body.appendChild(el);
+    const onReady = () => {
+      if (this.disposed || this.playing) return;
+      this.drawFrame(this.pausedTimeSecs);
+    };
+    el.addEventListener("seeked", onReady);
+    el.addEventListener("loadeddata", onReady);
+    this.nestedPool.set(key, {
+      el,
+      mediaId: media.id,
+      lastNeeded: performance.now(),
+      cleanup: () => {
+        el.removeEventListener("seeked", onReady);
+        el.removeEventListener("loadeddata", onReady);
+      },
+    });
+    return el;
+  }
+
+  private teardownNestedVideo(key: string): void {
+    const entry = this.nestedPool.get(key);
+    if (!entry) return;
+    entry.cleanup();
+    entry.el.pause();
+    entry.el.removeAttribute("src");
+    entry.el.load();
+    entry.el.remove();
+    this.nestedPool.delete(key);
+  }
+
+  /// Ask the wasm compositor which layers inside nested sequences are live at `t` (and a
+  /// moment ahead, to pre-seek before a cut), and keep one `<video>` per instance key seeked,
+  /// rate-matched and playing/paused to match. All timeline math (trim, speed, nesting)
+  /// stays in Rust; this only turns its answer into element state. Returns whether every
+  /// live nested video is ready (same gating contract as `manageElements`).
+  private manageNestedElements(project: Project, t: number): boolean {
+    const gpu = this.gpu;
+    if (!gpu) return true;
+    // Projects without sequences pay nothing here (no wasm call, no JSON).
+    if (!project.sequences?.length && this.nestedPool.size === 0) return true;
+    const parse = (at: number): NestedLayerInfo[] => {
+      try {
+        return (JSON.parse(gpu.active_media_layers(at)) as NestedLayerInfo[]).filter((l) => l.nested);
+      } catch {
+        return [];
+      }
+    };
+    const live = parse(t);
+    const now = performance.now();
+    const suppressDrift = now < this.suppressDriftUntilPerf;
+    const liveKeys = new Set(live.map((l) => l.key));
+
+    this.nestedImageKeys.clear();
+    let allReady = true;
+    for (const layer of live) {
+      const media = project.media.find((m) => m.id === layer.media_id);
+      if (!media) continue;
+      if (media.kind === "image") {
+        this.nestedImageKeys.set(layer.key, media.id);
+        continue;
+      }
+      if (media.kind !== "video") continue;
+      const video = this.ensureNestedVideo(layer.key, media);
+      const entry = this.nestedPool.get(layer.key);
+      if (entry) entry.lastNeeded = now;
+      if (video.readyState < 2) {
+        allReady = false;
+        continue;
+      }
+      const rate = layer.rate > 0 && Number.isFinite(layer.rate) ? layer.rate : 1;
+      if (video.playbackRate !== rate) video.playbackRate = rate;
+      const drift = Math.abs(video.currentTime - layer.source_time);
+      if (!suppressDrift && drift > SEEK_CORRECT_THRESHOLD_SECS) {
+        try {
+          video.currentTime = layer.source_time;
+          if (!this.playing) this.scheduleVideoFrameCallback(video);
+        } catch {
+          /* not seekable yet - next frame retries */
+        }
+      }
+      if (this.playing && video.paused) void video.play().catch(() => {});
+      if (!this.playing && !video.paused) video.pause();
+      if (video.seeking) allReady = false;
+    }
+
+    // Pre-seek instances about to go live so a cut inside a sequence is gapless.
+    for (const layer of parse(t + PRESEEK_HORIZON_SECS)) {
+      if (liveKeys.has(layer.key)) continue;
+      const media = project.media.find((m) => m.id === layer.media_id);
+      if (!media || media.kind !== "video") continue;
+      const video = this.ensureNestedVideo(layer.key, media);
+      const entry = this.nestedPool.get(layer.key);
+      if (entry) entry.lastNeeded = now;
+      if (Math.abs(video.currentTime - layer.source_time) > SEEK_CORRECT_THRESHOLD_SECS) {
+        try {
+          video.currentTime = layer.source_time;
+        } catch {
+          /* not seekable yet */
+        }
+      }
+    }
+
+    // Pause idle instances; tear down any unused past the grace window.
+    for (const [key, entry] of Array.from(this.nestedPool)) {
+      if (liveKeys.has(key)) continue;
+      if (!entry.el.paused) entry.el.pause();
+      if (now - entry.lastNeeded > NESTED_TEARDOWN_GRACE_MS) this.teardownNestedVideo(key);
+    }
+    return allReady;
   }
 
   /// Lazily create (or return the existing) secondary pooled `<video>` element for
@@ -637,6 +798,7 @@ export class WebviewPreviewEngine {
     this.playing = false;
     this.pausedTimeSecs = atSecs;
     for (const v of this.videoPool.values()) v.pause();
+    for (const entry of this.nestedPool.values()) entry.el.pause();
     this.drawFrame(atSecs);
   }
 
@@ -739,6 +901,12 @@ export class WebviewPreviewEngine {
       // `secondaryVideoPool`'s doc comment and compositor.rs's `render`.
       for (const [id, video] of this.secondaryVideoPool) sources[`${id}#incoming`] = video;
       for (const [id, img] of this.imgPool) sources[id] = img;
+      // Layers inside nested sequences: one element per instance key (see `nestedPool`).
+      for (const [key, entry] of this.nestedPool) sources[key] = entry.el;
+      for (const [key, mediaId] of this.nestedImageKeys) {
+        const img = this.imgPool.get(mediaId);
+        if (img) sources[key] = img;
+      }
       try {
         this.gpu.render(t, sources);
         this.gpuRenderErrorLogged = false;
@@ -922,6 +1090,9 @@ export class WebviewPreviewEngine {
       // triggered, not just one already in flight from a previous frame.
       if (video.seeking) allReady = false;
     }
+    // Layers inside nested sequences (webgpu mode only: the Canvas2D fallback does not render
+    // sequences).
+    if (this.gpu && !this.manageNestedElements(project, t)) allReady = false;
     return allReady;
   }
 
@@ -975,6 +1146,8 @@ export class WebviewPreviewEngine {
     }
     this.videoPool.clear();
     for (const id of Array.from(this.secondaryVideoPool.keys())) this.teardownSecondaryVideo(id);
+    for (const key of Array.from(this.nestedPool.keys())) this.teardownNestedVideo(key);
+    this.nestedImageKeys.clear();
     this.imgPool.clear();
   }
 }

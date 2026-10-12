@@ -43,7 +43,7 @@ export const MOCK_IDS = {
 } as const;
 
 const sampleProject: Project = {
-  schema_version: 6,
+  schema_version: 7,
   id: MOCK_IDS["mock-project"],
   name: "Ultra Bruno ep.12",
   settings: { fps: 60, width: 1080, height: 1920, sample_rate: 48000, duck_db: -12 },
@@ -234,37 +234,37 @@ function applyMockCommand(project: Project, cmd: any): void {
     }
     case "SetClipTransform": {
       const clip = mockFindClip(mockFindTrack(project, cmd.track_id), cmd.clip_id);
-      if (clip && clip.type !== "caption") clip.transform = cmd.transform;
+      if (clip && (clip.type === "video" || clip.type === "audio")) clip.transform = cmd.transform;
       break;
     }
     case "SetClipKeyframes": {
       const clip = mockFindClip(mockFindTrack(project, cmd.track_id), cmd.clip_id);
-      if (clip && clip.type !== "caption") clip.keyframes = cmd.keyframes;
+      if (clip && (clip.type === "video" || clip.type === "audio")) clip.keyframes = cmd.keyframes;
       break;
     }
     case "SetClipEffects": {
       const clip = mockFindClip(mockFindTrack(project, cmd.track_id), cmd.clip_id);
-      if (clip && clip.type !== "caption") clip.effects = cmd.effects;
+      if (clip && (clip.type === "video" || clip.type === "audio")) clip.effects = cmd.effects;
       break;
     }
     case "SetClipTransition": {
       const clip = mockFindClip(mockFindTrack(project, cmd.track_id), cmd.clip_id);
-      if (clip && clip.type !== "caption") clip.outgoing_transition = cmd.transition;
+      if (clip && (clip.type === "video" || clip.type === "audio")) clip.outgoing_transition = cmd.transition;
       break;
     }
     case "SetClipSpeed": {
       const clip = mockFindClip(mockFindTrack(project, cmd.track_id), cmd.clip_id);
-      if (clip && clip.type !== "caption") clip.speed = cmd.speed;
+      if (clip && (clip.type === "video" || clip.type === "audio")) clip.speed = cmd.speed;
       break;
     }
     case "SetAudioGain": {
       const clip = mockFindClip(mockFindTrack(project, cmd.track_id), cmd.clip_id);
-      if (clip && clip.type !== "caption") clip.gain_db = cmd.gain_db;
+      if (clip && (clip.type === "video" || clip.type === "audio")) clip.gain_db = cmd.gain_db;
       break;
     }
     case "SetAudioFade": {
       const clip = mockFindClip(mockFindTrack(project, cmd.track_id), cmd.clip_id);
-      if (clip && clip.type !== "caption") {
+      if (clip && (clip.type === "video" || clip.type === "audio")) {
         clip.fade_in_secs = cmd.fade_in_secs;
         clip.fade_out_secs = cmd.fade_out_secs;
       }
@@ -301,7 +301,7 @@ function applyMockCommand(project: Project, cmd: any): void {
     }
     case "TrimClip": {
       const clip = mockFindClip(mockFindTrack(project, cmd.track_id), cmd.clip_id);
-      if (clip && clip.type !== "caption") {
+      if (clip && (clip.type === "video" || clip.type === "audio")) {
         if (cmd.new_source_in_secs != null) clip.source_in_secs = cmd.new_source_in_secs;
         if (cmd.new_source_out_secs != null) clip.source_out_secs = cmd.new_source_out_secs;
       }

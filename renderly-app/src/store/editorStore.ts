@@ -1,10 +1,11 @@
 import { create } from "zustand";
 import { applyPatch, type Operation } from "fast-json-patch";
 import * as ipc from "../lib/ipc";
-import { addCaption, addClip, addTrack } from "../lib/commands";
+import { addAdjustmentLayer, addCaption, addClip, addTrack } from "../lib/commands";
 import { timelineDuration, TRACK_LABEL_W, maxScrollX, maxScrollY, clipLeft } from "../timeline/layout";
 import {
   clipDurationSecs,
+  mediaDurationSecs,
   type Clip,
   type MediaKind,
   type Project,
@@ -779,7 +780,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     if (!media) return;
     const trackKind: TrackKind = kind === "audio" ? "audio" : "video";
     const track = await get().ensureTrack(trackKind, trackKind === "video" ? "Video 1" : "Audio 1");
-    const dur = media.duration_secs ?? 5;
+    const dur = mediaDurationSecs(project, media) ?? 5;
 
     // Placing at the playhead is usually right, but if that would land on top of an
     // existing clip on this track (e.g. clicking an already-placed media item again),
@@ -896,6 +897,9 @@ function basename(path: string): string {
 function pasteCommand(clip: Clip, trackId: string, positionSecs: number): Record<string, unknown> {
   if (clip.type === "caption") {
     return addCaption(trackId, clip.text, positionSecs, clip.duration_secs, clip.style_id);
+  }
+  if (clip.type === "adjustment") {
+    return addAdjustmentLayer(trackId, positionSecs, clip.duration_secs);
   }
   return addClip(trackId, clip.media_id, positionSecs, clip.source_in_secs, clip.source_out_secs);
 }

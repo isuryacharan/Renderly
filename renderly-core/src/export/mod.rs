@@ -2,16 +2,20 @@
 
 use crate::captions::CaptionError;
 use crate::commands::ExportPreset;
-use crate::compose::eval::{self, EvalError};
-use crate::compose::{ComposeError, ComposeLayer, Compositor, LayerSource};
+use crate::compose::eval::{self, ActiveLayer, EvalError, InstanceKey};
+use crate::compose::{
+    build_scene, ComposeError, ComposeLayer, Compositor, LayerSource, SceneError, SceneHost,
+    SceneStep,
+};
 use crate::media::{
     mix_timeline_audio, mux_video_audio, AudioMixClip, DuckSettings, FfmpegCliError, ReaderOptions,
     RgbaFrame, VideoEncoder, VideoReader,
 };
 use crate::proc::SerialSpawn;
-#[cfg(test)]
-use crate::project::MediaKind;
-use crate::project::{evaluate_volume_db, Clip, Project, TrackAudioRole, TrackKind};
+use crate::project::{
+    evaluate_volume_db, Clip, ClipMask, MediaClip, MediaKind, Project, TrackAudioRole, TrackKind,
+    MAX_SEQUENCE_DEPTH,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -31,6 +35,10 @@ pub enum ExportError {
     MediaNotFound(uuid::Uuid),
     #[error("media {0} is not video")]
     NotVideo(uuid::Uuid),
+    #[error("sequence not found: {0}")]
+    SequenceNotFound(uuid::Uuid),
+    #[error("sequence {0} is nested deeper than the limit of {MAX_SEQUENCE_DEPTH}")]
+    SequenceTooDeep(uuid::Uuid),
     /// Returned when `export_project_with_progress`'s callback returns `false`.
     #[error("export cancelled")]
     Cancelled,
@@ -41,6 +49,8 @@ impl From<EvalError> for ExportError {
         match e {
             EvalError::MediaNotFound(id) => ExportError::MediaNotFound(id),
             EvalError::NotVideo(id) => ExportError::NotVideo(id),
+            EvalError::SequenceNotFound(id) => ExportError::SequenceNotFound(id),
+            EvalError::SequenceTooDeep(id) => ExportError::SequenceTooDeep(id),
         }
     }
 }
@@ -253,7 +263,10 @@ pub struct FrameRenderer {
     settings: ExportSettings,
     decode_opts: DecodeOptions,
     compositor: Compositor,
-    decoders: HashMap<uuid::Uuid, DecoderState>,
+    /// One decoder per layer instance (see [`InstanceKey`]): the same media at two different
+    /// times in one frame — a sequence placed twice, or a clip both nested and on the root —
+    /// gets two independent readers.
+    decoders: HashMap<InstanceKey, DecoderState>,
 }
 
 impl FrameRenderer {
@@ -314,16 +327,20 @@ impl FrameRenderer {
 
         let mut t = start;
         while t <= end + 1e-9 {
-            let layers = eval::active_layers(project, t)?;
+            // Includes layers inside nested sequences.
+            let layers = eval::leaf_media_layers(project, t)?;
             for layer in &layers {
+                let Some((_, path, source_time)) = layer.media() else {
+                    continue;
+                };
                 let decoder = self
                     .decoders
-                    .entry(layer.decoder_key)
-                    .or_insert_with(|| DecoderState::new(layer.path.clone(), reader_opts));
-                if decoder.path != layer.path {
-                    *decoder = DecoderState::new(layer.path.clone(), reader_opts);
+                    .entry(layer.instance.clone())
+                    .or_insert_with(|| DecoderState::new(path.to_path_buf(), reader_opts));
+                if decoder.path != path {
+                    *decoder = DecoderState::new(path.to_path_buf(), reader_opts);
                 }
-                let _ = decoder.frame_at(layer.source_time)?;
+                let _ = decoder.frame_at(source_time)?;
             }
             t += step;
         }
@@ -366,49 +383,28 @@ impl FrameRenderer {
         time_secs: f64,
         readback: bool,
     ) -> Result<(Option<Vec<u8>>, FrameTiming), ExportError> {
-        let layers = eval::active_layers(project, time_secs)?;
+        let steps = eval::active_steps(project, time_secs)?;
         let packs = crate::packs::load_project_packs(project);
-        let mut compose_layers = Vec::with_capacity(layers.len() + 2);
         let plugin_host = crate::plugins::PluginHost::for_project(project).ok();
 
         let reader_opts = ReaderOptions {
             target_height: self.decode_opts.target_height,
             output_fps: self.decode_opts.output_fps,
         };
-        let mut decode_secs = 0.0;
-        for layer in &layers {
-            let decoder = self
-                .decoders
-                .entry(layer.decoder_key)
-                .or_insert_with(|| DecoderState::new(layer.path.clone(), reader_opts));
-            if decoder.path != layer.path {
-                *decoder = DecoderState::new(layer.path.clone(), reader_opts);
-            }
-            let decode_start = Instant::now();
-            let frame = decoder.frame_at(layer.source_time)?;
-            decode_secs += decode_start.elapsed().as_secs_f64();
-            if let Some(mut frame) = frame {
-                if let Some(host) = plugin_host.as_ref() {
-                    let _ = host.apply_effects(&mut frame, &layer.effects);
-                }
-
-                let mask = if let Some(bg) = layer.background_removal.as_ref().filter(|b| b.enabled)
-                {
-                    resolve_background_removal_mask(&frame, bg)
-                } else {
-                    layer.mask.clone()
-                };
-
-                compose_layers.push(ComposeLayer::from_active(
-                    layer,
-                    LayerSource::Frame(frame),
-                    mask,
-                ));
-            }
-        }
+        let mut host = ExportHost {
+            decoders: &mut self.decoders,
+            plugin_host: plugin_host.as_ref(),
+            reader_opts,
+            decode_secs: 0.0,
+        };
+        let mut scene = build_scene(project, steps, &mut host).map_err(|e| match e {
+            SceneError::Eval(e) => ExportError::from(e),
+            SceneError::Host(e) => e,
+        })?;
+        let decode_secs = host.decode_secs;
 
         for cap in eval::active_captions(project, time_secs) {
-            compose_layers.push(ComposeLayer::caption(LayerSource::Frame(
+            scene.push(SceneStep::Layer(ComposeLayer::caption(LayerSource::Frame(
                 crate::captions::render_caption_for_project(
                     project,
                     &cap.text,
@@ -416,15 +412,14 @@ impl FrameRenderer {
                     self.settings.width,
                     self.settings.height,
                 )?,
-            )));
+            ))));
         }
 
         let compose_start = Instant::now();
         let pixels = if readback {
-            Some(self.compositor.composite(&packs, &compose_layers)?)
+            Some(self.compositor.composite_steps(&packs, &scene)?)
         } else {
-            self.compositor
-                .compose_to_texture(&packs, &compose_layers)?;
+            self.compositor.compose_steps_to_texture(&packs, &scene)?;
             None
         };
         let compose_secs = compose_start.elapsed().as_secs_f64();
@@ -436,6 +431,65 @@ impl FrameRenderer {
                 compose_ms: compose_secs * 1000.0,
             },
         ))
+    }
+}
+
+/// Native [`SceneHost`]: media layers are decoded through the renderer's per-instance ffmpeg
+/// readers.
+struct ExportHost<'a> {
+    decoders: &'a mut HashMap<InstanceKey, DecoderState>,
+    plugin_host: Option<&'a crate::plugins::PluginHost>,
+    reader_opts: ReaderOptions,
+    decode_secs: f64,
+}
+
+impl SceneHost for ExportHost<'_> {
+    type Error = ExportError;
+
+    fn media_layer(&mut self, layer: &ActiveLayer) -> Result<Option<ComposeLayer>, ExportError> {
+        let Some((_, path, source_time)) = layer.media() else {
+            return Ok(None);
+        };
+        let reader_opts = self.reader_opts;
+        let decoder = self
+            .decoders
+            .entry(layer.instance.clone())
+            .or_insert_with(|| DecoderState::new(path.to_path_buf(), reader_opts));
+        if decoder.path != path {
+            *decoder = DecoderState::new(path.to_path_buf(), reader_opts);
+        }
+        let decode_start = Instant::now();
+        let frame = decoder.frame_at(source_time)?;
+        self.decode_secs += decode_start.elapsed().as_secs_f64();
+        let Some(mut frame) = frame else {
+            return Ok(None);
+        };
+        if let Some(host) = self.plugin_host {
+            let _ = host.apply_effects(&mut frame, &layer.effects);
+        }
+
+        let mask = if let Some(bg) = layer.background_removal.as_ref().filter(|b| b.enabled) {
+            resolve_background_removal_mask(&frame, bg)
+        } else {
+            layer.mask.clone()
+        };
+
+        Ok(Some(ComposeLayer::from_active(
+            layer,
+            LayerSource::Frame(frame),
+            mask,
+        )))
+    }
+
+    fn sequence_mask(&mut self, layer: &ActiveLayer) -> Option<ClipMask> {
+        // Background removal without a baked matte is per inner clip; a baked matte or the
+        // clip's own mask applies to the sequence's picture.
+        layer
+            .background_removal
+            .as_ref()
+            .filter(|b| b.enabled)
+            .and_then(crate::mask::cached_background_mask)
+            .or_else(|| layer.mask.clone())
     }
 }
 
@@ -573,7 +627,9 @@ fn export_project_with_progress_inner(
     encoder.finish()?;
     drop(renderer);
 
-    let mut audio_clips = collect_audio_clips(project);
+    // Holds intermediate sequence buses (see `collect_audio_clips`); removed on drop.
+    let mut audio_temp = AudioTemp::default();
+    let mut audio_clips = collect_audio_clips(project, &mut audio_temp)?;
     let wasm_tmp = bake_wasm_audio_effects(project, &mut audio_clips)?;
     if audio_clips.is_empty() {
         let _ = wasm_tmp;
@@ -625,9 +681,64 @@ fn export_project_with_progress_inner(
     Ok(())
 }
 
-fn collect_audio_clips(project: &Project) -> Vec<AudioMixClip> {
+/// Temp directories holding intermediate sequence audio buses; removed on drop.
+#[derive(Default)]
+struct AudioTemp(Vec<PathBuf>);
+
+impl Drop for AudioTemp {
+    fn drop(&mut self) {
+        for dir in &self.0 {
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+}
+
+/// Mix pieces for one audio clip on its own timeline: one per constant-speed segment.
+fn leaf_audio_pieces(
+    a: &MediaClip,
+    path: &Path,
+    role: Option<TrackAudioRole>,
+) -> Vec<AudioMixClip> {
     let mut clips = Vec::new();
-    for track in &project.tracks {
+    for (local_off, tl_dur, speed) in crate::project::anim::speed_segments(a) {
+        let src_in = a.source_time_at(a.position_secs + local_off);
+        let src_out = a.source_time_at(a.position_secs + local_off + tl_dur);
+        clips.push(AudioMixClip {
+            path: path.to_path_buf(),
+            position_secs: a.position_secs + local_off,
+            source_in_secs: src_in,
+            source_out_secs: src_out.max(src_in + 1e-4),
+            gain_db: evaluate_volume_db(a, a.position_secs + local_off),
+            fade_in_secs: if local_off < 1e-6 {
+                a.fade_in_secs
+            } else {
+                0.0
+            },
+            fade_out_secs: if (local_off + tl_dur - a.timeline_duration_secs()).abs() < 0.06 {
+                a.fade_out_secs
+            } else {
+                0.0
+            },
+            role,
+            speed,
+            effects: a.effects.clone(),
+            denoise: a.audio_denoise.clone(),
+        });
+    }
+    clips
+}
+
+/// Every enabled audio clip of a container's tracks as mix pieces on that container's own
+/// timeline. A clip whose media is a nested sequence expands recursively into the
+/// sequence's leaf pieces (see [`expand_sequence_audio`]).
+fn container_audio_pieces(
+    project: &Project,
+    tracks: &[crate::project::Track],
+    depth: usize,
+    temp: &mut AudioTemp,
+) -> Result<Vec<AudioMixClip>, ExportError> {
+    let mut clips = Vec::new();
+    for track in tracks {
         if track.kind != TrackKind::Audio || track.muted {
             continue;
         }
@@ -639,35 +750,196 @@ fn collect_audio_clips(project: &Project) -> Vec<AudioMixClip> {
             let Some(media) = project.find_media(a.media_id) else {
                 continue;
             };
-            for (local_off, tl_dur, speed) in crate::project::anim::speed_segments(a) {
-                let src_in = a.source_time_at(a.position_secs + local_off);
-                let src_out = a.source_time_at(a.position_secs + local_off + tl_dur);
-                clips.push(AudioMixClip {
-                    path: media.path.clone(),
-                    position_secs: a.position_secs + local_off,
-                    source_in_secs: src_in,
-                    source_out_secs: src_out.max(src_in + 1e-4),
-                    gain_db: evaluate_volume_db(a, a.position_secs + local_off),
-                    fade_in_secs: if local_off < 1e-6 {
-                        a.fade_in_secs
-                    } else {
-                        0.0
-                    },
-                    fade_out_secs: if (local_off + tl_dur - a.timeline_duration_secs()).abs() < 0.06
-                    {
-                        a.fade_out_secs
-                    } else {
-                        0.0
-                    },
-                    role: track.audio_role,
-                    speed,
-                    effects: a.effects.clone(),
-                    denoise: a.audio_denoise.clone(),
-                });
+            if let (MediaKind::Sequence, Some(seq_id)) = (media.kind, media.sequence_id) {
+                clips.extend(expand_sequence_audio(
+                    project,
+                    a,
+                    track.audio_role,
+                    seq_id,
+                    depth,
+                    temp,
+                )?);
+            } else {
+                clips.extend(leaf_audio_pieces(a, &media.path, track.audio_role));
             }
         }
     }
-    clips
+    Ok(clips)
+}
+
+fn collect_audio_clips(
+    project: &Project,
+    temp: &mut AudioTemp,
+) -> Result<Vec<AudioMixClip>, ExportError> {
+    container_audio_pieces(project, &project.tracks, 1, temp)
+}
+
+/// Expand an audio clip that places a nested sequence into the sequence's own leaf pieces,
+/// mapped onto the outer timeline through the outer clip's position, trim, speed (including
+/// speed keyframes), gain and fades, and clipped to the outer clip's span. The pieces inherit
+/// `outer_role` on the parent mix.
+///
+/// Ducking is resolved per container: when the sequence itself holds both voice and music
+/// tracks, its audio is first mixed (with ducking) into one intermediate bus, which the
+/// parent then treats as a single piece. Otherwise no intermediate render happens and the
+/// parent mix is a single filter graph over leaf media.
+fn expand_sequence_audio(
+    project: &Project,
+    outer: &MediaClip,
+    outer_role: Option<TrackAudioRole>,
+    sequence_id: crate::project::Id,
+    depth: usize,
+    temp: &mut AudioTemp,
+) -> Result<Vec<AudioMixClip>, ExportError> {
+    if depth > MAX_SEQUENCE_DEPTH {
+        return Err(ExportError::SequenceTooDeep(sequence_id));
+    }
+    let seq = project
+        .find_sequence(sequence_id)
+        .ok_or(ExportError::SequenceNotFound(sequence_id))?;
+    let inner = container_audio_pieces(project, &seq.tracks, depth + 1, temp)?;
+    let inner = premix_sequence_bus(project, inner, project.sequence_duration(sequence_id), temp)?;
+    Ok(map_through_outer(&inner, outer, outer_role))
+}
+
+/// If `pieces` (a sequence's audio, on its own timeline) holds both voice and music roles and
+/// ducking is enabled, mix them into one ducked intermediate WAV and return it as a single
+/// piece; otherwise return `pieces` unchanged.
+fn premix_sequence_bus(
+    project: &Project,
+    mut pieces: Vec<AudioMixClip>,
+    duration_secs: f64,
+    temp: &mut AudioTemp,
+) -> Result<Vec<AudioMixClip>, ExportError> {
+    if project.settings.duck_db >= 0.0 || duration_secs <= 0.0 {
+        return Ok(pieces);
+    }
+    let has_voice = pieces.iter().any(|c| {
+        matches!(
+            c.role,
+            Some(TrackAudioRole::Voiceover) | Some(TrackAudioRole::Dialog)
+        )
+    });
+    let has_music = pieces.iter().any(|c| c.role == Some(TrackAudioRole::Music));
+    if !(has_voice && has_music) {
+        return Ok(pieces);
+    }
+    if let Some(dir) = bake_wasm_audio_effects(project, &mut pieces)? {
+        temp.0.push(dir);
+    }
+    let dir = std::env::temp_dir().join(format!("renderly-seqmix-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).map_err(FfmpegCliError::Io)?;
+    temp.0.push(dir.clone());
+    let wav = dir.join("bus.wav");
+    mix_timeline_audio(
+        &pieces,
+        project.settings.sample_rate,
+        duration_secs,
+        &wav,
+        Some(DuckSettings {
+            duck_db: project.settings.duck_db,
+        }),
+    )?;
+    Ok(vec![AudioMixClip {
+        path: wav,
+        position_secs: 0.0,
+        source_in_secs: 0.0,
+        source_out_secs: duration_secs,
+        gain_db: 0.0,
+        fade_in_secs: 0.0,
+        fade_out_secs: 0.0,
+        role: None,
+        speed: 1.0,
+        effects: Vec::new(),
+        denoise: None,
+    }])
+}
+
+/// Map pieces expressed on a sequence's timeline onto the timeline of the audio clip that
+/// places it. Per constant-speed segment of `outer`: the window of sequence time it plays
+/// is intersected with each piece; position scales by the outer speed, the playback rate
+/// multiplies, and the outer volume adds in dB. The outer fade-in/out apply to the pieces
+/// that touch the outer clip's start/end (an outer fade longer than one piece is not spread
+/// across the following pieces).
+fn map_through_outer(
+    pieces: &[AudioMixClip],
+    outer: &MediaClip,
+    outer_role: Option<TrackAudioRole>,
+) -> Vec<AudioMixClip> {
+    let mut out = Vec::new();
+    let outer_dur = outer.timeline_duration_secs();
+    for (local_off, tl_dur, speed_o) in crate::project::anim::speed_segments(outer) {
+        let seg_start = outer.position_secs + local_off;
+        let w0 = outer.source_time_at(seg_start);
+        let w1 = outer.source_time_at(seg_start + tl_dur);
+        let outer_gain = evaluate_volume_db(outer, seg_start);
+        let first = local_off < 1e-6;
+        let last = (local_off + tl_dur - outer_dur).abs() < 0.06;
+        for p in pieces {
+            let speed_p = p.speed.max(1e-6);
+            let p0 = p.position_secs;
+            let p1 = p0 + (p.source_out_secs - p.source_in_secs) / speed_p;
+            let lo = p0.max(w0);
+            let hi = p1.min(w1);
+            if hi - lo <= 1e-4 {
+                continue;
+            }
+            let src_in = p.source_in_secs + (lo - p0) * speed_p;
+            let src_out = p.source_in_secs + (hi - p0) * speed_p;
+            let at_piece_start = lo <= p0 + 1e-9;
+            let at_piece_end = hi >= p1 - 1e-9;
+            let fade_in = if at_piece_start { p.fade_in_secs } else { 0.0 }.max(
+                if first && lo <= w0 + 1e-9 {
+                    outer.fade_in_secs
+                } else {
+                    0.0
+                },
+            );
+            let fade_out =
+                if at_piece_end { p.fade_out_secs } else { 0.0 }.max(if last && hi >= w1 - 1e-9 {
+                    outer.fade_out_secs
+                } else {
+                    0.0
+                });
+            out.push(AudioMixClip {
+                path: p.path.clone(),
+                position_secs: seg_start + (lo - w0) / speed_o,
+                source_in_secs: src_in,
+                source_out_secs: src_out.max(src_in + 1e-4),
+                gain_db: p.gain_db + outer_gain,
+                fade_in_secs: fade_in,
+                fade_out_secs: fade_out,
+                role: outer_role,
+                speed: p.speed * speed_o,
+                effects: p.effects.clone(),
+                denoise: p.denoise.clone(),
+            });
+        }
+    }
+    out
+}
+
+/// Cut a mix piece to `[start, end)` on its timeline and shift so `start` becomes t=0.
+fn clip_piece_to_range(p: &AudioMixClip, start: f64, end: f64) -> Option<AudioMixClip> {
+    let speed = p.speed.max(1e-6);
+    let p0 = p.position_secs;
+    let p1 = p0 + (p.source_out_secs - p.source_in_secs) / speed;
+    let lo = p0.max(start);
+    let hi = p1.min(end);
+    if hi - lo <= 1e-6 {
+        return None;
+    }
+    let mut out = p.clone();
+    out.position_secs = lo - start;
+    out.source_in_secs = p.source_in_secs + (lo - p0) * speed;
+    out.source_out_secs = p.source_in_secs + (hi - p0) * speed;
+    if lo > p0 + 1e-9 {
+        out.fade_in_secs = 0.0;
+    }
+    if hi < p1 - 1e-9 {
+        out.fade_out_secs = 0.0;
+    }
+    Some(out)
 }
 
 /// Decode clip source ranges, run audio WASM effects, rewrite clip paths to processed WAVs.
@@ -880,6 +1152,7 @@ pub fn mix_timeline_audio_range_to_file(
     }
 
     let end_secs = start_secs + duration_secs;
+    let mut audio_temp = AudioTemp::default();
     let mut shifted = Vec::new();
     for track in &project.tracks {
         if track.kind != TrackKind::Audio || track.muted {
@@ -893,6 +1166,24 @@ pub fn mix_timeline_audio_range_to_file(
             let Some(media) = project.find_media(a.media_id) else {
                 continue;
             };
+            if let (MediaKind::Sequence, Some(seq_id)) = (media.kind, media.sequence_id) {
+                // A nested sequence's audio: expand to leaf pieces on the outer timeline,
+                // then cut each to the requested range.
+                let pieces = expand_sequence_audio(
+                    project,
+                    a,
+                    track.audio_role,
+                    seq_id,
+                    1,
+                    &mut audio_temp,
+                )?;
+                shifted.extend(
+                    pieces
+                        .iter()
+                        .filter_map(|p| clip_piece_to_range(p, start_secs, end_secs)),
+                );
+                continue;
+            }
             let clip_len = a.timeline_duration_secs();
             let clip_end = a.position_secs + clip_len;
             let overlap_start = start_secs.max(a.position_secs);
@@ -990,6 +1281,10 @@ mod tests {
         crate::media::ffmpeg_available()
     }
 
+    /// Serialises the v7 tests that spawn ffmpeg children (concurrent spawns can deadlock on
+    /// Windows when long-lived readers hold inherited pipe handles).
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn generate_test_video(path: &Path) {
         let status = crate::proc::command(crate::media::ffmpeg_path().unwrap())
             .args([
@@ -1035,6 +1330,7 @@ mod tests {
             width: Some(320),
             height: Some(240),
             fps: Some(30.0),
+            sequence_id: None,
         });
         let track = crate::project::Track::new(TrackKind::Video, "V1");
         project.tracks.push(track);
@@ -1099,6 +1395,7 @@ mod tests {
             width: Some(320),
             height: Some(240),
             fps: Some(30.0),
+            sequence_id: None,
         });
         let track = crate::project::Track::new(TrackKind::Video, "V1");
         project.tracks.push(track);
@@ -1205,6 +1502,7 @@ mod tests {
             width: None,
             height: None,
             fps: None,
+            sequence_id: None,
         });
         let mut track = crate::project::Track::new(TrackKind::Audio, "A1");
         track.muted = true;
@@ -1222,7 +1520,9 @@ mod tests {
         }));
         project.tracks.push(track);
 
-        assert!(collect_audio_clips(&project).is_empty());
+        assert!(collect_audio_clips(&project, &mut AudioTemp::default())
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -1237,6 +1537,7 @@ mod tests {
             width: Some(320),
             height: Some(240),
             fps: Some(30.0),
+            sequence_id: None,
         });
         let mut track = crate::project::Track::new(TrackKind::Video, "V1");
         track.hidden = true;
@@ -1255,7 +1556,7 @@ mod tests {
         project.tracks.push(track);
 
         assert!(!has_video_content(&project));
-        assert!(eval::active_layers(&project, 0.0).unwrap().is_empty());
+        assert!(eval::active_steps(&project, 0.0).unwrap().is_empty());
     }
 
     #[test]
@@ -1293,6 +1594,7 @@ mod tests {
             width: Some(320),
             height: Some(240),
             fps: Some(30.0),
+            sequence_id: None,
         });
         let track = crate::project::Track::new(TrackKind::Video, "V1");
         project.tracks.push(track);
@@ -1351,6 +1653,7 @@ mod tests {
             width: Some(320),
             height: Some(240),
             fps: Some(30.0),
+            sequence_id: None,
         });
         let track = crate::project::Track::new(TrackKind::Video, "V1");
         project.tracks.push(track);
@@ -1417,6 +1720,7 @@ mod tests {
             width: Some(320),
             height: Some(240),
             fps: Some(30.0),
+            sequence_id: None,
         });
 
         // Two video tracks both showing the SAME media at the same time — a minimal PIP
@@ -1454,6 +1758,469 @@ mod tests {
             "each PIP layer's track should get its own decoder, not share one keyed by media_id"
         );
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn frame_renderer_opens_one_decoder_per_nested_instance() {
+        use crate::project::{MediaItem, Sequence, Track};
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        if !ffmpeg_available() {
+            eprintln!("skipping nested decoder test: ffmpeg not on PATH");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("renderly-nested-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let video_path = dir.join("src.mp4");
+        generate_test_video(&video_path);
+
+        let mut project = Project::new("nested-decoders", Settings::default());
+        let media_id = uuid::Uuid::new_v4();
+        project.media.push(MediaItem {
+            id: media_id,
+            path: video_path,
+            kind: MediaKind::Video,
+            duration_secs: Some(1.0),
+            width: Some(320),
+            height: Some(240),
+            fps: Some(30.0),
+            sequence_id: None,
+        });
+        let seq_id = uuid::Uuid::new_v4();
+        let seq_media = uuid::Uuid::new_v4();
+        let mut inner = Track::new(TrackKind::Video, "inner");
+        inner.clips.push(Clip::Video(crate::project::MediaClip {
+            id: uuid::Uuid::new_v4(),
+            media_id,
+            position_secs: 0.0,
+            source_in_secs: 0.0,
+            source_out_secs: 1.0,
+            enabled: true,
+            ..Default::default()
+        }));
+        project.sequences.push(Sequence {
+            id: seq_id,
+            name: "S".into(),
+            width: None,
+            height: None,
+            tracks: vec![inner],
+        });
+        project.media.push(MediaItem {
+            id: seq_media,
+            path: Default::default(),
+            kind: MediaKind::Sequence,
+            duration_secs: None,
+            width: None,
+            height: None,
+            fps: None,
+            sequence_id: Some(seq_id),
+        });
+        // The same sequence on two tracks at once, plus the raw clip on a third.
+        for _ in 0..2 {
+            let mut t = Track::new(TrackKind::Video, "V");
+            t.clips.push(Clip::Video(crate::project::MediaClip {
+                id: uuid::Uuid::new_v4(),
+                media_id: seq_media,
+                position_secs: 0.0,
+                source_in_secs: 0.0,
+                source_out_secs: 1.0,
+                enabled: true,
+                ..Default::default()
+            }));
+            project.tracks.push(t);
+        }
+        let mut raw = Track::new(TrackKind::Video, "raw");
+        raw.clips.push(Clip::Video(crate::project::MediaClip {
+            id: uuid::Uuid::new_v4(),
+            media_id,
+            position_secs: 0.0,
+            source_in_secs: 0.0,
+            source_out_secs: 1.0,
+            enabled: true,
+            ..Default::default()
+        }));
+        project.tracks.push(raw);
+        assert!(project.validate().is_ok());
+
+        let settings = ExportSettings {
+            width: 320,
+            height: 240,
+            fps: 30.0,
+            ..Default::default()
+        };
+        let mut renderer = FrameRenderer::new(settings, DecodeOptions::default()).expect("new");
+        let frame = renderer.render(&project, 0.2).expect("render");
+        assert_eq!(frame.len(), (320 * 240 * 4) as usize);
+        assert_eq!(
+            renderer.decoders.len(),
+            3,
+            "two sequence placements + the raw clip each get their own decoder"
+        );
+        // timeline_duration stays the root timeline's span.
+        assert!((timeline_duration(&project) - 1.0).abs() < 1e-9);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- schema v7: nested-sequence audio ----------------------------------------------
+
+    fn seq_audio_project(
+        outer: MediaClip,
+        inner: MediaClip,
+        inner_role: Option<TrackAudioRole>,
+        outer_role: Option<TrackAudioRole>,
+    ) -> Project {
+        use crate::project::{MediaItem, Sequence, Track};
+        let mut project = Project::new("nested-audio", Settings::default());
+        let wav_media = uuid::Uuid::new_v4();
+        project.media.push(MediaItem {
+            id: wav_media,
+            path: "tone.wav".into(),
+            kind: MediaKind::Audio,
+            duration_secs: Some(20.0),
+            width: None,
+            height: None,
+            fps: None,
+            sequence_id: None,
+        });
+        let seq_id = uuid::Uuid::new_v4();
+        let seq_media = uuid::Uuid::new_v4();
+        let mut inner_track = Track::new(TrackKind::Audio, "inner");
+        inner_track.audio_role = inner_role;
+        let mut inner = inner;
+        inner.media_id = wav_media;
+        inner_track.clips.push(Clip::Audio(inner));
+        project.sequences.push(Sequence {
+            id: seq_id,
+            name: "S".into(),
+            width: None,
+            height: None,
+            tracks: vec![inner_track],
+        });
+        project.media.push(MediaItem {
+            id: seq_media,
+            path: Default::default(),
+            kind: MediaKind::Sequence,
+            duration_secs: None,
+            width: None,
+            height: None,
+            fps: None,
+            sequence_id: Some(seq_id),
+        });
+        let mut outer_track = Track::new(TrackKind::Audio, "outer");
+        outer_track.audio_role = outer_role;
+        let mut outer = outer;
+        outer.media_id = seq_media;
+        outer_track.clips.push(Clip::Audio(outer));
+        project.tracks.push(outer_track);
+        project
+    }
+
+    fn audio_clip(position: f64, src_in: f64, src_out: f64) -> MediaClip {
+        MediaClip {
+            id: uuid::Uuid::new_v4(),
+            media_id: uuid::Uuid::new_v4(),
+            position_secs: position,
+            source_in_secs: src_in,
+            source_out_secs: src_out,
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn nested_audio_maps_position_trim_speed_and_gain_through_the_outer_clip() {
+        let mut inner = audio_clip(2.0, 0.0, 4.0);
+        inner.gain_db = -3.0;
+        // The outer clip plays sequence time [1, 5) at 2x, placed at t = 10, gain -6 dB.
+        let mut outer = audio_clip(10.0, 1.0, 5.0);
+        outer.speed = 2.0;
+        outer.gain_db = -6.0;
+        let project = seq_audio_project(outer, inner, None, Some(TrackAudioRole::Music));
+
+        let clips = collect_audio_clips(&project, &mut AudioTemp::default()).unwrap();
+        assert_eq!(clips.len(), 1);
+        let c = &clips[0];
+        // The inner clip covers sequence time [2, 6); the outer window [1, 5) keeps [2, 5):
+        // source [0, 3), starting 1 sequence-second (0.5 s at 2x) into the outer clip.
+        assert!((c.source_in_secs - 0.0).abs() < 1e-9);
+        assert!((c.source_out_secs - 3.0).abs() < 1e-9);
+        assert!((c.position_secs - 10.5).abs() < 1e-9);
+        assert!((c.speed - 2.0).abs() < 1e-9);
+        assert!((c.gain_db - (-9.0)).abs() < 1e-9);
+        // Ends where the outer clip ends: 10 + 4/2 = 12.
+        let end = c.position_secs + (c.source_out_secs - c.source_in_secs) / c.speed;
+        assert!((end - 12.0).abs() < 1e-9, "{end}");
+        // The expanded clip takes the outer track's role on the parent.
+        assert_eq!(c.role, Some(TrackAudioRole::Music));
+    }
+
+    #[test]
+    fn nested_audio_is_clipped_to_the_outer_span_and_keeps_inner_settings() {
+        use crate::project::AudioDenoise;
+        let mut inner = audio_clip(0.0, 3.0, 7.0);
+        inner.fade_in_secs = 0.5;
+        inner.fade_out_secs = 0.25;
+        inner.audio_denoise = Some(AudioDenoise {
+            enabled: true,
+            backend: "rnnoise".into(),
+            strength: 0.7,
+        });
+        // The outer clip shows only the first 1.5 s of the sequence.
+        let outer = audio_clip(5.0, 0.0, 1.5);
+        let project = seq_audio_project(outer, inner, Some(TrackAudioRole::Voiceover), None);
+
+        let clips = collect_audio_clips(&project, &mut AudioTemp::default()).unwrap();
+        assert_eq!(clips.len(), 1);
+        let c = &clips[0];
+        assert!((c.source_in_secs - 3.0).abs() < 1e-9);
+        assert!(
+            (c.source_out_secs - 4.5).abs() < 1e-9,
+            "{}",
+            c.source_out_secs
+        );
+        assert!((c.position_secs - 5.0).abs() < 1e-9);
+        // The inner clip's start fade survives; its end fade was cut off by the outer span.
+        assert!((c.fade_in_secs - 0.5).abs() < 1e-9);
+        assert_eq!(c.fade_out_secs, 0.0);
+        // RNNoise denoise stays attached to the leaf clip so `mix_clip_bus` still substitutes
+        // the denoised input for nested clips.
+        let d = c.denoise.as_ref().expect("denoise survives expansion");
+        assert_eq!((d.backend.as_str(), d.strength), ("rnnoise", 0.7));
+        // The outer track has no role, so the expanded clip has none either.
+        assert_eq!(c.role, None);
+    }
+
+    #[test]
+    fn nested_audio_outer_fades_apply_at_the_outer_clip_edges() {
+        let inner = audio_clip(0.0, 0.0, 10.0);
+        let mut outer = audio_clip(0.0, 0.0, 4.0);
+        outer.fade_in_secs = 1.0;
+        outer.fade_out_secs = 2.0;
+        let project = seq_audio_project(outer, inner, None, None);
+        let clips = collect_audio_clips(&project, &mut AudioTemp::default()).unwrap();
+        assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0].fade_in_secs, 1.0);
+        assert_eq!(clips[0].fade_out_secs, 2.0);
+    }
+
+    #[test]
+    fn nested_audio_range_mix_pieces_are_cut_to_the_range() {
+        let inner = audio_clip(0.0, 0.0, 10.0);
+        let outer = audio_clip(0.0, 0.0, 10.0);
+        let project = seq_audio_project(outer, inner, None, None);
+        let pieces = collect_audio_clips(&project, &mut AudioTemp::default()).unwrap();
+        let cut = clip_piece_to_range(&pieces[0], 2.0, 4.0).unwrap();
+        assert!((cut.position_secs - 0.0).abs() < 1e-9);
+        assert!((cut.source_in_secs - 2.0).abs() < 1e-9);
+        assert!((cut.source_out_secs - 4.0).abs() < 1e-9);
+        assert!(clip_piece_to_range(&pieces[0], 11.0, 12.0).is_none());
+    }
+
+    /// Decode 16-bit PCM WAV samples (the only format `mix_clip_bus` writes).
+    fn wav_samples(path: &Path) -> Vec<i16> {
+        let bytes = std::fs::read(path).unwrap();
+        let mut i = 12;
+        while i + 8 <= bytes.len() {
+            let id = &bytes[i..i + 4];
+            let len = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
+            if id == b"data" {
+                let end = (i + 8 + len).min(bytes.len());
+                return bytes[i + 8..end]
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|b| i16::from_le_bytes(*b))
+                    .collect();
+            }
+            i += 8 + len + (len & 1);
+        }
+        panic!("no data chunk in {}", path.display());
+    }
+
+    #[test]
+    fn nested_audio_mix_equals_the_flat_equivalent() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        if !ffmpeg_available() {
+            eprintln!("skipping nested audio mix test: ffmpeg not on PATH");
+            return;
+        }
+        let dir =
+            std::env::temp_dir().join(format!("renderly-nested-audio-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tone = dir.join("tone.wav");
+        let status = crate::proc::command(crate::media::ffmpeg_path().unwrap())
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=6:sample_rate=48000",
+                "-ac",
+                "2",
+            ])
+            .arg(&tone)
+            .status_serial()
+            .unwrap();
+        assert!(status.success());
+
+        // Flat: the tone's [1, 3) at t = 4 with -6 dB.
+        let mut flat_clip = audio_clip(4.0, 1.0, 3.0);
+        flat_clip.gain_db = -6.0;
+        // Nested: inside the sequence the tone [0.5, 3) sits at sequence time 1 (-3 dB); the
+        // outer clip (-3 dB) plays sequence time [1.5, 3) at t = 4, which keeps tone [1, 2.5).
+        // Flat equivalent: tone [1, 2.5) at t = 4 with -6 dB.
+        let mut inner = audio_clip(1.0, 0.5, 3.0);
+        inner.gain_db = -3.0;
+        let mut outer = audio_clip(4.0, 1.5, 3.0);
+        outer.gain_db = -3.0;
+        let mut flat_project = Project::new("flat", Settings::default());
+        let mut nested = seq_audio_project(outer, inner, None, None);
+        for p in [&mut flat_project, &mut nested] {
+            for m in p.media.iter_mut().filter(|m| m.kind == MediaKind::Audio) {
+                m.path = tone.clone();
+            }
+        }
+        // Flat equivalent of the nested clip: tone[1, 2.5) = the nested clip's visible span.
+        flat_clip.source_out_secs = 2.5;
+        let flat_media = nested
+            .media
+            .iter()
+            .find(|m| m.kind == MediaKind::Audio)
+            .unwrap()
+            .clone();
+        flat_clip.media_id = flat_media.id;
+        flat_clip.gain_db = -6.0;
+        flat_project.media.push(flat_media);
+        let mut track = crate::project::Track::new(TrackKind::Audio, "A");
+        track.clips.push(Clip::Audio(flat_clip));
+        flat_project.tracks.push(track);
+
+        let mut temp = AudioTemp::default();
+        let flat_clips = collect_audio_clips(&flat_project, &mut temp).unwrap();
+        let nested_clips = collect_audio_clips(&nested, &mut temp).unwrap();
+        assert_eq!(flat_clips.len(), 1);
+        assert_eq!(nested_clips.len(), 1);
+
+        let flat_wav = dir.join("flat.wav");
+        let nested_wav = dir.join("nested.wav");
+        mix_timeline_audio(&flat_clips, 48_000, 8.0, &flat_wav, None).unwrap();
+        mix_timeline_audio(&nested_clips, 48_000, 8.0, &nested_wav, None).unwrap();
+        let (a, b) = (wav_samples(&flat_wav), wav_samples(&nested_wav));
+        assert_eq!(a.len(), b.len());
+        let max_diff = a
+            .iter()
+            .zip(&b)
+            .map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs())
+            .max()
+            .unwrap();
+        // Same filter graph on the same leaf media; allow a little for -3 dB x2 vs -6 dB
+        // rounding.
+        assert!(max_diff <= 40, "nested vs flat max sample diff {max_diff}");
+        assert!(
+            a.iter().any(|s| s.unsigned_abs() > 1000),
+            "the mix must not be silent"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn sequence_with_voice_and_music_is_premixed_so_ducking_stays_inside_it() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        use crate::project::{MediaItem, Sequence, Track};
+        if !ffmpeg_available() {
+            eprintln!("skipping sequence ducking test: ffmpeg not on PATH");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("renderly-seq-duck-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tone = dir.join("tone.wav");
+        let status = crate::proc::command(crate::media::ffmpeg_path().unwrap())
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=330:duration=4:sample_rate=48000",
+                "-ac",
+                "2",
+            ])
+            .arg(&tone)
+            .status_serial()
+            .unwrap();
+        assert!(status.success());
+
+        let mut project = Project::new("duck", Settings::default());
+        let wav = uuid::Uuid::new_v4();
+        project.media.push(MediaItem {
+            id: wav,
+            path: tone.clone(),
+            kind: MediaKind::Audio,
+            duration_secs: Some(4.0),
+            width: None,
+            height: None,
+            fps: None,
+            sequence_id: None,
+        });
+        let mk_track = |role| {
+            let mut t = Track::new(TrackKind::Audio, "t");
+            t.audio_role = Some(role);
+            let mut c = audio_clip(0.0, 0.0, 4.0);
+            c.media_id = wav;
+            t.clips.push(Clip::Audio(c));
+            t
+        };
+        let seq_id = uuid::Uuid::new_v4();
+        let seq_media = uuid::Uuid::new_v4();
+        project.sequences.push(Sequence {
+            id: seq_id,
+            name: "S".into(),
+            width: None,
+            height: None,
+            tracks: vec![
+                mk_track(TrackAudioRole::Voiceover),
+                mk_track(TrackAudioRole::Music),
+            ],
+        });
+        project.media.push(MediaItem {
+            id: seq_media,
+            path: Default::default(),
+            kind: MediaKind::Sequence,
+            duration_secs: None,
+            width: None,
+            height: None,
+            fps: None,
+            sequence_id: Some(seq_id),
+        });
+        let mut outer_track = Track::new(TrackKind::Audio, "outer");
+        outer_track.audio_role = Some(TrackAudioRole::Music);
+        let mut outer = audio_clip(2.0, 0.0, 4.0);
+        outer.media_id = seq_media;
+        outer_track.clips.push(Clip::Audio(outer));
+        project.tracks.push(outer_track);
+
+        let mut temp = AudioTemp::default();
+        let clips = collect_audio_clips(&project, &mut temp).unwrap();
+        // One pre-mixed bus (ducked inside the sequence), carrying the outer track's role.
+        assert_eq!(clips.len(), 1, "{clips:?}");
+        assert!(clips[0].path.extension().is_some_and(|e| e == "wav"));
+        assert!(
+            clips[0].path.is_file(),
+            "the bus exists while the guard lives"
+        );
+        assert_eq!(clips[0].role, Some(TrackAudioRole::Music));
+        assert!((clips[0].position_secs - 2.0).abs() < 1e-9);
+        let bus_dir = clips[0].path.parent().unwrap().to_path_buf();
+        drop(temp);
+        assert!(
+            !bus_dir.exists(),
+            "intermediate buses are cleaned up on drop"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

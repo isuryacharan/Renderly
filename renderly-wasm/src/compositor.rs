@@ -1,14 +1,17 @@
 //! The WebGPU-backed preview compositor bridge. See lib.rs for the module story.
 //!
 //! Data flow per frame (`render`):
-//! 1. `compose::eval::active_layers(project, t)` — the SAME Rust evaluation the native
-//!    export uses (keyframes, speed, transitions, multicam) — decides what to draw.
-//! 2. For each active layer, the corresponding browser element (from `sources`) is copied
-//!    into a pooled per-media GPU texture with `Queue::copy_external_image_to_texture`
-//!    (WebGPU-only zero-readback path; the browser hands the decoder output straight to
-//!    the GPU).
-//! 3. `Compositor::compose_to_texture` runs the standard effect/mask/transition/composite
-//!    passes (same WGSL as export) into the compositor's internal RT.
+//! 1. `compose::eval::active_steps(project, t)` — the SAME Rust evaluation the native
+//!    export uses (keyframes, speed, transitions, multicam, adjustment layers, nested
+//!    sequences) — decides what to draw.
+//! 2. `compose::build_scene` assembles the compositor input (shared with export); this
+//!    crate only supplies each media layer's pixels (`WasmHost`): the corresponding browser
+//!    element (from `sources`) is copied into a pooled per-source GPU texture with
+//!    `Queue::copy_external_image_to_texture` (WebGPU-only zero-readback path; the browser
+//!    hands the decoder output straight to the GPU).
+//! 3. `Compositor::compose_steps_to_texture` runs the standard effect/mask/transition/
+//!    adjustment/nested-sequence/composite passes (same WGSL as export) into the
+//!    compositor's internal RT.
 //! 4. A tiny blit pass samples that RT onto the canvas surface (whose swapchain format —
 //!    typically `Bgra8Unorm` on the web — the render pipeline converts to implicitly).
 //!
@@ -39,6 +42,13 @@
 //! on `(text, style_id)` and reused as a topmost `ComposeLayer::Texture` every frame after —
 //! re-rasterized only when the text/style/output-resolution changes, not per frame.
 //!
+//! Layers inside nested sequences (schema v7): the same media can be needed at two different
+//! times in one frame, so the host cannot key elements by media id alone. A layer whose
+//! `InstanceKey` is nested resolves its element from `sources["<instance key>"]` (the key is
+//! `InstanceKey::to_string()`); `active_media_layers(t)` tells the host exactly which
+//! instance keys are live at `t` (plus the source time and playback rate each needs), so
+//! the JS side manages elements without re-deriving any timeline logic.
+//!
 //! Same-media transitions (e.g. a split clip with a crossfade at the cut, where both sides
 //! of the transition share one media item): `resolve_layer_source` below resolves the
 //! incoming side's element/texture cache key from `sources["<media_id>#incoming"]` when the
@@ -51,10 +61,13 @@ use std::sync::Arc;
 
 use std::collections::BTreeMap;
 
-use renderly_core::compose::{eval, upload_layer_pixels, ComposeLayer, Compositor, LayerSource};
+use renderly_core::compose::{
+    build_scene, eval, upload_layer_pixels, ComposeLayer, Compositor, LayerSource, SceneError,
+    SceneHost, SceneStep,
+};
 use renderly_core::mask::{luma_from_rgba, project_matte_requests};
 use renderly_core::packs::{parse_cube_text, referenced_pack_luts, CubeLut, LoadedPack};
-use renderly_core::project::Project;
+use renderly_core::project::{ClipMask, Project};
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, HtmlImageElement, HtmlVideoElement};
 
@@ -107,7 +120,18 @@ fn js_err(context: &str, detail: impl core::fmt::Display) -> JsValue {
 /// (`ensure_media_texture`/`media_textures`) so the two sides of a same-media transition get
 /// distinct textures instead of one clobbering the other.
 fn resolve_layer_source(layer: &eval::ActiveLayer, sources: &js_sys::Object) -> (String, JsValue) {
-    let media_id_key = layer.media_id.to_string();
+    let Some((media_id, _, _)) = layer.media() else {
+        return (String::new(), JsValue::UNDEFINED);
+    };
+    // Inside a nested sequence the same media can be live twice in one frame, so the host
+    // supplies one element per instance key (`active_media_layers` lists them).
+    if layer.instance.is_nested() {
+        let key = layer.instance.to_string();
+        let element =
+            js_sys::Reflect::get(sources, &JsValue::from_str(&key)).unwrap_or(JsValue::UNDEFINED);
+        return (key, element);
+    }
+    let media_id_key = media_id.to_string();
     let is_incoming = layer.transition.map(|t| t.is_incoming).unwrap_or(false);
     if is_incoming {
         let incoming_key = format!("{media_id_key}#incoming");
@@ -126,6 +150,147 @@ struct MediaTexture {
     texture: wgpu::Texture,
     width: u32,
     height: u32,
+}
+
+/// Pooled per-source texture for `copy_external_image_to_texture`, recreated only when the
+/// source's pixel size changes.
+fn ensure_media_texture(
+    device: &wgpu::Device,
+    textures: &mut HashMap<String, MediaTexture>,
+    key: &str,
+    width: u32,
+    height: u32,
+) -> wgpu::Texture {
+    let stale = textures
+        .get(key)
+        .is_none_or(|t| t.width != width || t.height != height);
+    if stale {
+        // COPY_DST + RENDER_ATTACHMENT are required destination usages for
+        // copyExternalImageToTexture per the WebGPU spec; TEXTURE_BINDING is what the
+        // compositor samples through.
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("preview-media"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        textures.insert(
+            key.to_string(),
+            MediaTexture {
+                texture,
+                width,
+                height,
+            },
+        );
+    }
+    textures[key].texture.clone()
+}
+
+/// The wasm `SceneHost`: media layers come from browser elements via
+/// `copy_external_image_to_texture`; everything else (adjustment steps, nested sequences) is
+/// `compose::build_scene`, shared with export.
+struct WasmHost<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    compositor: &'a Compositor,
+    media_textures: &'a mut HashMap<String, MediaTexture>,
+    sources: &'a js_sys::Object,
+}
+
+impl SceneHost for WasmHost<'_> {
+    type Error = JsValue;
+
+    fn media_layer(&mut self, layer: &eval::ActiveLayer) -> Result<Option<ComposeLayer>, JsValue> {
+        let (key, element) = resolve_layer_source(layer, self.sources);
+        if element.is_undefined() || element.is_null() {
+            return Ok(None);
+        }
+
+        let (source, width, height) = if let Some(video) = element.dyn_ref::<HtmlVideoElement>() {
+            // readyState >= 2 (HAVE_CURRENT_DATA): same gate as the Canvas2D path.
+            if video.ready_state() < 2 {
+                return Ok(None);
+            }
+            let (w, h) = (video.video_width(), video.video_height());
+            if w == 0 || h == 0 {
+                return Ok(None);
+            }
+            (
+                wgpu::CopyExternalImageSourceInfo {
+                    source: wgpu::ExternalImageSource::HTMLVideoElement(video.clone()),
+                    origin: wgpu::Origin2d::ZERO,
+                    flip_y: false,
+                },
+                w,
+                h,
+            )
+        } else if let Some(img) = element.dyn_ref::<HtmlImageElement>() {
+            if !img.complete() {
+                return Ok(None);
+            }
+            let (w, h) = (img.natural_width(), img.natural_height());
+            if w == 0 || h == 0 {
+                return Ok(None);
+            }
+            (
+                wgpu::CopyExternalImageSourceInfo {
+                    source: wgpu::ExternalImageSource::HTMLImageElement(img.clone()),
+                    origin: wgpu::Origin2d::ZERO,
+                    flip_y: false,
+                },
+                w,
+                h,
+            )
+        } else {
+            return Ok(None);
+        };
+
+        let texture = ensure_media_texture(self.device, self.media_textures, &key, width, height);
+        self.queue.copy_external_image_to_texture(
+            &source,
+            wgpu::CopyExternalImageDestInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+                color_space: wgpu::PredefinedColorSpace::Srgb,
+                premultiplied_alpha: false,
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        // Shape / luma masks pass straight through; file-backed mattes resolve to the
+        // host-registered texture (and drop to "unmasked" until registered). Layer
+        // wiring (transform/effects/transition) is the SAME function export uses.
+        let mask = self.compositor.preview_layer_mask(layer);
+        Ok(Some(ComposeLayer::from_active(
+            layer,
+            LayerSource::Texture {
+                texture,
+                width,
+                height,
+            },
+            mask,
+        )))
+    }
+
+    fn sequence_mask(&mut self, layer: &eval::ActiveLayer) -> Option<ClipMask> {
+        self.compositor.preview_layer_mask(layer)
+    }
 }
 
 /// One preview compositor bound to one `<canvas>`. Constructed with
@@ -414,119 +579,107 @@ impl WasmCompositor {
         let Some(project) = self.project.as_ref() else {
             return Ok(());
         };
-        if self.compositor.is_none() {
+        let Some(compositor) = self.compositor.as_ref() else {
             return Ok(());
-        }
+        };
 
-        let layers =
-            eval::active_layers(project, time_secs).map_err(|e| js_err("active_layers", e))?;
-        // Copied out (not borrowed) before the loop below takes `&mut self`: `project` is a
-        // borrow of `self.project` and can't stay alive across the mutable
-        // `ensure_media_texture`/`ensure_caption_texture` calls that follow.
+        let steps =
+            eval::active_steps(project, time_secs).map_err(|e| js_err("active_steps", e))?;
+        // Copied out (not borrowed) before the caption loop below takes `&mut self`: `project`
+        // is a borrow of `self.project` and can't stay alive across the mutable
+        // `ensure_caption_texture` call that follows.
         let (out_w, out_h) = (project.settings.width, project.settings.height);
         let captions = eval::active_captions(project, time_secs);
 
-        let mut compose_layers: Vec<ComposeLayer> = Vec::with_capacity(layers.len());
-        for layer in &layers {
-            let (key, element) = resolve_layer_source(layer, sources);
-            if element.is_undefined() || element.is_null() {
-                continue;
-            }
-
-            let (source, width, height) = if let Some(video) = element.dyn_ref::<HtmlVideoElement>()
-            {
-                // readyState >= 2 (HAVE_CURRENT_DATA): same gate as the Canvas2D path.
-                if video.ready_state() < 2 {
-                    continue;
-                }
-                let (w, h) = (video.video_width(), video.video_height());
-                if w == 0 || h == 0 {
-                    continue;
-                }
-                (
-                    wgpu::CopyExternalImageSourceInfo {
-                        source: wgpu::ExternalImageSource::HTMLVideoElement(video.clone()),
-                        origin: wgpu::Origin2d::ZERO,
-                        flip_y: false,
-                    },
-                    w,
-                    h,
-                )
-            } else if let Some(img) = element.dyn_ref::<HtmlImageElement>() {
-                if !img.complete() {
-                    continue;
-                }
-                let (w, h) = (img.natural_width(), img.natural_height());
-                if w == 0 || h == 0 {
-                    continue;
-                }
-                (
-                    wgpu::CopyExternalImageSourceInfo {
-                        source: wgpu::ExternalImageSource::HTMLImageElement(img.clone()),
-                        origin: wgpu::Origin2d::ZERO,
-                        flip_y: false,
-                    },
-                    w,
-                    h,
-                )
-            } else {
-                continue;
-            };
-
-            let texture = self.ensure_media_texture(&key, width, height);
-            self.queue.copy_external_image_to_texture(
-                &source,
-                wgpu::CopyExternalImageDestInfo {
-                    texture: &texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                    color_space: wgpu::PredefinedColorSpace::Srgb,
-                    premultiplied_alpha: false,
-                },
-                wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-            );
-
-            // Shape / luma masks pass straight through; file-backed mattes resolve to the
-            // host-registered texture (and drop to "unmasked" until registered). Layer
-            // wiring (transform/effects/transition) is the SAME function export uses.
-            let mask = self
-                .compositor
-                .as_ref()
-                .and_then(|c| c.preview_layer_mask(layer));
-            compose_layers.push(ComposeLayer::from_active(
-                layer,
-                LayerSource::Texture {
-                    texture,
-                    width,
-                    height,
-                },
-                mask,
-            ));
-        }
+        let mut host = WasmHost {
+            device: &self.device,
+            queue: &self.queue,
+            compositor,
+            media_textures: &mut self.media_textures,
+            sources,
+        };
+        let mut scene = build_scene(project, steps, &mut host).map_err(|e| match e {
+            SceneError::Eval(e) => js_err("build_scene", e),
+            SceneError::Host(e) => e,
+        })?;
 
         for cap in &captions {
             let texture = self.ensure_caption_texture(&cap.text, &cap.style_id, out_w, out_h)?;
             // Caption bitmaps are already rendered at output resolution (same as export,
             // see `export::mod.rs`'s FrameRenderer::render_inner) — `ComposeLayer::caption`
             // is the shared identity-transform wiring.
-            compose_layers.push(ComposeLayer::caption(LayerSource::Texture {
-                texture,
-                width: out_w,
-                height: out_h,
-            }));
+            scene.push(SceneStep::Layer(ComposeLayer::caption(
+                LayerSource::Texture {
+                    texture,
+                    width: out_w,
+                    height: out_h,
+                },
+            )));
         }
 
         let compositor = self.compositor.as_mut().expect("checked above");
         compositor
-            .compose_to_texture(&self.packs, &compose_layers)
+            .compose_steps_to_texture(&self.packs, &scene)
             .map_err(|e| js_err("compose", e))?;
 
         self.present()
+    }
+
+    /// JSON array describing every media element the frame at `time_secs` needs, including
+    /// layers inside nested sequences: `[{ "key", "media_id", "source_time", "rate",
+    /// "nested", "incoming" }]`.
+    ///
+    /// - `key` is the entry the host must put in `render`'s `sources` object for that layer:
+    ///   the instance key for nested layers, the media id (or `<media id>#incoming`) for
+    ///   layers on the root timeline.
+    /// - `source_time` is the media time to show; `rate` the media seconds per timeline
+    ///   second (clip speed x enclosing sequence-clip speeds, keyframed speed included),
+    ///   measured by evaluating the same Rust timeline a hair later, so the host never
+    ///   re-derives speed/trim logic.
+    ///
+    /// Empty when there is no project. The engine calls it with `time_secs` for the live set
+    /// and with a time slightly ahead to pre-seek elements before a cut.
+    pub fn active_media_layers(&self, time_secs: f64) -> String {
+        let Some(project) = self.project.as_ref() else {
+            return "[]".to_string();
+        };
+        const DT: f64 = 1.0 / 120.0;
+        let now = match eval::leaf_media_layers(project, time_secs) {
+            Ok(l) => l,
+            Err(_) => return "[]".to_string(),
+        };
+        let later = eval::leaf_media_layers(project, time_secs + DT).unwrap_or_default();
+        let out: Vec<serde_json::Value> = now
+            .iter()
+            .filter_map(|layer| {
+                let (media_id, _, source_time) = layer.media()?;
+                let incoming = layer.transition.map(|t| t.is_incoming).unwrap_or(false);
+                let nested = layer.instance.is_nested();
+                let key = if nested {
+                    layer.instance.to_string()
+                } else if incoming {
+                    format!("{media_id}#incoming")
+                } else {
+                    media_id.to_string()
+                };
+                let rate = later
+                    .iter()
+                    .find(|l| l.instance == layer.instance)
+                    .and_then(|l| l.media())
+                    .map(|(_, _, t2)| (t2 - source_time) / DT)
+                    .filter(|r| r.is_finite() && *r > 0.0)
+                    .unwrap_or(1.0);
+                Some(serde_json::json!({
+                    "key": key,
+                    "media_id": media_id.to_string(),
+                    "source_time": source_time,
+                    "rate": rate,
+                    "nested": nested,
+                    "incoming": incoming,
+                }))
+            })
+            .collect();
+        serde_json::Value::Array(out).to_string()
     }
 
     /// Debug/QA introspection (harness only): what does the eval see at `time_secs`, and
@@ -535,12 +688,15 @@ impl WasmCompositor {
         let Some(project) = self.project.as_ref() else {
             return "no project".into();
         };
-        match eval::active_layers(project, time_secs) {
+        match eval::leaf_media_layers(project, time_secs) {
             Err(e) => format!("eval error: {e}"),
             Ok(layers) => {
                 let mut out = String::new();
                 for layer in &layers {
-                    let media_id_str = layer.media_id.to_string();
+                    let Some((media_id, _, _)) = layer.media() else {
+                        continue;
+                    };
+                    let media_id_str = media_id.to_string();
                     let (key, element) = resolve_layer_source(layer, sources);
                     let found = !element.is_undefined() && !element.is_null();
                     let ready = element
@@ -649,43 +805,6 @@ impl WasmCompositor {
         if let Some(compositor) = self.compositor.as_mut() {
             compositor.clear_pack_lut_cache();
         }
-    }
-
-    fn ensure_media_texture(&mut self, key: &str, width: u32, height: u32) -> wgpu::Texture {
-        let stale = self
-            .media_textures
-            .get(key)
-            .is_none_or(|t| t.width != width || t.height != height);
-        if stale {
-            // COPY_DST + RENDER_ATTACHMENT are required destination usages for
-            // copyExternalImageToTexture per the WebGPU spec; TEXTURE_BINDING is what the
-            // compositor samples through.
-            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("preview-media"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::COPY_DST
-                    | wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            self.media_textures.insert(
-                key.to_string(),
-                MediaTexture {
-                    texture,
-                    width,
-                    height,
-                },
-            );
-        }
-        self.media_textures[key].texture.clone()
     }
 
     /// Rasterize (if not already cached at this text/style/resolution) and return the GPU
