@@ -27,7 +27,7 @@ export const BUILTIN_VIDEO_EFFECTS: {
   {
     id: "builtin:chroma_key",
     label: "Chroma key",
-    defaults: { key_r: 0, key_g: 1, key_b: 0, tolerance: 0.3, softness: 0.1 },
+    defaults: { key_r: 0, key_g: 1, key_b: 0, tolerance: 0.3, softness: 0.1, spill: 0 },
   },
 ];
 

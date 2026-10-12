@@ -33,7 +33,7 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 | P4-3b | Shape mask authoring UI | ✅ | Mask tool (M); `PreviewMaskOverlay`; inspector feather/invert |
 | — | Raster / generated mattes in preview | ✅ | Host reads the file, wasm core composites it ([preview-webview.md](preview-webview.md) P4b). Not in preview: background removal without a baked matte (export builds a live heuristic matte) |
 | — | Pack `.cube` LUTs in preview | ✅ | Same host-supplied path; parsed by the core `.cube` parser on wasm32 |
-| P4-3 | Chroma key | 🟡 | `builtin:chroma_key`; CPU per-pixel, wants a WGSL pass |
+| P4-3 | Chroma key | ✅ | `builtin:chroma_key`; WGSL pass in the shared compositor (export and preview), optional `spill` suppression. Keys on RGB distance |
 | P4-1b | Background removal | 🟡 | `SetClipBackgroundRemoval`, `GenerateBackgroundMatte`; heuristic + optional `RENDERLY_SEG_CLI` |
 | P4-ML | Core-hosted ONNX RVM/BiRefNet | ⬜ | **The headline open item.** See the recorded decision below |
 | — | Captions burned in | ✅ | Preview and export share the `ab_glyph` rasterizer |
@@ -88,8 +88,6 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 - An asset pack — caption styles, LUTs, SFX, transitions
   ([`examples/packs/starter`](../examples/packs/starter) is the template).
 - A WASM plugin effect ([`examples/plugins/invert`](../examples/plugins/invert), ~30 lines).
-- Chroma key as a WGSL pass — self-contained port of existing CPU code, sitting next to
-  effects that already work that way.
 
 ## Recorded decision — inference runtime
 

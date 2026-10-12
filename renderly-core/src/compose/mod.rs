@@ -4,12 +4,10 @@
 //! Phase 3.4 runs builtin effect chains on each layer before the cover+transform draw.
 //! Phase 3 adds dual-texture WGSL transitions.
 
-mod chroma;
 pub mod effects;
 pub mod eval;
 mod transition;
 
-pub use chroma::apply_chroma_effects;
 pub use effects::{builtin_effect_ids, default_params, BUILTIN_EFFECT_IDS};
 pub use eval::{active_captions, active_layers, ActiveCaption, ActiveLayer, EvalError};
 
@@ -1283,6 +1281,231 @@ mod tests {
         assert!(
             px[2] > 90 && px[2] < 165,
             "blue channel should be ~127 (pixel {px:?})",
+        );
+    }
+
+    // --- chroma key (GPU pass) -------------------------------------------------------
+
+    const CK_BASE: [u8; 3] = [10, 20, 240];
+    const CK_FG: [u8; 3] = [200, 40, 40];
+
+    fn ck_params(tolerance: f64, softness: f64, spill: f64) -> BTreeMap<String, f64> {
+        [
+            ("key_r", 0.0),
+            ("key_g", 1.0),
+            ("key_b", 0.0),
+            ("tolerance", tolerance),
+            ("softness", softness),
+            ("spill", spill),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect()
+    }
+
+    /// 64x4 strip: x 0..16 pure green, 16..32 foreground, 32..48 50/50 green-fg blend (soft
+    /// edge), 48..64 pure green.
+    fn ck_frame() -> RgbaFrame {
+        let mut f = solid_frame(64, 4, 0, 255, 0);
+        for y in 0..4usize {
+            for x in 0..64usize {
+                let c: [u8; 3] = match x {
+                    16..=31 => CK_FG,
+                    32..=47 => [100, 147, 20],
+                    _ => [0, 255, 0],
+                };
+                let o = (y * 64 + x) * 4;
+                f.pixels[o..o + 3].copy_from_slice(&c);
+            }
+        }
+        f
+    }
+
+    fn ck_layers(effects: Vec<EffectInstance>, mask: Option<ClipMask>) -> [ComposeLayer; 2] {
+        [
+            ComposeLayer {
+                source: LayerSource::Frame(solid_frame(64, 4, CK_BASE[0], CK_BASE[1], CK_BASE[2])),
+                transform: ClipTransform::default(),
+                effects: vec![],
+                mask: None,
+                transition: None,
+            },
+            ComposeLayer {
+                source: LayerSource::Frame(ck_frame()),
+                transform: ClipTransform::default(),
+                effects,
+                mask,
+                transition: None,
+            },
+        ]
+    }
+
+    fn px(out: &[u8], x: usize) -> [u8; 3] {
+        let o = (2 * 64 + x) * 4;
+        [out[o], out[o + 1], out[o + 2]]
+    }
+
+    fn assert_near(actual: [u8; 3], expected: [u8; 3], tol: i32, what: &str) {
+        for i in 0..3 {
+            assert!(
+                (actual[i] as i32 - expected[i] as i32).abs() <= tol,
+                "{what}: got {actual:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    fn ck_compositor() -> Option<Compositor> {
+        match Compositor::new(64, 4) {
+            Ok(c) => Some(c),
+            Err(ComposeError::NoAdapter) => {
+                eprintln!("skipping chroma key GPU test: no wgpu adapter");
+                None
+            }
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    #[test]
+    fn chroma_key_keys_background_keeps_foreground_and_softens_edge() {
+        let Some(mut c) = ck_compositor() else { return };
+        let fx = effect("builtin:chroma_key", ck_params(0.3, 0.4, 0.0));
+        let out = c.composite(&[], &ck_layers(vec![fx], None)).unwrap();
+        // Pure green is inside tolerance -> fully transparent -> base shows through.
+        assert_near(px(&out, 4), CK_BASE, 2, "keyed background");
+        assert_near(px(&out, 60), CK_BASE, 2, "keyed background (right)");
+        // Foreground is far from the key -> untouched, opaque.
+        assert_near(px(&out, 24), CK_FG, 2, "foreground");
+        // Soft edge: straight-alpha blend of the pixel over the base with
+        // alpha = (dist - tol) / softness.
+        let src = [100.0f32, 147.0, 20.0];
+        let dist =
+            ((src[0] / 255.0).powi(2) + (src[1] / 255.0 - 1.0).powi(2) + (src[2] / 255.0).powi(2))
+                .sqrt();
+        let a = (dist - 0.3) / 0.4;
+        assert!(a > 0.2 && a < 0.9, "test edge alpha {a} should be partial");
+        let e = |i: usize| (src[i] * a + CK_BASE[i] as f32 * (1.0 - a)).round() as u8;
+        assert_near(px(&out, 40), [e(0), e(1), e(2)], 3, "soft edge");
+    }
+
+    #[test]
+    fn chroma_key_spill_zero_is_default_and_spill_reduces_green_tint() {
+        let Some(mut c) = ck_compositor() else { return };
+        let mut p = ck_params(0.3, 0.4, 0.0);
+        p.remove("spill");
+        let absent = c
+            .composite(&[], &ck_layers(vec![effect("builtin:chroma_key", p)], None))
+            .unwrap();
+        let fx = |spill| effect("builtin:chroma_key", ck_params(0.3, 0.4, spill));
+        let zero = c.composite(&[], &ck_layers(vec![fx(0.0)], None)).unwrap();
+        assert_eq!(absent, zero, "absent spill param must equal spill = 0");
+        let full = c.composite(&[], &ck_layers(vec![fx(1.0)], None)).unwrap();
+        // Foreground (200,40,40) has no green-ward chroma -> unchanged by despill.
+        assert_near(px(&full, 24), CK_FG, 2, "foreground unaffected by spill");
+        // Soft-edge pixel is green-tinted: its green must drop.
+        let before = px(&zero, 40);
+        let after = px(&full, 40);
+        assert!(
+            after[1] < before[1],
+            "spill should lower green: {before:?} -> {after:?}"
+        );
+    }
+
+    #[test]
+    fn chroma_key_respects_effect_order_in_chain() {
+        let Some(mut c) = ck_compositor() else { return };
+        let desat = || {
+            effect(
+                "builtin:color_adjust",
+                [("saturation".to_string(), 0.0)].into_iter().collect(),
+            )
+        };
+        let key = || effect("builtin:chroma_key", ck_params(0.3, 0.05, 0.0));
+        // Key first: green is removed, then the (now keyed) layer is desaturated.
+        let key_first = c
+            .composite(&[], &ck_layers(vec![key(), desat()], None))
+            .unwrap();
+        assert_near(px(&key_first, 4), CK_BASE, 2, "key then desaturate");
+        // Desaturate first: green becomes grey (luma ~182) and is no longer near the key.
+        let desat_first = c
+            .composite(&[], &ck_layers(vec![desat(), key()], None))
+            .unwrap();
+        let g = px(&desat_first, 4);
+        assert!(
+            (g[0] as i32 - g[1] as i32).abs() <= 2 && g[1] > 150,
+            "desaturate then key leaves grey background opaque: {g:?}"
+        );
+    }
+
+    #[test]
+    fn chroma_key_composes_with_clip_mask() {
+        let Some(mut c) = ck_compositor() else { return };
+        // Mask keeps only the left half: foreground at x=24 stays, the soft edge at x=40
+        // (right half) is masked away entirely.
+        let mask = ClipMask {
+            enabled: true,
+            invert: false,
+            feather: 0.0,
+            kind: crate::project::ClipMaskKind::Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.5,
+                height: 1.0,
+            },
+        };
+        let fx = effect("builtin:chroma_key", ck_params(0.3, 0.4, 0.0));
+        let out = c.composite(&[], &ck_layers(vec![fx], Some(mask))).unwrap();
+        assert_near(px(&out, 4), CK_BASE, 2, "keyed bg inside mask");
+        assert_near(px(&out, 24), CK_FG, 2, "foreground inside mask");
+        assert_near(px(&out, 40), CK_BASE, 2, "soft edge outside mask");
+        assert_near(px(&out, 60), CK_BASE, 2, "bg outside mask");
+    }
+
+    #[test]
+    fn chroma_key_composes_with_transition() {
+        let Some(mut c) = ck_compositor() else { return };
+        let green = solid_frame(64, 4, 0, 255, 0);
+        let blue = solid_frame(64, 4, 0, 0, 255);
+        let mut run = |effects: Vec<EffectInstance>| {
+            let t = |is_incoming| {
+                Some(LayerTransition {
+                    kind: TransitionKind::Crossfade,
+                    progress: 0.5,
+                    is_incoming,
+                })
+            };
+            c.composite(
+                &[],
+                &[
+                    ComposeLayer {
+                        source: LayerSource::Frame(green.clone()),
+                        transform: ClipTransform::default(),
+                        effects,
+                        mask: None,
+                        transition: t(false),
+                    },
+                    ComposeLayer {
+                        source: LayerSource::Frame(blue.clone()),
+                        transform: ClipTransform::default(),
+                        effects: vec![],
+                        mask: None,
+                        transition: t(true),
+                    },
+                ],
+            )
+            .unwrap()
+        };
+        let plain = px(&run(vec![]), 8);
+        let keyed = px(
+            &run(vec![effect("builtin:chroma_key", ck_params(0.3, 0.1, 0.0))]),
+            8,
+        );
+        assert!(
+            plain[1] > 100,
+            "unkeyed outgoing green contributes: {plain:?}"
+        );
+        assert!(
+            keyed[1] < 20,
+            "keyed outgoing layer must not contribute green: {keyed:?}"
         );
     }
 

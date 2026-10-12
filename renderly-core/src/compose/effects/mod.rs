@@ -55,6 +55,7 @@ pub fn default_params(effect_id: &str) -> BTreeMap<String, f64> {
             m.insert("key_b".into(), 0.0);
             m.insert("tolerance".into(), 0.3);
             m.insert("softness".into(), 0.1);
+            m.insert("spill".into(), 0.0);
         }
         _ => {}
     }
@@ -73,7 +74,7 @@ pub fn clamp_effect_params(effect_id: &str, params: &mut BTreeMap<String, f64>) 
             ("builtin:glitch", "intensity") => v.clamp(0.0, 1.0),
             ("builtin:glitch", "slice") => v.clamp(0.0, 1.0),
             ("builtin:chroma_key", "key_r" | "key_g" | "key_b") => v.clamp(0.0, 1.0),
-            ("builtin:chroma_key", "tolerance" | "softness") => v.clamp(0.0, 1.0),
+            ("builtin:chroma_key", "tolerance" | "softness" | "spill") => v.clamp(0.0, 1.0),
             _ => *v,
         };
     }
@@ -148,8 +149,8 @@ struct ChromaKeyUniform {
     key_rgb: [f32; 4],
     tolerance: f32,
     softness: f32,
-    _pad0: f32,
-    _pad1: f32,
+    spill: f32,
+    _pad: f32,
 }
 
 #[repr(C)]
@@ -582,8 +583,8 @@ impl EffectProcessor {
                         ],
                         tolerance: param_or(&effect.params, "tolerance", 0.3) as f32,
                         softness: param_or(&effect.params, "softness", 0.1) as f32,
-                        _pad0: 0.0,
-                        _pad1: 0.0,
+                        spill: param_or(&effect.params, "spill", 0.0) as f32,
+                        _pad: 0.0,
                     };
                     self.draw_pass(
                         device,

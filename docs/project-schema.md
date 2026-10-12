@@ -47,11 +47,11 @@ extension `.renderly.json`.
 
 | `effect_id` | Params |
 |---|---|
-| `builtin:chroma_key` | `key_r`, `key_g`, `key_b`, `tolerance`, `softness` |
+| `builtin:chroma_key` | `key_r`, `key_g`, `key_b` (key colour, 0..1, default green), `tolerance` (0..1, default 0.3: RGB distance at or below which a pixel is fully transparent), `softness` (0..1, default 0.1: width of the linear alpha ramp above `tolerance`), `spill` (optional, 0..1, default 0 = off: strips the key colour's chroma from RGB; absent == 0 so older projects render unchanged) |
 
 ### Effect / matte order
 
-source decode → pack LUT → WASM frame → **chroma key (CPU alpha)** → **background-removal matte** → **clip mask** → GPU builtins (color/blur/lut/glitch) → composite blend.
+source decode → pack LUT → WASM frame → **chroma key (GPU WGSL effect pass, in effect-chain order)** → **background-removal matte** → **clip mask** → GPU builtins (color/blur/lut/glitch) → composite blend.
 
 ## Version history
 

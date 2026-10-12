@@ -403,6 +403,7 @@ remain follow-ups on top of the Phase 4 command surface above.
 - **Phase 3.1** (project schema v2): added `SetClipTransform`, `SetClipKeyframes`,
   `SetClipEffects`; `SplitClip` inherits transform / splits keyframes / remints effect ids.
 - **Phase 3.4**: `SetClipEffects` executes builtin WGSL effects.
+- **Phase 4** (non-breaking): `builtin:chroma_key` is a WGSL pass in the shared compositor (native export and wasm preview); optional `spill` param (0..1, default 0) added.
 - **Phase 3.5** (project schema v3): added `SetClipTransition` (crossfade).
 - **Phase 3 close-out** (project schema v4): `SetClipSpeed`; ten transition kinds; glitch;
   `LoadAssetPack` / `UnloadAssetPack`; `LoadWasmPlugin` / `UnloadWasmPlugin`.
