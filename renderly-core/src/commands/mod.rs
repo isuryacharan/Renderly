@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod motion;
+mod reframe;
 
 /// Normalised rectangle (0..1, origin top-left, y down) in the clip's video frame, before any
 /// cover-fit crop. Used to pick the area `TrackMotion` follows.
@@ -284,7 +285,8 @@ pub enum Command {
         #[serde(default)]
         sample_count: Option<u32>,
     },
-    /// Scale/offset transform to approximate a center-crop for `target_aspect` (Phase 4).
+    /// Subject-aware reframe for `target_aspect` (Phase 4): detects faces (YuNet), keyframes
+    /// `PosX`/`PosY` to keep the subject in frame; centred scale/offset when none is found.
     AutoReframeClip {
         track_id: Id,
         clip_id: Id,
@@ -622,7 +624,7 @@ pub fn apply_command(project: &mut Project, cmd: Command) -> Result<CommandOutco
             track_id,
             clip_id,
             target_aspect,
-        } => auto_reframe_clip(project, track_id, clip_id, target_aspect),
+        } => reframe::auto_reframe_clip(project, track_id, clip_id, target_aspect),
     }
 }
 
@@ -2234,7 +2236,8 @@ fn set_multicam_angle(
     Ok(CommandOutcome::Applied)
 }
 
-fn auto_reframe_clip(
+/// Centred reframe (no subject detection): the fallback used by `reframe::auto_reframe_clip`.
+fn centred_reframe(
     project: &mut Project,
     track_id: Id,
     clip_id: Id,

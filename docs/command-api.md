@@ -339,6 +339,37 @@ counter-clockwise on screen). The compositor rotates in NDC rather than pixel sp
 non-square canvases large rotation corrections are slightly anisotropic. Still images are a
 no-op. Errors as for `TrackMotion`, plus `Analysis` for a non-finite `strength`.
 
+### `AutoReframeClip` (Phase 4)
+Subject-aware reframing for `target_aspect` (width / height, finite and > 0; the GUI passes the
+project canvas aspect). Signature unchanged; no new fields.
+
+Detection: frames are decoded sequentially (<= 360 px tall, about 5 per second of *timeline*
+time, so speed changes are respected, capped at 900 samples) and run through the bundled
+YuNet face detector (OpenCV Zoo, MIT; `renderly-core/src/ml`, pure-Rust `tract` inference, no
+network, no download). The subject is the face with the largest `confidence x area`, with a
+continuity bonus for faces near the previous subject so it does not flip between two people;
+it is held through gaps up to 2 s and interpolated across longer ones (leading/trailing gaps
+take the nearest detection). Detections need >= 0.7 confidence in at least 10% of the samples.
+
+Result (video): one constant zoom written to `transform.scale_x/scale_y` (at least 1; capped
+at 3x, and so the face never fills more than half the visible width) and `PosX` / `PosY`
+keyframes (clip-local times, NDC, simplified) from a dead-zone follower (the camera ignores
+movement within 15% of the visible half-extent) plus ~0.3 s Gaussian smoothing, clamped so
+the zoomed layer always covers the canvas (`|pos| <= scale - 1`, no borders). Existing
+`PosX`/`PosY`/`ScaleX`/`ScaleY` tracks are replaced; `transform.x/y` are reset to 0. Still
+images: one detection, a static `transform` (no keyframes).
+
+Fallback: if no face is found (or the media cannot be decoded) the clip gets the original
+centred behaviour unchanged: uniform `scale = max(src_aspect/target, target/src_aspect, 1)`,
+`x = y = 0`, keyframes untouched.
+
+Limitation: the compositor cover-fits the layer to the canvas and has no pan beyond that
+window, so a subject can only be centred while it lies inside the part of the source the
+canvas already shows (e.g. the centre ~32% width strip of 16:9 footage on a 9:16 canvas).
+Following subjects across the whole frame needs a per-clip crop offset, which is a schema
+change and is not part of this command. Errors as before (`TrackNotFound`, `ClipNotFound`,
+`TrackKindMismatch`, `NotMediaClip`, `MediaNotFound`, `Analysis` for a bad `target_aspect`).
+
 ### `SetClipAudioDenoise` (Phase 4)
 Sets (`Some`) or clears (`None`) `audio_denoise` on a clip of an **audio** track. `config` is
 `{ enabled, backend, strength }`; `strength` is clamped to `0..=1` (non-finite is an error).
@@ -418,6 +449,9 @@ remain follow-ups on top of the Phase 4 command surface above.
   Lucas-Kanade feature tracking + RANSAC instead of a bright-pixel centroid; added optional
   `region` / `track_rotation_scale` (`TrackMotion`) and `strength` / `sample_count`
   (`StabilizeClip`); `PosX`/`PosY` are now NDC (previously an ad-hoc percent-like unit).
+
+- **Auto-reframe subject detection** (non-breaking, schema stays v6): `AutoReframeClip` detects
+  faces (YuNet via tract) and keyframes `PosX`/`PosY`; centred scale kept as the no-face fallback.
 
 - **RNNoise denoise** (non-breaking, schema stays v6): `SetClipAudioDenoise` also accepts
   `backend: "rnnoise"`; `afftdn` unchanged.

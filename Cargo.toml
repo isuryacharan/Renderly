@@ -37,3 +37,12 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.easyfft]
 opt-level = 3
+
+# tract (ML inference, ml/runtime.rs) is just as numeric: unoptimised, one YuNet frame takes
+# ~1 s instead of ~50 ms, which makes the auto-reframe tests crawl.
+[profile.dev.package.tract-linalg]
+opt-level = 3
+[profile.dev.package.tract-core]
+opt-level = 3
+[profile.dev.package.tract-data]
+opt-level = 3

@@ -42,14 +42,18 @@ const POS_TOLERANCE: f64 = 0.0004;
 const ROT_TOLERANCE: f64 = 0.005;
 const SCALE_TOLERANCE: f64 = 0.0003;
 
-struct VideoClip {
-    clip: MediaClip,
-    path: PathBuf,
-    kind: MediaKind,
-    fps: f64,
+pub(super) struct VideoClip {
+    pub(super) clip: MediaClip,
+    pub(super) path: PathBuf,
+    pub(super) kind: MediaKind,
+    pub(super) fps: f64,
 }
 
-fn resolve(project: &Project, track_id: Id, clip_id: Id) -> Result<VideoClip, CommandError> {
+pub(super) fn resolve(
+    project: &Project,
+    track_id: Id,
+    clip_id: Id,
+) -> Result<VideoClip, CommandError> {
     let track = project
         .find_track(track_id)
         .ok_or(CommandError::TrackNotFound(track_id))?;
@@ -87,12 +91,12 @@ fn resolve(project: &Project, track_id: Id, clip_id: Id) -> Result<VideoClip, Co
     })
 }
 
-fn analysis_err(e: impl std::fmt::Display) -> CommandError {
+pub(super) fn analysis_err(e: impl std::fmt::Display) -> CommandError {
     CommandError::Analysis(e.to_string())
 }
 
 /// Sequential grayscale frame source: skips (decodes and discards) frames as indices advance.
-struct FrameFeeder {
+pub(super) struct FrameFeeder {
     reader: VideoReader,
     /// Index of the most recently decoded frame (-1 before the first read).
     cur_idx: i64,
@@ -102,7 +106,7 @@ struct FrameFeeder {
 }
 
 impl FrameFeeder {
-    fn open(path: &std::path::Path, start: f64, fps: f64) -> Result<Self, CommandError> {
+    pub(super) fn open(path: &std::path::Path, start: f64, fps: f64) -> Result<Self, CommandError> {
         let reader = VideoReader::open_with(
             path,
             start.max(0.0),
@@ -121,8 +125,17 @@ impl FrameFeeder {
         })
     }
 
-    /// Frame `idx` (holding the last frame once the stream ends) and the index actually served.
-    fn gray_at(&mut self, idx: i64) -> Result<(&GrayImage, i64), CommandError> {
+    /// Advance to frame `idx` (holding the last frame once the stream ends) and return the
+    /// decoded RGBA frame plus the index actually served.
+    pub(super) fn rgba_at(&mut self, idx: i64) -> Result<(&media::RgbaFrame, i64), CommandError> {
+        self.advance_to(idx)?;
+        match self.raw.as_ref() {
+            Some(f) => Ok((f, self.cur_idx)),
+            None => Err(CommandError::Analysis("no frame decoded".into())),
+        }
+    }
+
+    fn advance_to(&mut self, idx: i64) -> Result<(), CommandError> {
         while self.cur_idx < idx && !self.eof {
             match self.reader.read_frame().map_err(analysis_err)? {
                 Some(f) => {
@@ -133,6 +146,12 @@ impl FrameFeeder {
                 None => self.eof = true,
             }
         }
+        Ok(())
+    }
+
+    /// Frame `idx` (holding the last frame once the stream ends) and the index actually served.
+    fn gray_at(&mut self, idx: i64) -> Result<(&GrayImage, i64), CommandError> {
+        self.advance_to(idx)?;
         if self.gray.is_none() {
             let raw = self
                 .raw
@@ -151,13 +170,16 @@ impl FrameFeeder {
 }
 
 /// Which frames to analyse: clip-local timeline times and the matching source frame indices.
-struct SamplePlan {
-    times: Vec<f64>,
-    idx: Vec<i64>,
-    fps: f64,
+pub(super) struct SamplePlan {
+    pub(super) times: Vec<f64>,
+    pub(super) idx: Vec<i64>,
+    pub(super) fps: f64,
 }
 
-fn plan_samples(vc: &VideoClip, requested: Option<usize>) -> Result<SamplePlan, CommandError> {
+pub(super) fn plan_samples(
+    vc: &VideoClip,
+    requested: Option<usize>,
+) -> Result<SamplePlan, CommandError> {
     let clip = &vc.clip;
     let dur = clip.timeline_duration_secs();
     let span = (clip.source_out_secs - clip.source_in_secs).max(0.0);
@@ -245,7 +267,7 @@ fn analyse_motion(
 }
 
 /// Fraction of the source frame visible on each axis under the compositor's cover fit.
-fn cover_fractions(src_w: f64, src_h: f64, out_w: f64, out_h: f64) -> (f64, f64) {
+pub(super) fn cover_fractions(src_w: f64, src_h: f64, out_w: f64, out_h: f64) -> (f64, f64) {
     let layer_aspect = src_w / src_h;
     let out_aspect = out_w / out_h;
     if layer_aspect > out_aspect {
@@ -255,7 +277,7 @@ fn cover_fractions(src_w: f64, src_h: f64, out_w: f64, out_h: f64) -> (f64, f64)
     }
 }
 
-fn key(time_secs: f64, value: f64) -> Keyframe {
+pub(super) fn key(time_secs: f64, value: f64) -> Keyframe {
     Keyframe {
         time_secs,
         value,
@@ -273,7 +295,7 @@ fn set_tracks(clip: &mut MediaClip, tracks: Vec<(AnimProperty, Vec<Keyframe>)>) 
     }
 }
 
-fn keys_simplified(times: &[f64], values: &[f64], tolerance: f64) -> Vec<Keyframe> {
+pub(super) fn keys_simplified(times: &[f64], values: &[f64], tolerance: f64) -> Vec<Keyframe> {
     simplify_polyline(times, values, tolerance)
         .into_iter()
         .map(|i| key(times[i], values[i]))
@@ -294,7 +316,7 @@ fn lerp_series(times: &[f64], values: &[f64], t: f64) -> f64 {
     values[lo] + (values[hi] - values[lo]) * (t - times[lo]) / span
 }
 
-fn out_size(project: &Project) -> (f64, f64) {
+pub(super) fn out_size(project: &Project) -> (f64, f64) {
     (
         project.settings.width.max(1) as f64,
         project.settings.height.max(1) as f64,

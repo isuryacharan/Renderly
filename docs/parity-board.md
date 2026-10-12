@@ -35,7 +35,7 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 | — | Pack `.cube` LUTs in preview | ✅ | Same host-supplied path; parsed by the core `.cube` parser on wasm32 |
 | P4-3 | Chroma key | ✅ | `builtin:chroma_key`; WGSL pass in the shared compositor (export and preview), optional `spill` suppression. Keys on RGB distance |
 | P4-1b | Background removal | 🟡 | `SetClipBackgroundRemoval`, `GenerateBackgroundMatte`; heuristic + optional `RENDERLY_SEG_CLI` |
-| P4-ML | Core-hosted ONNX RVM/BiRefNet | ⬜ | **The headline open item.** See the recorded decision below |
+| P4-ML | Core-hosted ONNX RVM/BiRefNet | ⬜ | Runtime and model manifest landed (`renderly-core/src/ml/`). RVM runs under `tract` (~90 ms/frame at 288×512); BiRefNet-lite 2K is impractical (~100 s/frame, ~14 GB). Matting integration is the remaining work |
 | — | Captions burned in | ✅ | Preview and export share the `ab_glyph` rasterizer |
 | — | Captions in the Canvas2D fallback | ⏸️ | WebGPU covers evergreen browsers; low value |
 | — | Hardware decode (`-hwaccel`) / encode (NVENC/QSV) | ✅ | Probed, software fallback |
@@ -54,7 +54,7 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 | P4-2 | Audio denoise | ✅ | `SetClipAudioDenoise`; `rnnoise` backend (`nnnoiseless`, in-process, cached per source) alongside `afftdn`. Weak on steady white hiss; strong on hum, rumble and noise between words |
 | P4-4 | Motion tracking | ✅ | `TrackMotion`; Shi–Tomasi corners + pyramidal Lucas–Kanade in `renderly-core/src/tracking.rs`, optional region and rotation/scale. Frame-to-frame, no template re-anchoring |
 | P4-5 | Stabilization | ✅ | `StabilizeClip`; RANSAC similarity per frame, smoothed camera path, auto-zoom capped at 1.4×. No rolling-shutter or parallax correction |
-| P4-4b | Auto-reframe | 🟡 | `AutoReframeClip`; wants subject detection |
+| P4-4b | Auto-reframe | 🟡 | `AutoReframeClip`; follows the main face (bundled YuNet, run with `tract`). Can only pan within the cover-fit window — for 16:9 on a 9:16 canvas, the centre third of the frame. Needs a per-clip crop offset to follow further |
 | P4-6b | Text-to-sticker | 🟡 | `GenerateSticker`; locally generated PNG, not an image model |
 | P4-6 | Templates | ✅ | Pack `templates[]` + `ApplyTemplate` |
 | P4-7 | Multicam groups + angle switch | ✅ | `CreateMulticamGroup`, `SetMulticamAngle` |
@@ -91,8 +91,10 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 
 ## Recorded decision — inference runtime
 
-WASM frame plugins instantiate per call and copy full RGBA, which is unsuitable for
-RVM/BiRefNet. Phase 4.1 therefore ships **heuristic mattes** plus an optional
-**`RENDERLY_SEG_CLI`** escape hatch (same shape as the Whisper integration). Linking `ort`
-/ ONNX into core remains a follow-up pending AGPL-compatible license review — and never as
-a user-loadable native DLL plugin.
+Models run in core through **`tract`** (pure Rust, no native library), native builds only.
+Licences were reviewed in [ml-licence-review.md](ml-licence-review.md): YuNet (MIT) is
+bundled; matting weights are never bundled — they are downloaded from the upstream host on
+first use, with consent and a pinned SHA-256, into the per-user model cache. `ort` / ONNX
+Runtime is a fallback only for a model `tract` cannot run, with the library path fixed to
+our own bundled copy, and never as a user-loadable native DLL plugin. The
+`RENDERLY_SEG_CLI` escape hatch remains.

@@ -23,6 +23,9 @@ pub mod frame;
 pub mod mask;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod media;
+// Local ML inference (tract) + model manifest/downloads: native only, never in the wasm build.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ml;
 pub mod packs;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod perceive;
