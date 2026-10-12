@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Play, Pause, SkipBack, SkipForward, Maximize2, Minimize2 } from "lucide-react";
 import { useEditorStore } from "../../store/editorStore";
 import { formatTimecode, parseTimecode } from "../../lib/format";
-import { timelineDuration } from "../../timeline/layout";
+import { containerDurationSecs, selectActiveTracks } from "../../lib/container";
 import { IconButton } from "../ui/IconButton";
 import { Tooltip } from "../ui/Tooltip";
 import { RatioMenu } from "./RatioMenu";
@@ -28,8 +28,12 @@ export function TransportBar({
     if (!editing) setDraft(formatTimecode(playhead));
   }, [playhead, editing]);
 
-  const hasClips = !!project?.tracks.some((t) => t.clips.length > 0);
-  const duration = project && hasClips ? formatTimecode(timelineDuration(project)) : "—";
+  const tracks = useEditorStore(selectActiveTracks);
+  const activeSequenceId = useEditorStore((s) => s.activeSequenceId);
+  const hasClips = tracks.some((t) => t.clips.length > 0);
+  // The open container's own duration (a sequence's, while one is open).
+  const duration =
+    project && hasClips ? formatTimecode(Math.max(containerDurationSecs(project, activeSequenceId), 1)) : "—";
   const fps = project?.settings.fps || 60;
   const frameStep = 1 / fps;
 

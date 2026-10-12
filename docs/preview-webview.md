@@ -591,6 +591,14 @@ still images reuse the shared image element under the instance key. Projects wit
 never call it. Mattes and pack LUTs need no JS change: `required_assets()` walks every
 timeline. The Canvas2D fallback does not render sequences or adjustment layers.
 
+**Open sequence in the editor (app, phase B).** `WasmCompositor::set_active_sequence(id)` makes
+`render`, `active_media_layers` and `required_assets` operate on one sequence as if it were the
+root timeline (`Project::with_sequence_as_root`; a stale id falls back to the root). The engine
+exposes `setActiveSequence(id | null)` (wired from the `activeSequenceId` store field in
+`WebviewPreview.tsx`) and reads that container's tracks via `containerView` for its element
+management; times are local to the sequence. The canvas stays at the project resolution while a
+sequence is open.
+
 ## Risks
 
 - **WebKitGTK (Linux)**: WebGPU/WebCodecs lag Chromium. There is no native fallback left

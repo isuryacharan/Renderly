@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useEditorStore } from "../../store/editorStore";
+import { selectActiveView } from "../../lib/container";
 import { maxScrollX, maxScrollY, RULER_H, TRACK_LABEL_W } from "../../timeline/layout";
 
 const BAR = 10; // scrollbar thickness in px
@@ -12,7 +13,7 @@ export function TimelineScrollbars({
 }: {
   containerRef: React.RefObject<HTMLDivElement | null>;
 }) {
-  const project = useEditorStore((s) => s.project);
+  const project = useEditorStore(selectActiveView);
   const pxPerSec = useEditorStore((s) => s.pxPerSec);
   const scrollX = useEditorStore((s) => s.scrollX);
   const scrollY = useEditorStore((s) => s.scrollY);

@@ -1,11 +1,13 @@
-import { useMemo, useState } from "react";
-import { Film, Music, Plus, Search } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { ExternalLink, Film, Group, Music, Pencil, Plus, Search, Settings2, Trash2 } from "lucide-react";
 import { useEditorStore, type ThumbnailAsset } from "../../store/editorStore";
 import { fileName } from "../../lib/format";
 import { mediaDurationSecs, sequenceMediaName } from "../../lib/types";
 import { pickAndImportMedia, importFromPath } from "../../lib/projectFlows";
 import { startMediaDrag } from "../../lib/dragMedia";
 import { assetUrl } from "../../lib/ipc";
+import { createSequence, deleteSequence, renameSequence } from "../../lib/commands";
+import { SequenceSettingsDialog } from "../dialogs/SequenceSettingsDialog";
 import { Tooltip } from "../ui/Tooltip";
 
 /// Filmstrip thumbnail with hover-scrub: moving the mouse across the card selects which
@@ -84,6 +86,7 @@ const KIND_FILTERS = [
   { id: "video", label: "Video" },
   { id: "audio", label: "Audio" },
   { id: "image", label: "Image" },
+  { id: "sequence", label: "Sequences" },
 ] as const;
 type KindFilter = (typeof KIND_FILTERS)[number]["id"];
 
@@ -91,6 +94,15 @@ export function MediaPanel() {
   const project = useEditorStore((s) => s.project);
   const mediaAssets = useEditorStore((s) => s.mediaAssets);
   const placeMediaOnTimeline = useEditorStore((s) => s.placeMediaOnTimeline);
+  const dispatch = useEditorStore((s) => s.dispatch);
+  const toast = useEditorStore((s) => s.toast);
+  const openSequence = useEditorStore((s) => s.openSequence);
+  const [settingsFor, setSettingsFor] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  // Enter/Escape unmount the focused input, which fires a native blur; this flag keeps that
+  // blur from committing (or double-committing) - same approach as TrackHeaders' rename.
+  const explicitRenameRef = useRef(false);
   const [dragOver, setDragOver] = useState(false);
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState<KindFilter>("all");
@@ -110,23 +122,58 @@ export function MediaPanel() {
     );
   }, [allItems, kind, query, project]);
   const counts = useMemo(() => {
-    const c: Record<string, number> = { all: allItems.length, video: 0, audio: 0, image: 0 };
+    const c: Record<string, number> = { all: allItems.length, video: 0, audio: 0, image: 0, sequence: 0 };
     for (const m of allItems) c[m.kind] = (c[m.kind] ?? 0) + 1;
     return c;
   }, [allItems]);
 
+  async function newSequence() {
+    const n = (project?.sequences?.length ?? 0) + 1;
+    const ok = await dispatch(createSequence(`Sequence ${n}`));
+    if (ok) {
+      setKind("sequence");
+      toast(`Created Sequence ${n} - drag it to the timeline or open it to add clips`, "success");
+    }
+  }
+
+  function startRename(sequenceId: string, name: string) {
+    explicitRenameRef.current = false;
+    setRenamingId(sequenceId);
+    setRenameValue(name);
+  }
+
+  function commitRename(sequenceId: string, current: string) {
+    explicitRenameRef.current = true;
+    setRenamingId(null);
+    const trimmed = renameValue.trim();
+    if (trimmed && trimmed !== current) void dispatch(renameSequence(sequenceId, trimmed));
+  }
+
   return (
     <div className={`panel-body media-bin${emptyProject ? " media-import-first" : ""}`}>
+      <SequenceSettingsDialog sequenceId={settingsFor} onClose={() => setSettingsFor(null)} />
       {!emptyProject && (
         <div className="media-toolbar">
-          <div className="media-search">
-            <Search size={13} strokeWidth={2} />
-            <input
-              type="text"
-              placeholder="Search media"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
+          <div className="media-toolbar-row">
+            <div className="media-search">
+              <Search size={13} strokeWidth={2} />
+              <input
+                type="text"
+                placeholder="Search media"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+            </div>
+            <Tooltip content="New sequence">
+              <button
+                type="button"
+                className="btn-icon-only"
+                aria-label="New sequence"
+                onClick={() => void newSequence()}
+              >
+                <Group size={14} strokeWidth={1.75} />
+              </button>
+            </Tooltip>
           </div>
           <div className="media-chips">
             {KIND_FILTERS.map((f) => (
@@ -190,15 +237,66 @@ export function MediaPanel() {
           const thumb = mediaAssets[item.id]?.thumbnails;
           const waveform = mediaAssets[item.id]?.waveform;
           const pendingThumb = item.kind === "video" && !thumb;
+          const isSequence = item.kind === "sequence";
+          const seqName = project ? sequenceMediaName(project, item) : undefined;
+          const itemDuration = project ? mediaDurationSecs(project, item) : item.duration_secs;
           return (
             <div
               key={item.id}
-              className="media-item"
+              className={`media-item${isSequence ? " media-item-sequence" : ""}`}
               draggable
-              onDragStart={(e) => startMediaDrag(e, item.id, item.kind, item.duration_secs ?? 5)}
+              onDragStart={(e) => startMediaDrag(e, item.id, item.kind, itemDuration ?? 5)}
               onClick={() => void placeMediaOnTimeline(item.id, item.kind)}
+              onDoubleClick={() => {
+                if (isSequence && item.sequence_id)
+                  void openSequence(item.sequence_id, { fromRoot: true });
+              }}
             >
-              {thumb && thumb.image ? (
+              {isSequence && item.sequence_id && (
+                <div className="media-item-actions" onClick={(e) => e.stopPropagation()}>
+                  <Tooltip content="Open sequence">
+                    <button
+                      type="button"
+                      aria-label="Open sequence"
+                      onClick={() => void openSequence(item.sequence_id!, { fromRoot: true })}
+                    >
+                      <ExternalLink size={12} strokeWidth={1.75} />
+                    </button>
+                  </Tooltip>
+                  <Tooltip content="Rename">
+                    <button
+                      type="button"
+                      aria-label="Rename sequence"
+                      onClick={() => startRename(item.sequence_id!, seqName ?? "")}
+                    >
+                      <Pencil size={12} strokeWidth={1.75} />
+                    </button>
+                  </Tooltip>
+                  <Tooltip content="Sequence settings">
+                    <button
+                      type="button"
+                      aria-label="Sequence settings"
+                      onClick={() => setSettingsFor(item.sequence_id!)}
+                    >
+                      <Settings2 size={12} strokeWidth={1.75} />
+                    </button>
+                  </Tooltip>
+                  <Tooltip content="Delete sequence">
+                    <button
+                      type="button"
+                      aria-label="Delete sequence"
+                      onClick={() => void dispatch(deleteSequence(item.sequence_id!))}
+                    >
+                      <Trash2 size={12} strokeWidth={1.75} />
+                    </button>
+                  </Tooltip>
+                </div>
+              )}
+              {isSequence ? (
+                <div className="media-thumb sequence" aria-hidden>
+                  <Group size={20} strokeWidth={1.5} />
+                </div>
+              ) : thumb && thumb.image ? (
                 <FilmstripThumb thumb={thumb} durationSecs={item.duration_secs ?? 0} />
               ) : item.kind === "audio" && waveform?.peaks?.length ? (
                 <WaveformThumb peaks={waveform.peaks} />
@@ -223,12 +321,33 @@ export function MediaPanel() {
                 </div>
               )}
               <div className="media-meta">
-                <div className="name">
-                  {project ? (sequenceMediaName(project, item) ?? fileName(item.path)) : fileName(item.path)}
-                </div>
+                {isSequence && item.sequence_id && renamingId === item.sequence_id ? (
+                  <input
+                    autoFocus
+                    className="media-item-rename"
+                    aria-label="Sequence name"
+                    value={renameValue}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onBlur={() => {
+                      if (!explicitRenameRef.current) commitRename(item.sequence_id!, seqName ?? "");
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitRename(item.sequence_id!, seqName ?? "");
+                      if (e.key === "Escape") {
+                        explicitRenameRef.current = true;
+                        setRenamingId(null);
+                      }
+                    }}
+                  />
+                ) : (
+                  <div className="name">
+                    {project ? (seqName ?? fileName(item.path)) : fileName(item.path)}
+                  </div>
+                )}
                 <div className="sub">
                   {mediaMetaLine(
-                    project ? { ...item, duration_secs: mediaDurationSecs(project, item) } : item,
+                    project ? { ...item, duration_secs: itemDuration } : item,
                   )}
                   {pendingThumb ? " · generating…" : ""}
                 </div>

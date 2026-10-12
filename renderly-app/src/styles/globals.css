@@ -2862,3 +2862,149 @@ dialog menu {
 .handle:hover {
   filter: brightness(1.5);
 }
+
+/* —— Nested sequences & adjustment layers (schema v7) —— */
+.timeline-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 26px;
+  padding: 2px var(--space-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
+  font-size: var(--fs-12);
+  color: var(--text-2);
+  position: relative;
+  z-index: 5;
+}
+
+.timeline-breadcrumb .crumb {
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-breadcrumb .crumb:hover:not(.current) {
+  background: var(--bg-3);
+  color: var(--text-1);
+}
+
+.timeline-breadcrumb .crumb.current {
+  color: var(--text-1);
+  font-weight: 600;
+  cursor: default;
+}
+
+.timeline-breadcrumb .crumb-sep {
+  color: var(--text-3);
+  display: inline-flex;
+}
+
+.timeline-breadcrumb .crumb-icon {
+  color: var(--clip-sequence-edge);
+  display: inline-flex;
+  margin-right: 4px;
+}
+
+.context-menu-hint {
+  float: right;
+  margin-left: 1.25rem;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.track-header-menu-pop {
+  min-width: 150px;
+  white-space: nowrap;
+}
+
+.track-header-menu-pop button.neutral {
+  color: var(--text-1);
+}
+
+.media-chips {
+  flex-wrap: wrap;
+}
+
+.media-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.media-toolbar-row .media-search {
+  flex: 1;
+  min-width: 0;
+}
+
+.media-thumb.sequence {
+  background: var(--clip-sequence-bg);
+  color: var(--text-1);
+  border-bottom: 2px solid var(--clip-sequence-edge);
+}
+
+.media-item-actions {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  display: flex;
+  gap: 3px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.media-item:hover .media-item-actions,
+.media-item:focus-within .media-item-actions {
+  opacity: 1;
+}
+
+.media-item-actions button {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: var(--clip-label-bg);
+  color: var(--clip-label-text);
+  cursor: pointer;
+}
+
+.media-item-actions button:hover {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.media-item-rename {
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+  font-size: var(--fs-12);
+  color: var(--text-1);
+  background: var(--bg-0);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+.seq-settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+
+.media-toolbar-row .btn-icon-only {
+  width: 30px;
+  height: 30px;
+  min-width: 30px;
+  padding: 0;
+  flex-shrink: 0;
+}

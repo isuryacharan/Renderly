@@ -17,6 +17,7 @@
 
 import type { Clip, ClipTransform, MediaClip, MediaItem, Project, Track } from "../lib/types";
 import { IDENTITY_TRANSFORM, clipDurationSecs } from "../lib/types";
+import { containerView } from "../lib/container";
 import { PreviewAssetSync } from "./previewAssets";
 import type { PreviewAssetBackend } from "./previewAssets";
 
@@ -24,6 +25,9 @@ import type { PreviewAssetBackend } from "./previewAssets";
 /// gitignored generated pkg, so we don't import its types at build time).
 interface WasmCompositorLike {
   set_project(json: string): void;
+  /// Open a nested sequence for preview (`undefined`/null = root timeline). Absent on a wasm
+  /// package built before the sequences UI - the engine then simply keeps showing the root.
+  set_active_sequence?(sequenceId: string | undefined): void;
   render(timeSecs: number, sources: object): void;
   /// JSON describing every media element a frame needs, including layers inside nested
   /// sequences (schema v7) — see `NestedLayerInfo` and renderly-wasm's `active_media_layers`.
@@ -302,6 +306,10 @@ export class WebviewPreviewEngine {
   private ready = false;
   private gpuRenderErrorLogged = false;
   private project: Project | null = null;
+  /// Sequence open in the editor timeline (null = root). The wasm compositor renders that
+  /// container; the JS element management below reads the same container's tracks through
+  /// `containerView` so the right <video> elements are decoded and seeked.
+  private activeSequenceId: string | null = null;
   private assetUrl: (path: string) => string;
 
   private videoPool = new Map<string, HTMLVideoElement>();
@@ -461,6 +469,7 @@ export class WebviewPreviewEngine {
       // Canvas2D rung — log it and keep the GPU surface alive for the next set_project.
       try {
         this.gpu.set_project(JSON.stringify(this.project));
+        this.gpu.set_active_sequence?.(this.activeSequenceId ?? undefined);
       } catch (err) {
         console.error("[preview] initial set_project failed:", err);
       }
@@ -511,6 +520,21 @@ export class WebviewPreviewEngine {
     this.cssW = cssW;
     this.cssH = cssH;
     // Repaint immediately at the current time so a resize doesn't show a stale frame.
+    this.drawFrame(this.currentTimeSecs());
+  }
+
+  /// Follow the editor's open sequence (null = root): render and manage elements for that
+  /// container at the local playhead. Cheap when unchanged.
+  setActiveSequence(sequenceId: string | null): void {
+    if (this.activeSequenceId === sequenceId) return;
+    this.activeSequenceId = sequenceId;
+    if (this.gpu) {
+      try {
+        this.gpu.set_active_sequence?.(sequenceId ?? undefined);
+      } catch (err) {
+        console.error("[preview] set_active_sequence failed:", err);
+      }
+    }
     this.drawFrame(this.currentTimeSecs());
   }
 
@@ -872,7 +896,8 @@ export class WebviewPreviewEngine {
     if (!this.ready) return;
     const drawStart = performance.now();
 
-    const project = this.project;
+    // The open container's view of the project (the root itself when no sequence is open).
+    const project = this.project ? containerView(this.project, this.activeSequenceId) : null;
     const active = project ? activeLayersAt(project, t) : [];
     const managedReady = project ? this.manageElements(project, t, active) : true;
 

@@ -3,7 +3,8 @@
 // mutation), then issues exactly one command on mouseup — see docs/architecture.md.
 
 import { useEffect, useRef, type RefObject } from "react";
-import { deleteClip, moveClip, setCaption, splitClip, trimClip } from "../lib/commands";
+import { deleteClip, moveClip, setAdjustmentLayer, setCaption, splitClip, trimClip } from "../lib/commands";
+import { activeTracks, replaceActiveTracks, selectActiveView, trimAdjustment } from "../lib/container";
 import type { Clip, Project } from "../lib/types";
 import { useEditorStore } from "../store/editorStore";
 import {
@@ -55,8 +56,21 @@ type DragState =
       origPos: number;
       origDur: number;
     }
-  | { mode: "trim-right"; trackId: string; clipId: string; startX: number; origOut: number };
+  | { mode: "trim-right"; trackId: string; clipId: string; startX: number; origOut: number }
+  // Adjustment layers have no source range: a trim is position + duration, committed with
+  // one SetAdjustmentLayer (TrimClip is rejected for them).
+  | {
+      mode: "trim-adjustment";
+      edge: "left" | "right";
+      trackId: string;
+      clipId: string;
+      startX: number;
+      origPos: number;
+      origDur: number;
+    };
 
+// NOTE: the helpers below operate on the open container's VIEW of the project (tracks =
+// `activeTracks`), and the mouse handlers write the result back with `replaceActiveTracks`.
 function withClip(project: Project, trackId: string, clipId: string, update: (c: Clip) => Clip): Project {
   return {
     ...project,
@@ -95,7 +109,7 @@ function moveClipAcrossTracks(
 }
 
 function scrubTo(x: number, store: ReturnType<typeof useEditorStore.getState>, altKey: boolean) {
-  const project = store.project;
+  const project = selectActiveView(store);
   if (!project) return;
   const secs = snapTime(
     secsFromCanvasX(x, store.pxPerSec, store.scrollX),
@@ -150,7 +164,7 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
 
     const onMouseDown = (ev: MouseEvent) => {
       const store = useEditorStore.getState();
-      const project = store.project;
+      const project = selectActiveView(store);
       if (!project) return;
       const rect = canvas.getBoundingClientRect();
       const x = ev.clientX - rect.left;
@@ -235,10 +249,22 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
           store.select(hitSel);
         }
 
-        // Adjustment layers have no source range to trim (TrimClip is rejected for them):
-        // their edges behave like the body (move only).
-        const edge = hit.clip.type === "adjustment" ? "body" : hit.edge;
-        if (store.toolMode === "select" && edge === "left" && hit.clip.type === "caption") {
+        const edge = hit.edge;
+        if (
+          store.toolMode === "select" &&
+          hit.clip.type === "adjustment" &&
+          (edge === "left" || edge === "right")
+        ) {
+          dragStateRef.current = {
+            mode: "trim-adjustment",
+            edge,
+            trackId: hit.trackId,
+            clipId: hit.clip.id,
+            startX: x,
+            origPos: hit.clip.position_secs,
+            origDur: hit.clip.duration_secs,
+          };
+        } else if (store.toolMode === "select" && edge === "left" && hit.clip.type === "caption") {
           dragStateRef.current = {
             mode: "trim-left-caption",
             trackId: hit.trackId,
@@ -307,7 +333,7 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
     const onMouseMove = (ev: MouseEvent) => {
       const drag = dragStateRef.current;
       const store = useEditorStore.getState();
-      const project = store.project;
+      const project = selectActiveView(store);
       if (!drag || !project) {
         // Hover cursor: playhead vicinity / trim handles.
         if (!project) return;
@@ -327,8 +353,7 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
           store.scrollX,
           store.scrollY,
         );
-        if (hit && hit.clip.type !== "adjustment" && (hit.edge === "left" || hit.edge === "right"))
-          canvas.style.cursor = "ew-resize";
+        if (hit && (hit.edge === "left" || hit.edge === "right")) canvas.style.cursor = "ew-resize";
         else if (hit) canvas.style.cursor = "grab";
         else canvas.style.cursor = "default";
         return;
@@ -419,6 +444,22 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
         // Edge auto-scroll while dragging clips.
         if (x > rect.width - 40) store.panBy(10, 0);
         else if (x < 100) store.panBy(-10, 0);
+      } else if (drag.mode === "trim-adjustment") {
+        const clip = findClip(project, drag.trackId, drag.clipId);
+        if (!clip || clip.type !== "adjustment") return;
+        const origEdge = drag.edge === "left" ? drag.origPos : drag.origPos + drag.origDur;
+        let edgeSecs = Math.max(0, origEdge + delta);
+        if (store.snapEnabled && !ev.altKey) {
+          const snapped = snapTime(edgeSecs, project, store.playhead, store.pxPerSec, true, clip.id);
+          store.setSnapGuide(Math.abs(snapped - edgeSecs) > 1e-6 ? snapped : null);
+          edgeSecs = snapped;
+        }
+        const next = trimAdjustment(drag.edge, drag.origPos, drag.origDur, edgeSecs);
+        nextProject = withClip(project, drag.trackId, drag.clipId, (c) =>
+          c.type === "adjustment"
+            ? { ...c, position_secs: next.position, duration_secs: next.duration }
+            : c,
+        );
       } else {
         const clip = findClip(project, drag.trackId, drag.clipId);
         if (!clip || clip.type === "adjustment") return;
@@ -513,7 +554,11 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
         }
       }
 
-      if (nextProject) useEditorStore.setState({ project: nextProject });
+      if (nextProject && store.project) {
+        useEditorStore.setState({
+          project: replaceActiveTracks(store.project, store.activeSequenceId, nextProject.tracks),
+        });
+      }
     };
 
     const onMouseUp = (ev: MouseEvent) => {
@@ -523,7 +568,7 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
       store.setSnapGuide(null);
       store.setDragging(false);
       canvas.style.cursor = "default";
-      const project = store.project;
+      const project = selectActiveView(store);
       if (!drag || !project) return;
 
       if (drag.mode === "pan") return;
@@ -562,6 +607,23 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
         );
         const newTrackId = drag.currentTrackId !== drag.origTrackId ? drag.currentTrackId : null;
         void store.dispatch(moveClip(drag.origTrackId, clip.id, pos, newTrackId));
+        return;
+      }
+
+      if (drag.mode === "trim-adjustment") {
+        const adj = findClip(project, drag.trackId, drag.clipId);
+        if (!adj || adj.type !== "adjustment") return;
+        if (
+          Math.abs(adj.position_secs - drag.origPos) > 1e-6 ||
+          Math.abs(adj.duration_secs - drag.origDur) > 1e-6
+        ) {
+          void store.dispatch(
+            setAdjustmentLayer(drag.trackId, adj.id, {
+              positionSecs: adj.position_secs,
+              durationSecs: adj.duration_secs,
+            }),
+          );
+        }
         return;
       }
 
@@ -613,7 +675,9 @@ export async function splitSelectedAtPlayhead(): Promise<void> {
     store.toast("Select a clip first, then split at the playhead", "info");
     return;
   }
-  const track = store.project?.tracks.find((t) => t.id === store.selection!.trackId);
+  const track = activeTracks(store.project, store.activeSequenceId).find(
+    (t) => t.id === store.selection!.trackId,
+  );
   if (track?.locked) {
     store.toast("Track is locked — unlock it to edit", "info");
     return;
@@ -625,7 +689,7 @@ export async function deleteSelected(ripple: boolean): Promise<void> {
   const store = useEditorStore.getState();
   if (store.selections.length === 0) return;
   for (const sel of store.selections) {
-    const track = store.project?.tracks.find((t) => t.id === sel.trackId);
+    const track = activeTracks(store.project, store.activeSequenceId).find((t) => t.id === sel.trackId);
     if (track?.locked) {
       store.toast("Track is locked — unlock it to edit", "info");
       return;

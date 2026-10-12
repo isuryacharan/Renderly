@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Layers } from "lucide-react";
 import { useEditorStore } from "../../store/editorStore";
+import { addTrack } from "../../lib/commands";
 import type { TrackKind } from "../../lib/types";
 import { IconButton } from "../ui/IconButton";
 
@@ -15,6 +16,7 @@ export function AddTrackMenu() {
   const project = useEditorStore((s) => s.project);
   const dispatch = useEditorStore((s) => s.dispatch);
   const toast = useEditorStore((s) => s.toast);
+  const activeSequenceId = useEditorStore((s) => s.activeSequenceId);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -39,13 +41,16 @@ export function AddTrackMenu() {
         onClick={() => setOpen((v) => !v)}
       />
       <div className={`track-menu-pop${open ? " open" : ""}`}>
-        {TRACK_KIND_LABELS.map(([kind, label]) => (
+        {TRACK_KIND_LABELS.filter(
+          // Caption rendering is root-only in v7 (AddTrack rejects caption tracks in a sequence).
+          ([kind]) => !(activeSequenceId && kind === "caption"),
+        ).map(([kind, label]) => (
           <button
             key={kind}
             type="button"
             onClick={() => {
               setOpen(false);
-              void dispatch({ command: "AddTrack", kind, name: label.replace(" track", "") }).then(
+              void dispatch(addTrack(kind, label.replace(" track", ""), null, activeSequenceId)).then(
                 (ok) => ok && toast(`Added ${label.toLowerCase()}`, "success"),
               );
             }}

@@ -140,8 +140,14 @@ function roundRect(
   ctx.closePath();
 }
 
-function clipColors(kind: Track["kind"]): { fill: string; edge: string } {
+function clipColors(
+  kind: Track["kind"],
+  special?: "adjustment" | "sequence",
+): { fill: string; edge: string } {
   const theme = getTimelineTheme();
+  // Adjustment layers and nested sequences get their own tint so they never read as media.
+  if (special === "adjustment") return { fill: theme.clipAdjustmentBg, edge: theme.clipAdjustmentEdge };
+  if (special === "sequence") return { fill: theme.clipSequenceBg, edge: theme.clipSequenceEdge };
   if (kind === "video") return { fill: theme.clipVideoBg, edge: theme.clipVideoEdge };
   if (kind === "audio") return { fill: theme.clipAudioBg, edge: theme.clipAudioEdge };
   return { fill: theme.clipCaptionBg, edge: theme.clipCaptionEdge };
@@ -532,7 +538,14 @@ export function renderTimeline(canvas: HTMLCanvasElement, state: TimelineRenderS
       const ch = trackH - CLIP_TOP_PAD - CLIP_BOTTOM_PAD;
       const selected = isSelected(track.id, clip.id);
       const disabled = clip.type !== "caption" && !clip.enabled;
-      const colors = clipColors(track.kind);
+      const clipMedia =
+        clip.type === "video" || clip.type === "audio"
+          ? project.media.find((m) => m.id === clip.media_id)
+          : undefined;
+      const colors = clipColors(
+        track.kind,
+        clip.type === "adjustment" ? "adjustment" : clipMedia?.kind === "sequence" ? "sequence" : undefined,
+      );
 
       // Card: soft drop shadow, kind-colored fill, 1px edge stroke.
       ctx.save();
@@ -592,9 +605,9 @@ export function renderTimeline(canvas: HTMLCanvasElement, state: TimelineRenderS
         if (cw > 24) ctx.fillText(clip.text.slice(0, Math.floor(cw / 6)), x + 8, cy + ch / 2 + 3.5);
         ctx.restore();
       } else {
-        const media = clip.type === "adjustment" ? undefined : project.media.find((m) => m.id === clip.media_id);
-        // Adjustment layers render as a plain labelled block; a nested sequence shows its name
-        // like a media item (schema v7 phase A - the real timeline UI comes with phase B).
+        const media = clipMedia;
+        // Adjustment layers are a tinted, labelled block; a nested sequence shows its name
+        // (double-click opens it).
         const label =
           clip.type === "adjustment"
             ? "Adjustment"

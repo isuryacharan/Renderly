@@ -321,6 +321,15 @@ export function pause(): Promise<number> {
   return invoke<number>("pause");
 }
 
+/**
+ * Tell the backend which nested sequence the timeline has open (`null` = root) so playback
+ * and scrub audio follow that container's mix. The preview canvas follows separately via
+ * `WebviewPreviewEngine.setActiveSequence`.
+ */
+export function setActiveSequence(sequenceId: string | null): Promise<void> {
+  return invoke("set_active_sequence", { sequenceId });
+}
+
 /** Mirror timeline selection into the Rust backend for bridge `get_editor_status`. */
 export function setEditorSelection(
   selection: {

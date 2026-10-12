@@ -28,7 +28,7 @@ code consume **only** these, never primitives or raw colors:
 | Accent | `--accent`, `--accent-hover`, `--accent-active`, `--accent-soft`, `--on-accent` |
 | State | `--danger`, `--danger-soft`, `--warning`, `--success`, `--destructive` |
 | Timeline | `--timeline-bg`, `--ruler-bg/-text/-line-strong/-line-weak`, `--track-header-bg`, `--track-lane-bg`, `--playhead`, `--snap-guide`, `--locked-hatch`, `--clip-shadow` |
-| Clips | `--clip-video-bg`, `--clip-audio-bg`, `--clip-audio-wave`, `--clip-caption-bg`, `--clip-border-selected` |
+| Clips | `--clip-video-bg`, `--clip-audio-bg`, `--clip-audio-wave`, `--clip-caption-bg`, `--clip-adjustment-bg/-edge` (amber), `--clip-sequence-bg/-edge` (magenta; nested sequences and their media-bin thumbnails), `--clip-border-selected` |
 
 ## Themes
 

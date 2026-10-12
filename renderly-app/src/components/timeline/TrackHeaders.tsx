@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { Film, Music, Type, VolumeX, Lock, EyeOff, MoreHorizontal, GripVertical } from "lucide-react";
 import { useEditorStore } from "../../store/editorStore";
+import { selectActiveView } from "../../lib/container";
 import { deleteTrack, moveTrack, renameTrack, setTrackFlags } from "../../lib/commands";
 import {
   displayOrder,
@@ -31,8 +32,9 @@ function TrackKindIcon({ kind }: { kind: Track["kind"] }) {
 /// but no longer draws into (see renderer.ts) — real interactive controls (dbl-click
 /// rename, mute/lock/hide toggles, delete) instead of canvas hit-testing.
 export function TrackHeaders({ containerRef }: { containerRef: RefObject<HTMLElement | null> }) {
-  const project = useEditorStore((s) => s.project);
+  const project = useEditorStore(selectActiveView);
   const dispatch = useEditorStore((s) => s.dispatch);
+  const addAdjustmentLayerAtPlayhead = useEditorStore((s) => s.addAdjustmentLayerAtPlayhead);
   const [height, setHeight] = useState(0);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -101,7 +103,7 @@ export function TrackHeaders({ containerRef }: { containerRef: RefObject<HTMLEle
   function onGripPointerDown(e: React.PointerEvent, track: Track, row: number) {
     e.preventDefault();
     e.stopPropagation();
-    const proj = useEditorStore.getState().project;
+    const proj = selectActiveView(useEditorStore.getState());
     if (!proj) return;
     const [zoneStart, zoneEnd] = zoneRowBounds(proj, track.kind);
     const startClientY = e.clientY;
@@ -119,7 +121,7 @@ export function TrackHeaders({ containerRef }: { containerRef: RefObject<HTMLEle
       window.removeEventListener("pointerup", onUp);
       setDragView((current) => {
         if (current && current.trackId === track.id && current.overRow !== current.startRow) {
-          const latestProject = useEditorStore.getState().project;
+          const latestProject = selectActiveView(useEditorStore.getState());
           if (latestProject) {
             const newIndex = moveTrackNewIndex(latestProject, track.id, current.overRow);
             if (newIndex != null) void dispatch(moveTrack(track.id, newIndex));
@@ -221,6 +223,9 @@ export function TrackHeaders({ containerRef }: { containerRef: RefObject<HTMLEle
                 <button
                   type="button"
                   className="track-flag-btn"
+                  aria-label="Track options"
+                  aria-haspopup="menu"
+                  aria-expanded={menuOpen === track.id}
                   onClick={() => setMenuOpen(menuOpen === track.id ? null : track.id)}
                 >
                   <MoreHorizontal size={12} strokeWidth={1.75} />
@@ -228,6 +233,19 @@ export function TrackHeaders({ containerRef }: { containerRef: RefObject<HTMLEle
               </Tooltip>
               {menuOpen === track.id && (
                 <div className="track-header-menu-pop">
+                  {track.kind === "video" && (
+                    <button
+                      type="button"
+                      className="neutral"
+                      disabled={track.locked}
+                      onClick={async () => {
+                        setMenuOpen(null);
+                        await addAdjustmentLayerAtPlayhead(track.id);
+                      }}
+                    >
+                      Add adjustment layer
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={async () => {

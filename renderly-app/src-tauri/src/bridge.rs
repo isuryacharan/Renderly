@@ -189,7 +189,7 @@ async fn dispatch(
                 .and_then(|v| v.as_f64())
                 .unwrap_or_else(|| state.playhead_secs());
             state.set_playhead_secs(time);
-            let project = state.with_session(|s| Ok(Arc::clone(&s.project)))?;
+            let project = state.playback_project()?;
             state.playback.play(app.clone(), project, time);
             Ok(json!({ "ok": true }))
         }

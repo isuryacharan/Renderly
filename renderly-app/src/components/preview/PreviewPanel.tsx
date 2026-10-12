@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Film, Upload, Play } from "lucide-react";
 import { useEditorStore } from "../../store/editorStore";
+import { selectActiveTracks } from "../../lib/container";
 import { TransportBar } from "./TransportBar";
 import { PreviewHandlesOverlay } from "./PreviewHandlesOverlay";
 import { PreviewMaskOverlay } from "./PreviewMaskOverlay";
@@ -14,7 +15,8 @@ export function PreviewPanel() {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
 
-  const hasClips = !!project?.tracks.some((t) => t.clips.length > 0);
+  const tracks = useEditorStore(selectActiveTracks);
+  const hasClips = tracks.some((t) => t.clips.length > 0);
   const aspect = project ? project.settings.width / project.settings.height : 9 / 16;
 
   useEffect(() => {

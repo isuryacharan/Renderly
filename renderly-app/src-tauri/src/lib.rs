@@ -188,6 +188,10 @@ pub struct AppState {
     playhead: Mutex<f64>,
     /// Frontend selection mirrored for bridge status (`{ primary, all }` or null).
     selection: Mutex<Option<serde_json::Value>>,
+    /// Sequence open in the frontend timeline (schema v7). While set, audio playback and
+    /// scrub audio render that sequence's mix instead of the root timeline's; see
+    /// `AppState::playback_project`.
+    active_sequence: Mutex<Option<renderly_core::project::Id>>,
 }
 
 impl AppState {
@@ -201,6 +205,7 @@ impl AppState {
             edit_lock: tauri::async_runtime::Mutex::new(()),
             playhead: Mutex::new(0.0),
             selection: Mutex::new(None),
+            active_sequence: Mutex::new(None),
         }
     }
 
@@ -459,6 +464,21 @@ impl AppState {
     /// Clone/mutate the project under a short-lived lock only — never hold this across
     /// file I/O, media decode, or other blocking work (see docs/architecture.md
     /// "Playback engine" for why the old sync-command design froze the UI thread).
+    /// The project snapshot playback should use: the session's project, or — when the
+    /// frontend has a nested sequence open — a copy whose root timeline is that sequence
+    /// (`Project::with_sequence_as_root`), so audio follows the open container. A sequence
+    /// that no longer exists falls back to the root.
+    pub(crate) fn playback_project(&self) -> Result<Arc<Project>, String> {
+        let project = self.with_session(|s| Ok(Arc::clone(&s.project)))?;
+        let active = *self.active_sequence.lock();
+        Ok(
+            match active.and_then(|id| project.with_sequence_as_root(id)) {
+                Some(view) => Arc::new(view),
+                None => project,
+            },
+        )
+    }
+
     pub(crate) fn with_session<F, T>(&self, f: F) -> Result<T, String>
     where
         F: FnOnce(&mut Session) -> Result<T, String>,
@@ -1401,7 +1421,7 @@ async fn cancel_export(state: State<'_, AppState>) -> Result<(), String> {
 #[tauri::command]
 async fn play(app: AppHandle, state: State<'_, AppState>, time_secs: f64) -> Result<(), String> {
     state.set_playhead_secs(time_secs);
-    let project = state.with_session(|s| Ok(Arc::clone(&s.project)))?;
+    let project = state.playback_project()?;
     state.playback.play(app, project, time_secs);
     Ok(())
 }
@@ -1441,7 +1461,7 @@ async fn seek(state: State<'_, AppState>, time_secs: f64) -> Result<(), String> 
 /// regardless of play state.
 #[tauri::command]
 async fn refresh_frame(state: State<'_, AppState>) -> Result<(), String> {
-    let project = state.with_session(|s| Ok(Arc::clone(&s.project)))?;
+    let project = state.playback_project()?;
     state.playback.update_live_project(project);
     Ok(())
 }
@@ -1451,8 +1471,26 @@ async fn refresh_frame(state: State<'_, AppState>) -> Result<(), String> {
 /// is entirely the webview canvas's own doing; this only drives the audio cue.
 #[tauri::command]
 async fn scrub_audio(state: State<'_, AppState>, time_secs: f64) -> Result<(), String> {
-    let project = state.with_session(|s| Ok(Arc::clone(&s.project)))?;
+    let project = state.playback_project()?;
     state.playback.request_scrub_audio(project, time_secs);
+    Ok(())
+}
+
+/// Tell the backend which nested sequence the timeline has open (`None` = root) so playback
+/// and scrub audio follow it. The frontend stops playback before switching containers.
+#[tauri::command]
+async fn set_active_sequence(
+    state: State<'_, AppState>,
+    sequence_id: Option<String>,
+) -> Result<(), String> {
+    let id = match sequence_id {
+        None => None,
+        Some(s) => Some(
+            s.parse::<renderly_core::project::Id>()
+                .map_err(|e| format!("invalid sequence id: {e}"))?,
+        ),
+    };
+    *state.active_sequence.lock() = id;
     Ok(())
 }
 
@@ -1525,6 +1563,7 @@ pub fn run() {
             refresh_frame,
             scrub_audio,
             set_editor_selection,
+            set_active_sequence,
             request_media_assets,
             get_media_assets,
             list_extensions,

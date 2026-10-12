@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { setClipKeyframes } from "../../lib/commands";
 import type {
+  AdjustmentClip,
   AnimProperty,
   Easing,
   Keyframe,
@@ -33,7 +34,9 @@ const EASING_OPTIONS: { value: Easing; label: string }[] = [
   { value: "bezier", label: "Bezier" },
 ];
 
-function defaultValue(prop: AnimProperty, clip: MediaClip): number {
+function defaultValue(prop: AnimProperty, clip: MediaClip | AdjustmentClip): number {
+  // Adjustment layers animate only `opacity` (the engine rejects other properties on them).
+  if (clip.type === "adjustment") return clip.opacity ?? 1;
   const t = clip.transform;
   switch (prop) {
     case "pos_x":
@@ -76,7 +79,7 @@ export function KeyframeEditor({
   nested = false,
 }: {
   track: Track;
-  clip: MediaClip;
+  clip: MediaClip | AdjustmentClip;
   nested?: boolean;
 }) {
   const dispatch = useEditorStore((s) => s.dispatch);
@@ -84,6 +87,7 @@ export function KeyframeEditor({
   const duration = clipDurationSecs(clip);
 
   const props = PROP_OPTIONS.filter((p) => {
+    if (clip.type === "adjustment") return p.value === "opacity";
     if (clip.type === "audio") return p.audio || p.value === "volume";
     return p.video;
   });

@@ -1,9 +1,10 @@
 import { useEditorStore } from "../../store/editorStore";
 import { createMulticamGroup, setMulticamAngle } from "../../lib/commands";
+import { findTrackAnywhere } from "../../lib/container";
 import type { MediaClip, MulticamGroup, Project } from "../../lib/types";
 
 function findClip(project: Project, trackId: string, clipId: string): MediaClip | null {
-  const track = project.tracks.find((t) => t.id === trackId);
+  const track = findTrackAnywhere(project, trackId);
   const clip = track?.clips.find((c) => c.id === clipId);
   return clip?.type === "video" ? (clip as MediaClip) : null;
 }

@@ -4,6 +4,7 @@ import { addSfxFromPack, addStickerFromPack, addTrack, generateSticker } from ".
 import * as ipc from "../../lib/ipc";
 import type { ExtensionCatalog } from "../../lib/ipc";
 import { clipDurationSecs, type Track, type TrackKind } from "../../lib/types";
+import { activeTracks } from "../../lib/container";
 import { useEditorStore } from "../../store/editorStore";
 
 const DEFAULT_STICKER_SECS = 3;
@@ -46,10 +47,12 @@ export function StickersPanel() {
     position: number,
     duration: number,
   ): Promise<Track | null> {
-    const proj = useEditorStore.getState().project;
+    const state = useEditorStore.getState();
+    const proj = state.project;
     if (!proj) return null;
+    const activeId = state.activeSequenceId;
 
-    const unlocked = proj.tracks.filter((t) => t.kind === kind && !t.locked);
+    const unlocked = activeTracks(proj, activeId).filter((t) => t.kind === kind && !t.locked);
     // Only reuse dedicated overlay tracks — never drop onto Video 1 / Audio 1.
     const overlayTracks = unlocked.filter(
       (t) => t.name === baseName || t.name.startsWith(`${baseName} `),
@@ -60,12 +63,13 @@ export function StickersPanel() {
     const n = overlayTracks.length;
     const name = n === 0 ? baseName : `${baseName} ${n + 1}`;
     const id = crypto.randomUUID();
-    const ok = await dispatch(addTrack(kind, name, id), true);
+    const ok = await dispatch(addTrack(kind, name, id, activeId), true);
     if (!ok) {
       toast(`Could not create ${name} track`, "error");
       return null;
     }
-    const created = useEditorStore.getState().project?.tracks.find((t) => t.id === id);
+    const fresh = useEditorStore.getState();
+    const created = activeTracks(fresh.project, fresh.activeSequenceId).find((t) => t.id === id);
     if (!created) {
       toast(`Track ${name} missing after creation`, "error");
       return null;

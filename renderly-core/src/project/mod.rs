@@ -169,6 +169,19 @@ impl Project {
             .fold(0.0_f64, f64::max)
     }
 
+    /// A copy of the project whose root timeline is `sequence_id`'s tracks, for hosts that
+    /// preview or play one container as if it were the whole timeline (the desktop app while
+    /// a sequence is open). Everything else — media, other sequences, settings — is kept, so
+    /// nested sequences inside the opened one still resolve. `None` for an unknown sequence.
+    /// Output size stays the project's: a sequence with its own size is previewed at the
+    /// project canvas while it is being edited.
+    pub fn with_sequence_as_root(&self, sequence_id: Id) -> Option<Project> {
+        let tracks = self.find_sequence(sequence_id)?.tracks.clone();
+        let mut view = self.clone();
+        view.tracks = tracks;
+        Some(view)
+    }
+
     /// Duration of a media item. Sequence media is derived from the inner timeline so it can
     /// never go stale; everything else is the probed `duration_secs`.
     pub fn media_duration(&self, media_id: Id) -> Option<f64> {
@@ -1327,6 +1340,24 @@ mod tests {
         }
         assert!((p.sequence_duration(seq_id) - 4.0).abs() < 1e-9);
         assert_eq!(p.media_duration(Id::new_v4()), None);
+    }
+
+    #[test]
+    fn with_sequence_as_root_swaps_tracks_only() {
+        let (p, seq_id, seq_media, _) = seq_project();
+        let view = p.with_sequence_as_root(seq_id).unwrap();
+        assert_eq!(view.tracks.len(), p.sequences[0].tracks.len());
+        assert_eq!(view.tracks[0].id, p.sequences[0].tracks[0].id);
+        assert_eq!(
+            view.tracks[0].clips.len(),
+            p.sequences[0].tracks[0].clips.len()
+        );
+        // Media and the sequence list are untouched, so nested lookups still work.
+        assert_eq!(view.media.len(), p.media.len());
+        assert!(view
+            .sequence_media(seq_id)
+            .is_some_and(|m| m.id == seq_media));
+        assert!(p.with_sequence_as_root(Id::new_v4()).is_none());
     }
 
     #[test]

@@ -122,6 +122,10 @@
   --clip-audio-wave: hsl(168 55% 52%);
   --clip-caption-bg: hsl(262 30% 22%);
   --clip-caption-edge: hsl(262 38% 40%);
+  --clip-adjustment-bg: hsl(38 34% 20%);
+  --clip-adjustment-edge: hsl(38 50% 40%);
+  --clip-sequence-bg: hsl(330 26% 22%);
+  --clip-sequence-edge: hsl(330 34% 44%);
   --clip-label-bg: hsl(222 25% 8% / 0.55);
   --clip-label-text: hsl(220 30% 96%);
   --lane-stripe: hsl(0 0% 100% / 0.025);
@@ -179,6 +183,10 @@
   --clip-audio-wave: hsl(168 50% 55%);
   --clip-caption-bg: hsl(262 26% 26%);
   --clip-caption-edge: hsl(262 34% 44%);
+  --clip-adjustment-bg: hsl(38 30% 24%);
+  --clip-adjustment-edge: hsl(38 46% 44%);
+  --clip-sequence-bg: hsl(330 22% 26%);
+  --clip-sequence-edge: hsl(330 30% 48%);
   --clip-label-bg: hsl(222 25% 8% / 0.55);
   --clip-label-text: hsl(220 30% 96%);
   --lane-stripe: hsl(0 0% 100% / 0.03);

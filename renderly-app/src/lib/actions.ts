@@ -7,7 +7,7 @@
 import { useEditorStore, type EditorStore } from "../store/editorStore";
 import { createNewProjectFlow, openExistingProjectFlow } from "./projectFlows";
 import { deleteSelected, splitSelectedAtPlayhead } from "../timeline/interactions";
-import { timelineDuration } from "../timeline/layout";
+import { activeTracks, containerDurationSecs, isNestedClip } from "./container";
 import { cycleTheme } from "./theme";
 import { resetTimelineThemeCache } from "../timeline/theme";
 
@@ -126,6 +126,42 @@ export const ACTIONS: Record<string, EditorAction> = {
     run: () => void deleteSelected(true),
     matchKey: (e, mod) => !mod && (e.key === "Delete" || e.key === "Backspace") && e.shiftKey,
   },
+  "edit.nest": {
+    id: "edit.nest",
+    label: "Nest clips",
+    shortcut: "Ctrl+G",
+    isEnabled: hasSelection,
+    run: (s) => void s.nestSelection(),
+    matchKey: (e, mod) => mod && !e.shiftKey && (e.key === "g" || e.key === "G"),
+  },
+  "edit.unnest": {
+    id: "edit.unnest",
+    label: "Unnest clip",
+    shortcut: "Ctrl+Shift+G",
+    isEnabled: (s) => {
+      if (!s.project || !s.selection) return false;
+      const clip = activeTracks(s.project, s.activeSequenceId)
+        .find((t) => t.id === s.selection!.trackId)
+        ?.clips.find((c) => c.id === s.selection!.clipId);
+      return !!clip && isNestedClip(s.project, clip);
+    },
+    run: (s) => void s.unnestClip(),
+    matchKey: (e, mod) => mod && e.shiftKey && (e.key === "g" || e.key === "G"),
+  },
+  "timeline.add-adjustment": {
+    id: "timeline.add-adjustment",
+    label: "Add adjustment layer",
+    isEnabled: hasProject,
+    run: (s) => void s.addAdjustmentLayerAtPlayhead(),
+  },
+  "timeline.exit-sequence": {
+    id: "timeline.exit-sequence",
+    label: "Close sequence",
+    shortcut: "Alt+↑",
+    isEnabled: (s) => s.sequencePath.length > 0,
+    run: (s) => void s.closeSequence(),
+    matchKey: (e, mod) => !mod && e.altKey && e.key === "ArrowUp",
+  },
   "edit.split": {
     id: "edit.split",
     label: "Split at playhead",
@@ -159,7 +195,7 @@ export const ACTIONS: Record<string, EditorAction> = {
     shortcut: "End",
     isEnabled: hasProject,
     run: (s) => {
-      if (s.project) void s.seekTo(timelineDuration(s.project));
+      if (s.project) void s.seekTo(Math.max(containerDurationSecs(s.project, s.activeSequenceId), 1));
     },
     matchKey: (e, mod) => !mod && e.key === "End",
   },

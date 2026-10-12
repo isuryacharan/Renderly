@@ -3,7 +3,8 @@ import { Sparkles, Trash2 } from "lucide-react";
 import { setClipEffects } from "../../lib/commands";
 import * as ipc from "../../lib/ipc";
 import type { ExtensionCatalog } from "../../lib/ipc";
-import type { EffectInstance, MediaClip, Track } from "../../lib/types";
+import type { AdjustmentClip, EffectInstance, MediaClip, Track } from "../../lib/types";
+import { activeTracks } from "../../lib/container";
 import { useEditorStore } from "../../store/editorStore";
 
 export const BUILTIN_VIDEO_EFFECTS: {
@@ -52,7 +53,8 @@ export function EffectsPanel() {
     void ipc.listExtensions().then(setCatalog).catch(() => setCatalog(null));
   }, [project, project?.wasm_plugin_paths?.join("|"), project?.asset_pack_paths?.join("|")]);
 
-  const track = project?.tracks.find((t) => t.id === selection?.trackId);
+  const activeSequenceId = useEditorStore((s) => s.activeSequenceId);
+  const track = activeTracks(project, activeSequenceId).find((t) => t.id === selection?.trackId);
   const clip = track?.clips.find((c) => c.id === selection?.clipId);
   const mediaClip =
     clip && clip.type !== "caption" ? (clip as MediaClip) : null;
@@ -88,9 +90,16 @@ export function EffectsPanel() {
         defaults: { intensity: 1 },
       })) ?? [];
 
+  // WASM frame plugins run on CPU pixels of a decoded source frame; an adjustment layer's
+  // input exists only on the GPU, so the engine rejects them there (schema v7) - don't offer them.
+  const isAdjustment = clip?.type === "adjustment";
   const catalogItems = isAudio
     ? wasmEffects
-    : [...BUILTIN_VIDEO_EFFECTS, ...packLuts, ...wasmEffects.filter((p) => p.id.startsWith("wasm:"))];
+    : [
+        ...BUILTIN_VIDEO_EFFECTS,
+        ...packLuts,
+        ...(isAdjustment ? [] : wasmEffects.filter((p) => p.id.startsWith("wasm:"))),
+      ];
 
   async function commit(next: EffectInstance[]) {
     await dispatch(setClipEffects(track!.id, mediaClip!.id, next));
@@ -148,7 +157,7 @@ export function EffectList({
   labelLookup = BUILTIN_VIDEO_EFFECTS,
 }: {
   track: Track;
-  clip: MediaClip;
+  clip: MediaClip | AdjustmentClip;
   effects: EffectInstance[];
   locked: boolean;
   onCommit: (next: EffectInstance[]) => Promise<void>;

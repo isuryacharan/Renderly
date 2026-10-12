@@ -14,6 +14,7 @@ import {
 } from "../../lib/previewMath";
 import type { ClipTransform, MediaClip } from "../../lib/types";
 import { clipDurationSecs } from "../../lib/types";
+import { activeTracks, findTrackAnywhere, updateClip } from "../../lib/container";
 import { useEditorStore } from "../../store/editorStore";
 
 type ContentBounds = { left: number; top: number; width: number; height: number };
@@ -42,9 +43,9 @@ function contentBoundsInHost(host: HTMLElement, aspect: number): ContentBounds |
 function activeVideoSelection(
   playhead: number,
 ): { trackId: string; clip: MediaClip; locked: boolean } | null {
-  const { project, selection } = useEditorStore.getState();
+  const { project, selection, activeSequenceId } = useEditorStore.getState();
   if (!project || !selection) return null;
-  const track = project.tracks.find((t) => t.id === selection.trackId);
+  const track = activeTracks(project, activeSequenceId).find((t) => t.id === selection.trackId);
   if (!track || track.kind !== "video" || track.hidden) return null;
   const clip = track.clips.find((c) => c.id === selection.clipId);
   if (!clip || clip.type !== "video" || !clip.enabled) return null;
@@ -57,19 +58,9 @@ function patchClipTransform(trackId: string, clipId: string, transform: ClipTran
   const project = useEditorStore.getState().project;
   if (!project) return;
   useEditorStore.setState({
-    project: {
-      ...project,
-      tracks: project.tracks.map((t) =>
-        t.id !== trackId
-          ? t
-          : {
-              ...t,
-              clips: t.clips.map((c) =>
-                c.id === clipId && c.type !== "caption" ? { ...c, transform } : c,
-              ),
-            },
-      ),
-    },
+    project: updateClip(project, trackId, clipId, (c) =>
+      c.type !== "caption" && c.type !== "adjustment" ? { ...c, transform } : c,
+    ),
   });
 }
 
@@ -159,9 +150,9 @@ export function PreviewHandlesOverlay({
         return;
       }
       const projectNow = useEditorStore.getState().project;
-      const clip = projectNow?.tracks
-        .find((t) => t.id === drag.trackId)
-        ?.clips.find((c) => c.id === drag.clipId);
+      const clip = (projectNow ? findTrackAnywhere(projectNow, drag.trackId) : undefined)?.clips.find(
+        (c) => c.id === drag.clipId,
+      );
       const t =
         clip && (clip.type === "video" || clip.type === "audio")
           ? resolveTransform(clip.transform)

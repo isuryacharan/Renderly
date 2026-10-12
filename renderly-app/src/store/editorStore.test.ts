@@ -12,6 +12,7 @@ const ipc = vi.hoisted(() => ({
   refreshFrame: vi.fn(),
   getProject: vi.fn(),
   setEditorSelection: vi.fn(),
+  setActiveSequence: vi.fn(),
   seek: vi.fn(),
   scrubAudio: vi.fn(),
   pause: vi.fn(),
@@ -59,6 +60,7 @@ beforeEach(() => {
   useEditorStore.setState(initial, true);
   ipc.refreshFrame.mockResolvedValue(undefined);
   ipc.setEditorSelection.mockResolvedValue(undefined);
+  ipc.setActiveSequence.mockResolvedValue(undefined);
   ipc.scrubAudio.mockResolvedValue(undefined);
   ipc.seek.mockResolvedValue(undefined);
   ipc.pause.mockResolvedValue(7);
@@ -683,5 +685,256 @@ describe("misc store state", () => {
     store().onWaveformReady({ media_id: "m1", peaks: [0.1, 0.9], bucket_secs: 0.5 } as never);
     expect(store().mediaAssets.m1.waveform).toEqual({ peaks: [0.1, 0.9], bucketSecs: 0.5 });
     expect(store().mediaAssets.m1.thumbnails?.stripUrl).toBe("s");
+  });
+});
+
+// ---- Schema v7: nested sequences (active container, nest/unnest, adjustment layers) ----
+
+describe("nested sequences (schema v7)", () => {
+  // Root: v1 [A 0..2], a1 [C]. Sequence "Intro" (s1): iv1 [IA 0..3], ia1 audio [IC 0..3].
+  // Sequence "Titles" (s2): tv1 [TA 0..1]. Intro contains a clip placing Titles (media m-s2).
+  function seqProject(): Project {
+    const p = makeProject([track("v1", "video", [A]), track("a1", "audio", [C])]);
+    p.media = [
+      { id: "m-s1", path: "", kind: "sequence", sequence_id: "s1", duration_secs: null, width: null, height: null, fps: null },
+      { id: "m-s2", path: "", kind: "sequence", sequence_id: "s2", duration_secs: null, width: null, height: null, fps: null },
+    ];
+    p.sequences = [
+      {
+        id: "s1",
+        name: "Intro",
+        tracks: [
+          track("iv1", "video", [videoClip("IA", 0, 0, 3), videoClip("IT", 3, 0, 1, { media_id: "m-s2" })]),
+          track("ia1", "audio", [{ ...videoClip("IC", 0, 0, 3), type: "audio" as const }]),
+        ],
+      },
+      { id: "s2", name: "Titles", tracks: [track("tv1", "video", [videoClip("TA", 0, 0, 1)])] },
+    ];
+    return p;
+  }
+
+  beforeEach(() => {
+    ipc.applyCommand.mockResolvedValue(ok());
+    ipc.applyCommands.mockResolvedValue(ok());
+  });
+
+  it("opens a sequence: active id + path set, selection and playhead reset, backend and seek informed", async () => {
+    load(seqProject(), { playhead: 5, selection: { trackId: "v1", clipId: "A" }, selections: [{ trackId: "v1", clipId: "A" }] });
+    await store().openSequence("s1");
+    expect(store().activeSequenceId).toBe("s1");
+    expect(store().sequencePath).toEqual(["s1"]);
+    expect(store().selection).toBeNull();
+    expect(store().playhead).toBe(0);
+    expect(ipc.setActiveSequence).toHaveBeenLastCalledWith("s1");
+    expect(ipc.seek).toHaveBeenLastCalledWith(0);
+  });
+
+  it("ignores unknown sequences and stops playback when switching container", async () => {
+    load(seqProject(), { playing: true });
+    await store().openSequence("nope");
+    expect(store().activeSequenceId).toBeNull();
+    expect(ipc.setActiveSequence).not.toHaveBeenCalled();
+    await store().openSequence("s1");
+    expect(store().playing).toBe(false);
+    expect(ipc.pause).toHaveBeenCalled();
+  });
+
+  it("supports nesting depth: open child, close to parent, then to root", async () => {
+    load(seqProject());
+    await store().openSequence("s1");
+    await store().openSequence("s2");
+    expect(store().sequencePath).toEqual(["s1", "s2"]);
+    expect(store().activeSequenceId).toBe("s2");
+    await store().closeSequence();
+    expect(store().activeSequenceId).toBe("s1");
+    expect(ipc.setActiveSequence).toHaveBeenLastCalledWith("s1");
+    await store().closeSequence();
+    expect(store().activeSequenceId).toBeNull();
+    expect(ipc.setActiveSequence).toHaveBeenLastCalledWith(null);
+    // Closing at the root is a no-op.
+    ipc.setActiveSequence.mockClear();
+    await store().closeSequence();
+    expect(ipc.setActiveSequence).not.toHaveBeenCalled();
+  });
+
+  it("opening from the media panel (fromRoot) starts a fresh path instead of nesting under the open sequence", async () => {
+    load(seqProject());
+    await store().openSequence("s1");
+    await store().openSequence("s2", { fromRoot: true });
+    expect(store().sequencePath).toEqual(["s2"]);
+    expect(store().activeSequenceId).toBe("s2");
+  });
+
+  it("breadcrumb navigation jumps to an ancestor or the root", async () => {
+    load(seqProject());
+    await store().openSequence("s1");
+    await store().openSequence("s2");
+    await store().navigateToSequence("s1");
+    expect(store().sequencePath).toEqual(["s1"]);
+    await store().openSequence("s2");
+    await store().navigateToSequence(null);
+    expect(store().sequencePath).toEqual([]);
+    expect(store().activeSequenceId).toBeNull();
+  });
+
+  it("falls back to the root when the open sequence disappears (delete / undo / external edit)", async () => {
+    load(seqProject());
+    await store().openSequence("s1");
+    store().select({ trackId: "iv1", clipId: "IA" });
+    const without = seqProject();
+    without.sequences = [];
+    useEditorStore.setState({ project: without });
+    expect(store().activeSequenceId).toBeNull();
+    expect(store().sequencePath).toEqual([]);
+    expect(store().selection).toBeNull();
+    expect(ipc.setActiveSequence).toHaveBeenLastCalledWith(null);
+  });
+
+  it("falls back to the nearest surviving ancestor when only the inner sequence disappears", async () => {
+    load(seqProject());
+    await store().openSequence("s1");
+    await store().openSequence("s2");
+    const p = seqProject();
+    p.sequences = p.sequences!.filter((s) => s.id !== "s2");
+    useEditorStore.setState({ project: p });
+    expect(store().sequencePath).toEqual(["s1"]);
+    expect(store().activeSequenceId).toBe("s1");
+  });
+
+  it("keeps the open sequence across an undo that leaves it in place, and drops to root when undo removes it", async () => {
+    load(seqProject());
+    await store().openSequence("s2");
+    ipc.undo.mockResolvedValueOnce({ can_undo: true, can_redo: true, revision: 3, patch: [{ op: "replace", path: "/name", value: "renamed" }] });
+    await store().undo();
+    expect(store().activeSequenceId).toBe("s2");
+    expect(store().project!.name).toBe("renamed");
+    ipc.undo.mockResolvedValueOnce({ can_undo: false, can_redo: true, revision: 4, patch: [{ op: "remove", path: "/sequences/1" }] });
+    await store().undo();
+    expect(store().activeSequenceId).toBeNull();
+    expect(store().project!.sequences).toHaveLength(1);
+  });
+
+  it("creates tracks inside the open sequence (ensureTrack and drop-to-new-track pass sequence_id)", async () => {
+    load(seqProject());
+    await store().openSequence("s2");
+    // No audio track in Titles: ensureTrack must target the sequence, not the root's a1.
+    ipc.applyCommand.mockImplementationOnce(async () => ({
+      revision: 2,
+      patch: [{ op: "add", path: "/sequences/1/tracks/-", value: track("new-a", "audio") }],
+      outcome: "Applied",
+    }));
+    const t = await store().ensureTrack("audio", "Audio 1");
+    expect(t.id).toBe("new-a");
+    expect(ipc.applyCommand.mock.calls[0][0]).toMatchObject({ command: "AddTrack", kind: "audio", sequence_id: "s2" });
+
+    ipc.applyCommands.mockClear();
+    store().setDragGhost({ mediaId: "m-s2", kind: "video", durationSecs: 2, positionSecs: 1, trackIndex: null, row: -1, valid: true });
+    await store().dropMediaOnTimeline();
+    const batch = ipc.applyCommands.mock.calls[0][0];
+    expect(batch[0]).toMatchObject({ command: "AddTrack", kind: "video", sequence_id: "s2" });
+    expect(batch[1]).toMatchObject({ command: "AddClip", media_id: "m-s2", position_secs: 1 });
+  });
+
+  it("drops resolve track indices against the open container", async () => {
+    load(seqProject());
+    await store().openSequence("s1");
+    // Index 1 of Intro is its audio lane `ia1`; of the root it would be `a1`... use index 0 -> iv1.
+    store().setDragGhost({ mediaId: "m-s2", kind: "sequence", durationSecs: 1, positionSecs: 4, trackIndex: 0, row: 0, valid: true });
+    await store().dropMediaOnTimeline();
+    expect(ipc.applyCommand.mock.calls[0][0]).toMatchObject({ command: "AddClip", track_id: "iv1" });
+  });
+
+  it("a sequence dropped below every lane creates an audio track; empty sequences are refused", async () => {
+    load(seqProject());
+    store().setDragGhost({ mediaId: "m-s1", kind: "sequence", durationSecs: 3, positionSecs: 0, trackIndex: null, row: 2, valid: true });
+    await store().dropMediaOnTimeline();
+    expect(ipc.applyCommands.mock.calls[0][0][0]).toMatchObject({ command: "AddTrack", kind: "audio" });
+    ipc.applyCommands.mockClear();
+    store().setDragGhost({ mediaId: "m-s1", kind: "sequence", durationSecs: 0, positionSecs: 0, trackIndex: null, row: -1, valid: true });
+    await store().dropMediaOnTimeline();
+    expect(ipc.applyCommands).not.toHaveBeenCalled();
+    expect(lastToast()?.kind).toBe("error");
+  });
+
+  it("copy/paste and duplicate act on the open container's tracks", async () => {
+    load(seqProject());
+    await store().openSequence("s1");
+    store().setSelections([{ trackId: "iv1", clipId: "IA" }]);
+    store().copySelection();
+    expect(store().clipboard!.items[0]!.clip.id).toBe("IA");
+    store().setPlayheadLocal(5);
+    await store().pasteAtPlayhead();
+    // Pasted onto Intro's video lane, not the root's v1.
+    expect(ipc.applyCommand.mock.calls[0][0]).toMatchObject({ command: "AddClip", track_id: "iv1", position_secs: 5 });
+  });
+
+  it("nestSelection dispatches NestClips with the selected clips", async () => {
+    load();
+    store().setSelections([{ trackId: "v1", clipId: "A" }, { trackId: "a1", clipId: "C" }]);
+    await store().nestSelection();
+    expect(ipc.applyCommand.mock.calls[0][0]).toMatchObject({
+      command: "NestClips",
+      clips: [{ track_id: "v1", clip_id: "A" }, { track_id: "a1", clip_id: "C" }],
+      name: "Nested 1",
+    });
+    expect(store().selections).toEqual([]);
+    expect(lastToast()?.kind).toBe("success");
+  });
+
+  it("nestSelection refuses locked tracks without dispatching", async () => {
+    const p = sample();
+    p.tracks[0] = { ...p.tracks[0]!, locked: true };
+    load(p);
+    store().setSelections([{ trackId: "v1", clipId: "A" }]);
+    await store().nestSelection();
+    expect(ipc.applyCommand).not.toHaveBeenCalled();
+  });
+
+  it("unnestClip dispatches UnnestClip and surfaces the engine's refusal as an error toast", async () => {
+    load(seqProject());
+    store().select({ trackId: "v1", clipId: "A" });
+    ipc.applyCommand.mockRejectedValueOnce("cannot unnest: the clip is trimmed");
+    await store().unnestClip();
+    expect(ipc.applyCommand.mock.calls[0][0]).toEqual({ command: "UnnestClip", track_id: "v1", clip_id: "A" });
+    expect(lastToast()).toMatchObject({ kind: "error" });
+    expect(lastToast()!.message).toContain("cannot unnest: the clip is trimmed");
+    // Selection stays when the command failed.
+    expect(store().selection).toEqual({ trackId: "v1", clipId: "A" });
+  });
+
+  it("addAdjustmentLayerAtPlayhead adds a 5s layer at the playhead on the selected video track and selects it", async () => {
+    load();
+    store().select({ trackId: "v1", clipId: "A" });
+    store().setPlayheadLocal(6);
+    ipc.applyCommand.mockImplementationOnce(async () => ({
+      revision: 2,
+      patch: [{ op: "add", path: "/tracks/0/clips/-", value: { type: "adjustment", id: "ADJ", position_secs: 6, duration_secs: 5, enabled: true } }],
+      outcome: "Applied",
+    }));
+    await store().addAdjustmentLayerAtPlayhead();
+    expect(ipc.applyCommand.mock.calls[0][0]).toEqual({
+      command: "AddAdjustmentLayer",
+      track_id: "v1",
+      position_secs: 6,
+      duration_secs: 5,
+    });
+    expect(store().selection).toEqual({ trackId: "v1", clipId: "ADJ" });
+  });
+
+  it("addAdjustmentLayerAtPlayhead surfaces the overlap error and creates a track in an empty sequence", async () => {
+    load(seqProject());
+    store().setPlayheadLocal(1);
+    ipc.applyCommand.mockRejectedValueOnce("clip range [1, 6) overlaps an existing clip on track v1");
+    await store().addAdjustmentLayerAtPlayhead("v1");
+    expect(lastToast()!.message).toContain("overlaps");
+
+    const p = seqProject();
+    p.sequences![1]!.tracks = [];
+    load(p);
+    await store().openSequence("s2");
+    await store().addAdjustmentLayerAtPlayhead(undefined, 2);
+    const batch = ipc.applyCommands.mock.calls[0][0];
+    expect(batch[0]).toMatchObject({ command: "AddTrack", kind: "video", sequence_id: "s2" });
+    expect(batch[1]).toMatchObject({ command: "AddAdjustmentLayer", track_id: batch[0].id, duration_secs: 2 });
   });
 });

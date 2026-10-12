@@ -16,9 +16,10 @@ import {
   type MaskBoundsUv,
   type MaskHandleKind,
 } from "../../lib/maskMath";
-import type { ClipMask, MediaClip } from "../../lib/types";
+import type { AdjustmentClip, ClipMask, MediaClip } from "../../lib/types";
 import { clipDurationSecs } from "../../lib/types";
 import { resolveTransform } from "../../lib/previewMath";
+import { activeTracks, findTrackAnywhere, updateClip } from "../../lib/container";
 import { useEditorStore } from "../../store/editorStore";
 
 type ContentBounds = { left: number; top: number; width: number; height: number };
@@ -46,13 +47,14 @@ function contentBoundsInHost(host: HTMLElement, aspect: number): ContentBounds |
 
 function activeVideoSelection(
   playhead: number,
-): { trackId: string; clip: MediaClip; locked: boolean } | null {
-  const { project, selection } = useEditorStore.getState();
+): { trackId: string; clip: MediaClip | AdjustmentClip; locked: boolean } | null {
+  const { project, selection, activeSequenceId } = useEditorStore.getState();
   if (!project || !selection) return null;
-  const track = project.tracks.find((t) => t.id === selection.trackId);
+  const track = activeTracks(project, activeSequenceId).find((t) => t.id === selection.trackId);
   if (!track || track.kind !== "video" || track.hidden) return null;
   const clip = track.clips.find((c) => c.id === selection.clipId);
-  if (!clip || clip.type !== "video" || !clip.enabled) return null;
+  // Adjustment layers take masks too (their UVs are output-frame: no cover-fit or transform).
+  if (!clip || (clip.type !== "video" && clip.type !== "adjustment") || !clip.enabled) return null;
   const end = clip.position_secs + clipDurationSecs(clip);
   if (playhead < clip.position_secs || playhead >= end) return null;
   return { trackId: track.id, clip, locked: track.locked };
@@ -62,19 +64,7 @@ function patchClipMask(trackId: string, clipId: string, mask: ClipMask | null) {
   const project = useEditorStore.getState().project;
   if (!project) return;
   useEditorStore.setState({
-    project: {
-      ...project,
-      tracks: project.tracks.map((t) =>
-        t.id !== trackId
-          ? t
-          : {
-              ...t,
-              clips: t.clips.map((c) =>
-                c.id === clipId && c.type !== "caption" ? { ...c, mask } : c,
-              ),
-            },
-      ),
-    },
+    project: updateClip(project, trackId, clipId, (c) => (c.type !== "caption" ? { ...c, mask } : c)),
   });
 }
 
@@ -129,7 +119,8 @@ export function PreviewMaskOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- selection/project drive refresh
   }, [playhead, playing, project, selection, toolMode]);
 
-  const media = project?.media.find((m) => m.id === active?.clip.media_id);
+  const activeMediaClip = active?.clip.type === "video" ? active.clip : null;
+  const media = project?.media.find((m) => m.id === activeMediaClip?.media_id);
   const outW = project?.settings.width ?? 1080;
   const outH = project?.settings.height ?? 1920;
   const layerW = media?.width ?? outW;
@@ -138,7 +129,7 @@ export function PreviewMaskOverlay({
     () => coverUv(layerW, layerH, outW, outH),
     [layerW, layerH, outW, outH],
   );
-  const transform = resolveTransform(active?.clip.transform);
+  const transform = resolveTransform(activeMediaClip?.transform);
   const mask = active?.clip.mask ?? null;
   const shapeOk = isShapeMask(mask);
   const maskBounds = shapeOk ? shapeBounds(mask.kind) : null;
@@ -195,9 +186,9 @@ export function PreviewMaskOverlay({
       dragRef.current = null;
       setDragging(false);
       const projectNow = useEditorStore.getState().project;
-      const clip = projectNow?.tracks
-        .find((t) => t.id === drag.trackId)
-        ?.clips.find((c) => c.id === drag.clipId);
+      const clip = (projectNow ? findTrackAnywhere(projectNow, drag.trackId) : undefined)?.clips.find(
+        (c) => c.id === drag.clipId,
+      );
       const committed =
         clip && clip.type !== "caption" ? (clip.mask ?? null) : null;
       // Ignore zero-size create drags

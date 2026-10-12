@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useEditorStore } from "../../store/editorStore";
+import { selectActiveView, sequenceOfMedia, trackAcceptsMedia } from "../../lib/container";
 import { renderTimeline, renderTimelineOverlay } from "../../timeline/renderer";
 import { useTimelineInteractions } from "../../timeline/interactions";
 import { readMediaDrag } from "../../lib/dragMedia";
@@ -11,7 +12,7 @@ import { snapTime } from "../../timeline/snap";
 function currentRenderState() {
   const s = useEditorStore.getState();
   return {
-    project: s.project,
+    project: selectActiveView(s),
     playheadSecs: s.playhead,
     selection: s.selection,
     selections: s.selections,
@@ -32,14 +33,16 @@ function currentOverlayState() {
     pxPerSec: s.pxPerSec,
     scrollX: s.scrollX,
     snapGuideSecs: s.snapGuideSecs,
-    hasProject: !!s.project && s.project.tracks.length > 0,
+    hasProject: (selectActiveView(s)?.tracks.length ?? 0) > 0,
   };
 }
 
 export function TimelineCanvas() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
-  const project = useEditorStore((s) => s.project);
+  // The open container's view of the project (lib/container.ts): `tracks` are the active
+  // sequence's (or the root's), so geometry/render/snap helpers need no container awareness.
+  const project = useEditorStore(selectActiveView);
   const playhead = useEditorStore((s) => s.playhead);
   const selection = useEditorStore((s) => s.selection);
   const selections = useEditorStore((s) => s.selections);
@@ -58,6 +61,7 @@ export function TimelineCanvas() {
   const dispatch = useEditorStore((s) => s.dispatch);
   const dropMediaOnTimeline = useEditorStore((s) => s.dropMediaOnTimeline);
   const openContextMenu = useEditorStore((s) => s.openContextMenu);
+  const openSequence = useEditorStore((s) => s.openSequence);
 
   useTimelineInteractions(canvasRef);
 
@@ -156,13 +160,13 @@ export function TimelineCanvas() {
           const positionSecs = snapTime(rawSecs, project, playhead, pxPerSec, snapEnabled);
           const target = dropTargetAtY(project, rect.height, y, scrollY);
           const targetTrack = target.trackIndex != null ? project.tracks[target.trackIndex] : undefined;
-          const wantsKind = payload.kind === "audio" ? "audio" : "video";
           // Locked tracks are GUI-honored only (core deliberately still accepts the
           // resulting AddClip — see `Track::locked`'s doc comment) — the ghost must flag
           // this as invalid itself, matching the same check clip-drag cross-track moves
           // already apply in `interactions.ts`, or a drop would look accepted (green
           // ghost) and then just silently land on the locked track anyway.
-          const valid = !targetTrack || (targetTrack.kind === wantsKind && !targetTrack.locked);
+          const valid =
+            !targetTrack || (trackAcceptsMedia(targetTrack.kind, payload.kind) && !targetTrack.locked);
 
           setDragGhost({
             mediaId: payload.mediaId,
@@ -209,6 +213,25 @@ export function TimelineCanvas() {
           e.preventDefault();
           setTransitionDropTarget(null);
           void dropMediaOnTimeline();
+        }}
+        onDoubleClick={(e) => {
+          // Double-click a nested clip to open its sequence.
+          const s = useEditorStore.getState();
+          const view = selectActiveView(s);
+          if (!view || !s.project) return;
+          const rect = e.currentTarget.getBoundingClientRect();
+          const hit = hitTestClip(
+            view,
+            e.clientX - rect.left,
+            e.clientY - rect.top,
+            rect.height,
+            s.pxPerSec,
+            s.scrollX,
+            s.scrollY,
+          );
+          if (!hit || (hit.clip.type !== "video" && hit.clip.type !== "audio")) return;
+          const seq = sequenceOfMedia(s.project, hit.clip.media_id);
+          if (seq) void openSequence(seq.id);
         }}
         onContextMenu={(e) => {
           e.preventDefault();

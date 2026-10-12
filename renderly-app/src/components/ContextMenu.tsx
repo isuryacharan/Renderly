@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useEditorStore } from "../store/editorStore";
+import { activeTracks, isNestedClip, sequenceOfMedia } from "../lib/container";
 import { setClipEnabled, splitClip, trackMotion, stabilizeClip, autoReframeClip } from "../lib/commands";
 import { invokeAction } from "../lib/actions";
 
@@ -10,6 +11,9 @@ export function ContextMenu() {
   const closeContextMenu = useEditorStore((s) => s.closeContextMenu);
   const clipboard = useEditorStore((s) => s.clipboard);
   const toast = useEditorStore((s) => s.toast);
+  const activeSequenceId = useEditorStore((s) => s.activeSequenceId);
+  const selections = useEditorStore((s) => s.selections);
+  const openSequence = useEditorStore((s) => s.openSequence);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
 
@@ -47,10 +51,24 @@ export function ContextMenu() {
 
   if (!menu) return null;
 
-  const track = project?.tracks.find((t) => t.id === menu.trackId);
+  const track = activeTracks(project, activeSequenceId).find((t) => t.id === menu.trackId);
   const clip = track?.clips.find((c) => c.id === menu.clipId);
   const locked = track?.locked ?? false;
-  const isMedia = clip?.type === "video" || clip?.type === "audio";
+  // Adjustment layers also take enable/disable (SetClipEnabled).
+  const canToggleEnabled = !!clip && clip.type !== "caption";
+  const nestedSequence =
+    project && clip && isNestedClip(project, clip) && (clip.type === "video" || clip.type === "audio")
+      ? sequenceOfMedia(project, clip.media_id)
+      : undefined;
+  // "Nest clips" works on the whole multi-selection (all clips must share one container,
+  // which is always the open one); captions cannot be nested.
+  const multi = selections.length > 1 && selections.some((s) => s.clipId === menu.clipId);
+  const nestable = (multi ? selections : [{ trackId: menu.trackId, clipId: menu.clipId }]).every((s) => {
+    const c = activeTracks(project, activeSequenceId)
+      .find((t) => t.id === s.trackId)
+      ?.clips.find((x) => x.id === s.clipId);
+    return !!c && c.type !== "caption";
+  });
   const isVideo = clip?.type === "video";
   const targetAspect =
     project && project.settings.height > 0
@@ -94,7 +112,7 @@ export function ContextMenu() {
       >
         Paste
       </button>
-      {isMedia && clip && (
+      {canToggleEnabled && clip && (
         <button
           type="button"
           disabled={locked}
@@ -102,6 +120,30 @@ export function ContextMenu() {
         >
           {clip.enabled ? "Disable clip" : "Enable clip"}
         </button>
+      )}
+      <div className="context-menu-divider" />
+      <button
+        type="button"
+        disabled={locked || !nestable}
+        onClick={() => run(() => invokeAction("edit.nest"))}
+      >
+        {multi ? `Nest ${selections.length} clips` : "Nest clip"}
+        <span className="context-menu-hint">Ctrl+G</span>
+      </button>
+      {nestedSequence && (
+        <>
+          <button type="button" onClick={() => run(() => void openSequence(nestedSequence.id))}>
+            Open sequence
+          </button>
+          <button
+            type="button"
+            disabled={locked}
+            onClick={() => run(() => invokeAction("edit.unnest"))}
+          >
+            Unnest
+            <span className="context-menu-hint">Ctrl+Shift+G</span>
+          </button>
+        </>
       )}
       {isVideo && (
         <>

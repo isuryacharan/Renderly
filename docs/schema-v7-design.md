@@ -1,9 +1,10 @@
 # Schema v7 design — adjustment layers and nested sequences
 
-Status: **implemented (engine); app UI pending.** The normative parts live in
+Status: **implemented** (engine in phase A, app UI in phase B). The normative parts live in
 [project-schema.md](project-schema.md) and [command-api.md](command-api.md); this file stays
-as the rationale. The "App" section below is still a plan (phase B). "Implementation notes"
-at the end lists where the engine deliberately differs from or extends this design.
+as the rationale. "Implementation notes (engine, phase A)" and "Implementation notes (app,
+phase B)" at the end list where the shipped code deliberately differs from or extends this
+design.
 
 v7 adds two editing features that v6 cannot express:
 
@@ -248,16 +249,28 @@ Commands that analyse decoded frames (`TrackMotion`, `StabilizeClip`, `AutoRefra
 
 ## App
 
+What the app does (implementation detail in "Implementation notes (app, phase B)"):
+
 - The timeline shows one container at a time. Double-clicking a nested clip opens its
-  sequence; a breadcrumb above the ruler returns to the parent. The store gains
-  `activeSequenceId` (null = root); the timeline, playhead and snapping read tracks through
-  one selector.
-- Sequences are listed in the media panel alongside imported files and can be dragged to
-  the timeline like any media.
-- "Nest clips" on the multi-selection context menu; "Add adjustment layer" on the track
-  header menu. Adjustment clips get an inspector with the effect stack, opacity and mask.
-- The preview follows the open sequence: while a sequence is open it renders that sequence
-  at the local playhead.
+  sequence; a breadcrumb above the ruler (`Project > Intro > Titles`, any nesting depth)
+  returns to an ancestor. The store holds `activeSequenceId` (null = root) plus the opened
+  path; the timeline, track headers, playhead, snapping, selection, clipboard, drop targets
+  and every container-scoped dispatch read tracks through one selector (`activeTracks`).
+  History is global, so undo/redo keep working across containers; if the open sequence
+  disappears the editor falls back to the nearest surviving ancestor (the root).
+- Sequences are listed in the media panel alongside imported files (own icon, a "Sequences"
+  filter chip, hover actions: open, rename, settings, delete) and can be dragged to the
+  timeline like any media - onto a video lane for a picture clip, an audio lane for its mix.
+  "New sequence" creates an empty one.
+- "Nest clips" (multi-selection context menu, `Ctrl+G`) and "Unnest" (nested-clip context
+  menu, `Ctrl+Shift+G`); engine refusals (`CannotUnnest`, `SequenceInUse`, overlap) surface
+  as toasts. "Add adjustment layer" is on the video track header menu.
+- Adjustment clips render as a distinct amber block with trim handles (a trim commits one
+  `SetAdjustmentLayer`) and get an inspector: timing, opacity (+ opacity keyframes), the same
+  effect stack and mask sections the media-clip inspector uses, enable toggle. WASM plugin
+  effects are not offered for them.
+- The preview follows the open sequence: while one is open it renders that sequence at the
+  local playhead.
 
 ## Tests
 
@@ -339,3 +352,46 @@ Where the shipped engine extends or differs from the design above (everything el
   (by instance key) the frame needs, with source time and playback rate measured from the
   same Rust evaluation; `webviewPreviewEngine.ts` only manages `<video>` element state for
   them. The Canvas2D fallback does not render sequences or adjustment layers.
+
+## Implementation notes (app, phase B)
+
+- **One container selector.** `lib/container.ts` owns the rule "the timeline is the open
+  container": `activeTracks(project, activeSequenceId)` (root fallback for an unknown id),
+  `containerView(project, id)` (the project with `tracks` swapped, cached per project/id so it
+  is referentially stable - used by the geometry/render/snap helpers that are written against
+  `project.tracks`), `replaceActiveTracks` / `updateClip` (write an optimistic drag preview back
+  into the right container), plus breadcrumb/path and adjustment-trim helpers. Audit decision per
+  `project.tracks` use: timeline, track headers, scrollbars, snapping, drag/drop, clipboard,
+  selection pruning, inspector and left-panel lookups, preview overlays, transport/duration and
+  the preview engine's element management read the **active container**;
+  `ensureStarterTracks` (a fresh project) and the project inspector's counters stay on the
+  **root**. Export, `Project::timeline_duration` and the bridge are unchanged (root).
+- **State.** `activeSequenceId` + `sequencePath` (the opened chain; a sequence can be placed in
+  many parents, so the path cannot be derived from the project). `openSequence(id)` appends,
+  `openSequence(id, { fromRoot: true })` (media panel) starts a fresh path,
+  `closeSequence()` / `navigateToSequence(id | null)` walk back. Switching container stops
+  playback, clears selection and rewinds the playhead/scroll. A store subscription keeps
+  `sequencePath` valid whenever the project changes (undo, delete, external edit), so no code
+  path can leave the editor in a container that no longer exists.
+- **Preview.** `Project::with_sequence_as_root(id)` (core) returns the project with the
+  sequence's tracks as its root timeline. `WasmCompositor::set_active_sequence(id?)` keeps the
+  host's project and renders that view, so `render`, `active_media_layers` (instance keys,
+  rates) and the matte/LUT sync all follow the open sequence with no change to the shared
+  evaluation code; `webviewPreviewEngine.ts` reads the same container through `containerView`
+  to decide which `<video>` elements to seek. The output stays at the **project** resolution
+  while editing (a sequence with its own size is previewed on the project canvas; it is
+  placed at its own size when nested). Captions are root-only, so none render inside a
+  sequence.
+- **Native playback / scrub audio.** The `set_active_sequence` Tauri command records the open
+  sequence; `AppState::playback_project()` hands playback, `refresh_frame`, scrub audio and the
+  bridge `play` the same `with_sequence_as_root` view, so audio for an open sequence plays that
+  sequence's mix (including its nested sequences and per-container ducking). Known gap: a
+  sequence's own width/height is not applied to the preview canvas.
+- **Nest / unnest / adjustment from the UI** go through `NestClips`, `UnnestClip`,
+  `AddAdjustmentLayer` (default 5 s at the playhead on the selected, else topmost, video track;
+  a container with no video track gets one created in the same batch), `SetAdjustmentLayer`
+  (edge drags) - nothing mutates project state outside the existing optimistic drag patterns.
+- **Harness.** `dev/tauriMock.ts` implements the v7 commands (including `AddTrack.sequence_id`,
+  errors for overlap / `SequenceInUse` / `CannotUnnest` / cycles, `SplitClip`, and a
+  snapshot-based undo/redo), and the sample project contains the "Intro" sequence (placed on the
+  "Nested" track) and an adjustment layer on the "Adjustments" track.

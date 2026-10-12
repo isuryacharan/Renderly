@@ -57,6 +57,45 @@ item pass/fail. Failures that crash the app or freeze the window are blockers.
       canvas and clickable; resize realigns the canvas immediately (plain DOM, no
       OS-composited surface to lag)
 
+## Nested sequences & adjustment layers (schema v7)
+
+Use the browser harness sample project (it ships an "Intro" sequence on the "Nested" track and
+an adjustment layer on "Adjustments") or any project with a few clips.
+
+- [ ] **Open / breadcrumb:** double-click the nested clip -> a breadcrumb `Project > Intro`
+      appears above the ruler, the timeline shows only that sequence's tracks, the transport
+      duration is the sequence's, the preview shows the sequence at the local playhead (an
+      adjustment layer inside it is visible). Click the project crumb -> back to the root.
+- [ ] **Depth:** open a sequence, double-click a nested clip inside it -> breadcrumb grows;
+      clicking the middle crumb truncates it.
+- [ ] **Undo across containers:** inside a sequence add a clip / adjustment layer, `Ctrl+Z` ->
+      it disappears and the sequence stays open. Undo a "create sequence" while that sequence
+      is open -> the editor returns to the root (no blank timeline).
+- [ ] **Edits inside:** drag a clip from the media panel into the open sequence, add a track
+      (no "Caption track" offered inside a sequence), split / trim / move / copy-paste there;
+      none of it touches the root timeline.
+- [ ] **Nest:** select 2+ clips (Shift-click), right-click -> "Nest N clips" (or `Ctrl+G`) ->
+      they are replaced by one clip, a new sequence appears in the media panel, one undo
+      restores everything.
+- [ ] **Unnest:** right-click the nested clip -> "Unnest" (`Ctrl+Shift+G`) -> the inner clips
+      return on new tracks. Trim or change the speed of the nested clip first -> a
+      "cannot unnest" error toast, nothing changes.
+- [ ] **Media panel:** "Sequences" chip filters; the "New sequence" button adds an empty one;
+      rename (pencil, Enter commits / Esc cancels); settings dialog sets width/height or
+      inherits (empty field); delete a sequence that is placed -> "still used by a clip"
+      toast; delete an unused one -> gone. Drag a sequence onto a video lane (picture clip)
+      and onto an audio lane (audio clip); an empty sequence is refused with a toast.
+- [ ] **Adjustment layer:** track-header menu (...) on a video track -> "Add adjustment layer"
+      adds a 5 s amber block at the playhead and selects it; where a clip already sits at the
+      playhead an overlap toast appears. Drag its edges (trim handles) and body; undo each.
+- [ ] **Adjustment inspector:** timing fields, opacity slider (preview mix changes),
+      "Add effects" -> Effects tab offers built-in effects and pack LUTs but no WASM plugins;
+      stack shows in the inspector; opacity keyframe; mask presets (Mask tool M draws
+      full-frame UVs); the "On" toggle disables it in the preview.
+- [ ] **Preview vs export:** export a project with a nested sequence and an adjustment layer
+      and compare a frame against the preview.
+- [ ] **Audio:** with a sequence open, Play / scrub plays that sequence's mix (not the root's).
+
 ## Shortcuts quick check
 
 | Key | Action |
@@ -68,5 +107,7 @@ item pass/fail. Failures that crash the app or freeze the window are blockers.
 | Ctrl+Z / Y | Undo / redo |
 | Ctrl+S | Save |
 | Ctrl+C / V / D | Copy / paste / duplicate |
+| Ctrl+G / Ctrl+Shift+G | Nest selection / unnest clip |
+| Alt+Up | Close the open sequence |
 | Delete | Delete selection |
 | Esc | Exit fullscreen preview / close dialog |

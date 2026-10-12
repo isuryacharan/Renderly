@@ -67,7 +67,7 @@ use renderly_core::compose::{
 };
 use renderly_core::mask::{luma_from_rgba, project_matte_requests};
 use renderly_core::packs::{parse_cube_text, referenced_pack_luts, CubeLut, LoadedPack};
-use renderly_core::project::{ClipMask, Project};
+use renderly_core::project::{ClipMask, Id, Project};
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, HtmlImageElement, HtmlVideoElement};
 
@@ -303,6 +303,15 @@ pub struct WasmCompositor {
     surface_config: wgpu::SurfaceConfiguration,
     canvas: HtmlCanvasElement,
     compositor: Option<Compositor>,
+    /// The project as the host supplied it (always the root timeline).
+    root_project: Option<Project>,
+    /// Sequence the host has open in its timeline, if any. While set, `project` is
+    /// `root_project` with that sequence's tracks as its root timeline, so `render` /
+    /// `active_media_layers` / `required_assets` show the open container with no change to
+    /// the shared evaluation code. Cleared by `set_active_sequence(None)`; an id that no
+    /// longer exists in the project falls back to the root.
+    active_sequence: Option<Id>,
+    /// What `render` evaluates: `root_project`, or its open-sequence view.
     project: Option<Project>,
     /// matte cache key -> (width, height, luma8) registered by the host; re-uploaded into a
     /// rebuilt `Compositor` (its matte cache starts empty).
@@ -448,6 +457,8 @@ impl WasmCompositor {
             surface_config,
             canvas,
             compositor: None,
+            root_project: None,
+            active_sequence: None,
             project: None,
             mattes: HashMap::new(),
             pack_luts: BTreeMap::new(),
@@ -486,7 +497,25 @@ impl WasmCompositor {
                 compositor.clear_pack_lut_cache();
             }
         }
-        self.project = Some(project);
+        self.root_project = Some(project);
+        self.refresh_view();
+        Ok(())
+    }
+
+    /// Open a nested sequence for preview (`Some(uuid)`) or return to the root timeline
+    /// (`None`). Times passed to `render` / `active_media_layers` afterwards are local to
+    /// that sequence. An unparsable id is an error; an id the project does not contain
+    /// falls back to the root so a stale id (undo, delete) never blanks the preview. The
+    /// output stays at the project's resolution even if the sequence has its own size.
+    pub fn set_active_sequence(&mut self, sequence_id: Option<String>) -> Result<(), JsValue> {
+        self.active_sequence = match sequence_id {
+            None => None,
+            Some(s) => Some(
+                s.parse::<Id>()
+                    .map_err(|e| js_err("set_active_sequence parse", e))?,
+            ),
+        };
+        self.refresh_view();
         Ok(())
     }
 
@@ -794,6 +823,15 @@ impl WasmCompositor {
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(frame);
         Ok(())
+    }
+
+    /// Recompute `project` from `root_project` and `active_sequence`.
+    fn refresh_view(&mut self) {
+        self.project = self.root_project.as_ref().map(|root| {
+            self.active_sequence
+                .and_then(|id| root.with_sequence_as_root(id))
+                .unwrap_or_else(|| root.clone())
+        });
     }
 
     fn rebuild_packs(&mut self) {

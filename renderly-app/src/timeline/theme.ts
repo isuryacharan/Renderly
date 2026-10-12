@@ -21,6 +21,10 @@ export interface TimelineTheme {
   clipAudioWave: string;
   clipCaptionBg: string;
   clipCaptionEdge: string;
+  clipAdjustmentBg: string;
+  clipAdjustmentEdge: string;
+  clipSequenceBg: string;
+  clipSequenceEdge: string;
   clipLabelBg: string;
   clipLabelText: string;
   laneStripe: string;
@@ -61,6 +65,10 @@ export function getTimelineTheme(): TimelineTheme {
     clipAudioWave: cssVar(styles, "--clip-audio-wave"),
     clipCaptionBg: cssVar(styles, "--clip-caption-bg"),
     clipCaptionEdge: cssVar(styles, "--clip-caption-edge"),
+    clipAdjustmentBg: cssVar(styles, "--clip-adjustment-bg"),
+    clipAdjustmentEdge: cssVar(styles, "--clip-adjustment-edge"),
+    clipSequenceBg: cssVar(styles, "--clip-sequence-bg"),
+    clipSequenceEdge: cssVar(styles, "--clip-sequence-edge"),
     clipLabelBg: cssVar(styles, "--clip-label-bg"),
     clipLabelText: cssVar(styles, "--clip-label-text"),
     laneStripe: cssVar(styles, "--lane-stripe"),

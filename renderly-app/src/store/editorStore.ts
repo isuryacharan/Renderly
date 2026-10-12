@@ -1,11 +1,27 @@
 import { create } from "zustand";
 import { applyPatch, type Operation } from "fast-json-patch";
 import * as ipc from "../lib/ipc";
-import { addAdjustmentLayer, addCaption, addClip, addTrack } from "../lib/commands";
+import {
+  addAdjustmentLayer,
+  addCaption,
+  addClip,
+  addTrack,
+  nestClips,
+  unnestClip,
+} from "../lib/commands";
 import { timelineDuration, TRACK_LABEL_W, maxScrollX, maxScrollY, clipLeft } from "../timeline/layout";
+import {
+  activeTracks,
+  containerView,
+  newTrackKindForDrop,
+  normalizeSequencePath,
+  pathAfterOpen,
+  pathForBreadcrumb,
+} from "../lib/container";
 import {
   clipDurationSecs,
   mediaDurationSecs,
+  sequenceMediaName,
   type Clip,
   type MediaKind,
   type Project,
@@ -103,7 +119,7 @@ export interface DragGhost {
   kind: MediaKind;
   durationSecs: number;
   positionSecs: number;
-  /// Index into `project.tracks` to drop into, or `null` to auto-create a new track (drop
+  /// Index into the open container's tracks (`activeTracks`) to drop into, or `null` to auto-create a new track (drop
   /// above the topmost overlay lane or below the bottommost lane — see
   /// `layout.dropTargetAtY`).
   trackIndex: number | null;
@@ -130,6 +146,15 @@ export interface EditorStore {
   clientRevision: number;
   playhead: number;
   playing: boolean;
+  /**
+   * Sequence open in the timeline (schema v7); null = the root timeline. Read tracks through
+   * `activeTracks(project, activeSequenceId)` / `selectActiveView` (lib/container.ts), never
+   * `project.tracks`, for anything that edits or shows "the timeline". Always the last entry
+   * of `sequencePath`.
+   */
+  activeSequenceId: string | null;
+  /** Sequences opened from the root, outermost first — the breadcrumb trail. */
+  sequencePath: string[];
   /** Primary (focused) selection — inspector / trim handles. */
   selection: Selection | null;
   /** All selected clips including primary (`selections[0]` === selection when non-empty). */
@@ -181,6 +206,17 @@ export interface EditorStore {
   select(sel: Selection | null): void;
   toggleSelect(sel: Selection): void;
   setSelections(sels: Selection[]): void;
+  /**
+   * Open a nested sequence in the timeline (stops playback, playhead to its start). The path
+   * grows by one level (the sequence is being entered from the open container, e.g. by
+   * double-clicking a nested clip); `fromRoot` starts a fresh path instead - for opening a
+   * sequence from the media panel, where it is not necessarily a child of the open container.
+   */
+  openSequence(sequenceId: string, opts?: { fromRoot?: boolean }): Promise<void>;
+  /** Leave the open sequence for its parent (the root when it was opened from there). */
+  closeSequence(): Promise<void>;
+  /** Jump to a breadcrumb entry; `null` = the root timeline. */
+  navigateToSequence(sequenceId: string | null): Promise<void>;
   setTool(tool: ToolMode): void;
   setSnap(enabled: boolean): void;
   setZoom(px: number): void;
@@ -215,6 +251,16 @@ export interface EditorStore {
   copySelection(): void;
   pasteAtPlayhead(): Promise<void>;
   duplicateSelection(): Promise<void>;
+  /** `NestClips` on the current selection (all clips must share one container). */
+  nestSelection(): Promise<void>;
+  /** `UnnestClip` on a nested clip (defaults to the primary selection); errors surface as toasts. */
+  unnestClip(trackId?: string, clipId?: string): Promise<void>;
+  /**
+   * `AddAdjustmentLayer` of `durationSecs` (default 5) at the playhead on `trackId`, else the
+   * selected video track, else the topmost video track (created when the container has none).
+   * Selects the new layer. An overlapping clip surfaces the engine's overlap error.
+   */
+  addAdjustmentLayerAtPlayhead(trackId?: string, durationSecs?: number): Promise<void>;
 
   ensureStarterTracks(quiet?: boolean): Promise<void>;
   ensureTrack(kind: TrackKind, name: string): Promise<Track>;
@@ -239,6 +285,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   clientRevision: 0,
   playhead: 0,
   playing: false,
+  activeSequenceId: null,
+  sequencePath: [],
   selection: null,
   selections: [],
   toolMode: "select",
@@ -279,14 +327,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
   toggleSelect(sel) {
     const { selections, project } = get();
+    const tracks = activeTracks(project, get().activeSequenceId);
     const idx = selections.findIndex((s) => s.trackId === sel.trackId && s.clipId === sel.clipId);
     let next: Selection[];
     if (idx >= 0) {
       next = selections.filter((_, i) => i !== idx);
     } else if (selections.length > 0 && project) {
       // Prefer same kind across tracks; different kind replaces the selection.
-      const primaryTrack = project.tracks.find((t) => t.id === selections[0]!.trackId);
-      const newTrack = project.tracks.find((t) => t.id === sel.trackId);
+      const primaryTrack = tracks.find((t) => t.id === selections[0]!.trackId);
+      const newTrack = tracks.find((t) => t.id === sel.trackId);
       if (primaryTrack && newTrack && primaryTrack.kind !== newTrack.kind) {
         next = [sel];
       } else {
@@ -304,6 +353,19 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     set({ selection: primary, selections: sels });
     void ipc.setEditorSelection(primary ? { primary, all: sels } : null);
   },
+  async openSequence(sequenceId, opts) {
+    const { project, sequencePath } = get();
+    if (!project || !project.sequences?.some((s) => s.id === sequenceId)) return;
+    await switchContainer(set, get, opts?.fromRoot ? [sequenceId] : pathAfterOpen(sequencePath, sequenceId));
+  },
+  async closeSequence() {
+    const { sequencePath } = get();
+    if (sequencePath.length === 0) return;
+    await switchContainer(set, get, sequencePath.slice(0, -1));
+  },
+  async navigateToSequence(sequenceId) {
+    await switchContainer(set, get, pathForBreadcrumb(get().sequencePath, sequenceId));
+  },
   setTool(tool) {
     set({ toolMode: tool });
   },
@@ -318,8 +380,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const canvas = document.getElementById("timeline");
     if (!canvas) return;
     get().setScroll(
-      Math.min(scrollX, maxScrollX(project, pxPerSec, canvas.clientWidth)),
-      Math.min(scrollY, maxScrollY(project.tracks.length, canvas.clientHeight)),
+      Math.min(scrollX, maxScrollX(containerView(project, get().activeSequenceId), pxPerSec, canvas.clientWidth)),
+      Math.min(scrollY, maxScrollY(activeTracks(project, get().activeSequenceId).length, canvas.clientHeight)),
     );
   },
   fitZoom() {
@@ -328,7 +390,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const canvas = document.getElementById("timeline");
     if (!canvas) return;
     const availableWidth = canvas.clientWidth - TRACK_LABEL_W - 16;
-    const duration = timelineDuration(project);
+    const duration = timelineDuration(containerView(project, get().activeSequenceId));
     if (duration <= 0 || availableWidth <= 0) return;
     get().setZoom(availableWidth / duration);
     get().setScroll(0, get().scrollY);
@@ -338,8 +400,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const canvas = document.getElementById("timeline");
     const w = canvas?.clientWidth ?? 800;
     const h = canvas?.clientHeight ?? 200;
-    const maxX = project ? maxScrollX(project, get().pxPerSec, w) : 0;
-    const maxY = project ? maxScrollY(project.tracks.length, h) : 0;
+    const view = project ? containerView(project, get().activeSequenceId) : null;
+    const maxX = view ? maxScrollX(view, get().pxPerSec, w) : 0;
+    const maxY = view ? maxScrollY(view.tracks.length, h) : 0;
     set({
       scrollX: Math.max(0, Math.min(maxX, scrollX)),
       scrollY: Math.max(0, Math.min(maxY, scrollY ?? get().scrollY)),
@@ -446,13 +509,20 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   async dropMediaOnTimeline() {
-    const { project, dragGhost } = get();
+    const { project, dragGhost, activeSequenceId } = get();
     set({ dragGhost: null });
     if (!project || !dragGhost || !dragGhost.valid) return;
+    const tracks = activeTracks(project, activeSequenceId);
 
-    const trackKind: TrackKind = dragGhost.kind === "audio" ? "audio" : "video";
+    if (dragGhost.durationSecs <= 0) {
+      get().toast("That sequence is empty - add clips inside it first", "error");
+      return;
+    }
+    // A nested sequence may land on video or audio lanes; for an auto-created track, dropping
+    // above every lane makes a video track and below makes an audio track.
+    const trackKind: TrackKind = newTrackKindForDrop(dragGhost.kind, dragGhost.row < 0);
     const existingTrack =
-      dragGhost.trackIndex != null ? (project.tracks[dragGhost.trackIndex] as Track | undefined) : undefined;
+      dragGhost.trackIndex != null ? (tracks[dragGhost.trackIndex] as Track | undefined) : undefined;
 
     if (existingTrack) {
       await get().dispatch(
@@ -472,10 +542,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     // apply_commands has no way to thread one command's server-generated output into a
     // later command in the same call.
     const trackName =
-      trackKind === "video" ? `Video ${project.tracks.length + 1}` : `Audio ${project.tracks.length + 1}`;
+      trackKind === "video" ? `Video ${tracks.length + 1}` : `Audio ${tracks.length + 1}`;
     const newTrackId = crypto.randomUUID();
     await get().dispatchBatch([
-      addTrack(trackKind, trackName, newTrackId),
+      addTrack(trackKind, trackName, newTrackId, activeSequenceId),
       addClip(newTrackId, dragGhost.mediaId, dragGhost.positionSecs, 0, dragGhost.durationSecs),
     ]);
   },
@@ -499,6 +569,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         clientRevision: snap.revision,
         projectPath: path,
         playhead: 0,
+        activeSequenceId: null,
+        sequencePath: [],
         selection: null,
         selections: [],
         canUndo: false,
@@ -506,6 +578,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         mediaAssets: {},
       });
       void ipc.setEditorSelection(null);
+      void ipc.setActiveSequence(null).catch(() => {});
     } catch (e) {
       get().toast(`Load project failed: ${errMsg(e)}`, "error");
     }
@@ -552,12 +625,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     try {
       get().stopPlayback();
       await ipc.closeProject();
+      void ipc.setActiveSequence(null).catch(() => {});
       set({
         project: null,
         projectPath: null,
         clientRevision: 0,
         playhead: 0,
         playing: false,
+        activeSequenceId: null,
+        sequencePath: [],
         selection: null,
         selections: [],
         canUndo: false,
@@ -674,8 +750,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const { project, selections } = get();
     if (!project) return;
     if (selections.length === 0) return;
+    const tracks = activeTracks(project, get().activeSequenceId);
     const next = selections.filter((sel) => {
-      const track = project.tracks.find((t) => t.id === sel.trackId);
+      const track = tracks.find((t) => t.id === sel.trackId);
       return !!track?.clips.find((c) => c.id === sel.clipId);
     });
     if (next.length === selections.length) return;
@@ -688,8 +765,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const { project, selections } = get();
     if (!project || selections.length === 0) return;
     const items: { clip: Clip; trackKind: TrackKind }[] = [];
+    const tracks = activeTracks(project, get().activeSequenceId);
     for (const sel of selections) {
-      const track = project.tracks.find((t) => t.id === sel.trackId);
+      const track = tracks.find((t) => t.id === sel.trackId);
       const clip = track?.clips.find((c) => c.id === sel.clipId);
       if (track && clip) items.push({ clip, trackKind: track.kind });
     }
@@ -703,12 +781,13 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     if (!project || !clipboard || clipboard.items.length === 0) return;
     const anchor = Math.min(...clipboard.items.map((i) => i.clip.position_secs));
     const commands: Record<string, unknown>[] = [];
+    const tracks = activeTracks(project, get().activeSequenceId);
     for (const item of clipboard.items) {
       const track =
         (get().selection &&
-        project.tracks.find((t) => t.id === get().selection!.trackId)?.kind === item.trackKind
-          ? project.tracks.find((t) => t.id === get().selection!.trackId)
-          : undefined) ?? project.tracks.find((t) => t.kind === item.trackKind);
+        tracks.find((t) => t.id === get().selection!.trackId)?.kind === item.trackKind
+          ? tracks.find((t) => t.id === get().selection!.trackId)
+          : undefined) ?? tracks.find((t) => t.kind === item.trackKind);
       if (!track) {
         get().toast(`No ${item.trackKind} track to paste onto`, "error");
         return;
@@ -724,8 +803,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const { project, selections } = get();
     if (!project || selections.length === 0) return;
     const commands: Record<string, unknown>[] = [];
+    const tracks = activeTracks(project, get().activeSequenceId);
     for (const sel of selections) {
-      const track = project.tracks.find((t) => t.id === sel.trackId);
+      const track = tracks.find((t) => t.id === sel.trackId);
       const clip = track?.clips.find((c) => c.id === sel.clipId);
       if (!track || !clip) continue;
       commands.push(pasteCommand(clip, track.id, clip.position_secs + clipDurationSecs(clip)));
@@ -735,7 +815,75 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     else await get().dispatchBatch(commands);
   },
 
+  async nestSelection() {
+    const { project, selections, activeSequenceId } = get();
+    if (!project || selections.length === 0) return;
+    const tracks = activeTracks(project, activeSequenceId);
+    for (const sel of selections) {
+      if (tracks.find((t) => t.id === sel.trackId)?.locked) {
+        get().toast("Track is locked — unlock it to edit", "info");
+        return;
+      }
+    }
+    const name = `Nested ${(project.sequences?.length ?? 0) + 1}`;
+    const ok = await get().dispatch(nestClips(selections, name));
+    if (ok) {
+      get().select(null);
+      get().toast(`Nested ${selections.length === 1 ? "1 clip" : `${selections.length} clips`} into “${name}”`, "success");
+    }
+  },
+
+  async unnestClip(trackId, clipId) {
+    const sel = get().selection;
+    const t = trackId ?? sel?.trackId;
+    const c = clipId ?? sel?.clipId;
+    if (!t || !c) return;
+    // The engine refuses trimmed / sped-up / effected clips (CannotUnnest) — dispatch's
+    // error toast carries its reason.
+    const ok = await get().dispatch(unnestClip(t, c));
+    if (ok) {
+      get().select(null);
+      get().toast("Unnested — the sequence is kept in the media panel", "success");
+    }
+  },
+
+  async addAdjustmentLayerAtPlayhead(trackId, durationSecs = 5) {
+    const { project, activeSequenceId, selection, playhead } = get();
+    if (!project) return;
+    const tracks = activeTracks(project, activeSequenceId);
+    const videoTracks = tracks.filter((t) => t.kind === "video");
+    const target =
+      (trackId ? tracks.find((t) => t.id === trackId) : undefined) ??
+      (selection ? videoTracks.find((t) => t.id === selection.trackId) : undefined) ??
+      // Highest video track in the compositing order (last = top).
+      videoTracks[videoTracks.length - 1];
+    if (target && target.kind !== "video") {
+      get().toast("Adjustment layers go on video tracks", "error");
+      return;
+    }
+    if (target) {
+      const before = new Set(target.clips.map((c) => c.id));
+      const ok = await get().dispatch(addAdjustmentLayer(target.id, playhead, durationSecs));
+      if (!ok) return;
+      const created = activeTracks(get().project, activeSequenceId)
+        .find((t) => t.id === target.id)
+        ?.clips.find((c) => !before.has(c.id));
+      if (created) get().select({ trackId: target.id, clipId: created.id });
+      return;
+    }
+    // No video track in this container yet: create it and the layer atomically.
+    const newTrackId = crypto.randomUUID();
+    const ok = await get().dispatchBatch([
+      addTrack("video", `Video ${tracks.length + 1}`, newTrackId, activeSequenceId),
+      addAdjustmentLayer(newTrackId, playhead, durationSecs),
+    ]);
+    if (!ok) return;
+    const created = activeTracks(get().project, activeSequenceId).find((t) => t.id === newTrackId)?.clips[0];
+    if (created) get().select({ trackId: newTrackId, clipId: created.id });
+  },
+
   async ensureStarterTracks(quiet = false) {
+    // Deliberately the ROOT timeline (a fresh project's starter tracks), not the open container.
     const project = get().project;
     if (!project || project.tracks.length > 0) return;
     await get().dispatch({ command: "AddTrack", kind: "video", name: "Video 1" }, true);
@@ -745,11 +893,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   async ensureTrack(kind, name) {
-    const existing = get().project?.tracks.find((t) => t.kind === kind);
+    const activeId = get().activeSequenceId;
+    const existing = activeTracks(get().project, activeId).find((t) => t.kind === kind);
     if (existing) return existing;
-    const ok = await get().dispatch({ command: "AddTrack", kind, name }, true);
+    const ok = await get().dispatch(
+      activeId ? addTrack(kind, name, null, activeId) : { command: "AddTrack", kind, name },
+      true,
+    );
     if (!ok) throw new Error(`Could not create ${kind} track`);
-    const track = get().project?.tracks.find((t) => t.kind === kind);
+    const track = activeTracks(get().project, activeId).find((t) => t.kind === kind);
     if (!track) throw new Error(`Track ${kind} missing after creation`);
     return track;
   },
@@ -779,8 +931,12 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const media = project.media.find((m) => m.id === mediaId);
     if (!media) return;
     const trackKind: TrackKind = kind === "audio" ? "audio" : "video";
-    const track = await get().ensureTrack(trackKind, trackKind === "video" ? "Video 1" : "Audio 1");
     const dur = mediaDurationSecs(project, media) ?? 5;
+    if (media.kind === "sequence" && dur <= 0) {
+      if (!quiet) get().toast("That sequence is empty - add clips inside it first", "error");
+      return;
+    }
+    const track = await get().ensureTrack(trackKind, trackKind === "video" ? "Video 1" : "Audio 1");
 
     // Placing at the playhead is usually right, but if that would land on top of an
     // existing clip on this track (e.g. clicking an already-placed media item again),
@@ -802,7 +958,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       source_in_secs: 0,
       source_out_secs: dur,
     });
-    if (ok && !quiet) get().toast(`Added ${basename(media.path)} to timeline`, "success");
+    if (ok && !quiet) {
+      const label = sequenceMediaName(project, media) ?? basename(media.path);
+      get().toast(`Added ${label} to timeline`, "success");
+    }
   },
 
   async startPlayback() {
@@ -870,6 +1029,62 @@ if ((import.meta as { env?: { DEV?: boolean } }).env?.DEV) {
   (globalThis as unknown as { __store?: typeof useEditorStore }).__store = useEditorStore;
 }
 
+/// Move the editor to the container at the end of `path` (a normalized sequence path; `[]` =
+/// root). Playback is stopped, selection cleared and the playhead rewound — playhead, scroll
+/// and selection are all local to a container. Backend playback/scrub audio and the preview
+/// follow via `ipc.setActiveSequence` / the preview engine's subscription to this state.
+/// History is global, so undo/redo keep working across containers.
+async function switchContainer(
+  set: (partial: Partial<EditorStore>) => void,
+  get: () => EditorStore,
+  path: string[],
+): Promise<void> {
+  const next = normalizeSequencePath(get().project, path);
+  const nextId = next[next.length - 1] ?? null;
+  if (nextId === get().activeSequenceId) return;
+  if (get().playing) get().stopPlayback();
+  set({
+    sequencePath: next,
+    activeSequenceId: nextId,
+    selection: null,
+    selections: [],
+    playhead: 0,
+    scrollX: 0,
+    scrollY: 0,
+    contextMenu: null,
+    dragGhost: null,
+  });
+  void ipc.setEditorSelection(null);
+  try {
+    await ipc.setActiveSequence(nextId);
+  } catch (e) {
+    console.warn("set_active_sequence failed:", e);
+  }
+  await ipc.seek(0).catch(() => {});
+}
+
+// Fallback to the root: when the project changes (undo, delete, external edit) and the open
+// sequence no longer exists, drop to the nearest surviving ancestor. Done in one place so no
+// individual code path (patch apply, refetch, undo/redo, bridge) can leave the editor pointing
+// at a container that is gone.
+useEditorStore.subscribe((state, prev) => {
+  if (state.project === prev.project || state.sequencePath.length === 0) return;
+  const valid = normalizeSequencePath(state.project, state.sequencePath);
+  if (valid.length === state.sequencePath.length) return;
+  const nextId = valid[valid.length - 1] ?? null;
+  useEditorStore.setState({
+    sequencePath: valid,
+    activeSequenceId: nextId,
+    selection: null,
+    selections: [],
+    playhead: 0,
+    scrollX: 0,
+    scrollY: 0,
+  });
+  void ipc.setActiveSequence(nextId).catch(() => {});
+  void ipc.setEditorSelection(null);
+});
+
 function errMsg(e: unknown): string {
   if (e instanceof Error) return e.message;
   if (typeof e === "string") return e;
@@ -885,8 +1100,12 @@ function errMsg(e: unknown): string {
 function formatCommandError(e: unknown, fallbackPrefix = "Edit failed"): string {
   const msg = errMsg(e).trim();
   if (!msg) return fallbackPrefix;
+  // Engine errors that carry a bare UUID read badly in a toast; say what to do instead.
+  if (/sequence [0-9a-f-]{36} is still placed/i.test(msg)) {
+    return "That sequence is still used by a clip - delete or unnest those clips first";
+  }
   // Tauri often wraps as `commandname failed: …` or plain Display from thiserror.
-  if (/failed|error|reject|invalid|not found|overlap|mismatch/i.test(msg)) return msg;
+  if (/failed|error|reject|invalid|not found|overlap|mismatch|cannot/i.test(msg)) return msg;
   return `${fallbackPrefix}: ${msg}`;
 }
 

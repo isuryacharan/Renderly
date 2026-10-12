@@ -155,6 +155,18 @@ reconciler — the same drag-commit pattern the old vanilla-TS timeline used (op
 local mutation during drag, one command dispatched on mouseup), just running inside a
 Zustand-store-backed React app instead of a hand-rolled `render()` loop.
 
+**Containers (schema v7):** the canvas timeline shows one container at a time - the root
+timeline or an open nested sequence. `src/lib/container.ts` is the single place that decides
+which tracks "the timeline" is (`activeTracks(project, activeSequenceId)`; `containerView`
+gives the project with those tracks swapped so `layout.ts` / `renderer.ts` / `snap.ts` need no
+container awareness), and `TimelineBreadcrumb` + the store's `openSequence` / `closeSequence` /
+`navigateToSequence` move between containers. Optimistic drag previews are computed on the
+view and written back with `replaceActiveTracks`; commands are always the same global
+command API (track ids are globally unique, `AddTrack` takes `sequence_id`). The preview and
+native audio follow the open container (`WasmCompositor::set_active_sequence`,
+`set_active_sequence` Tauri command -> `Project::with_sequence_as_root`). See
+[schema-v7-design.md](schema-v7-design.md) "Implementation notes (app, phase B)".
+
 Phase 2 MVP → GUI rebuild M2/M3 (complete): media bin (draggable cards),
 canvas timeline with drag/trim/split/razor/snap/zoom/fit, DOM `TrackHeaders` column
 (dbl-click rename, mute/lock/hide toggles, delete), cross-track drag, locked-track mouse

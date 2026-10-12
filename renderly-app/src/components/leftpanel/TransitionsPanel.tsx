@@ -5,6 +5,7 @@ import { startTransitionDrag } from "../../lib/dragTransition";
 import * as ipc from "../../lib/ipc";
 import type { ClipTransition, MediaClip, TransitionKind } from "../../lib/types";
 import { clipDurationSecs, TRANSITION_KINDS } from "../../lib/types";
+import { activeTracks } from "../../lib/container";
 import { useEditorStore } from "../../store/editorStore";
 
 export function TransitionsPanel() {
@@ -40,7 +41,8 @@ export function TransitionsPanel() {
       .catch(() => setPackAliases([]));
   }, [project, project?.asset_pack_paths?.join("|")]);
 
-  const track = project?.tracks.find((t) => t.id === selection?.trackId);
+  const activeSequenceId = useEditorStore((s) => s.activeSequenceId);
+  const track = activeTracks(project, activeSequenceId).find((t) => t.id === selection?.trackId);
   const clip = track?.clips.find((c) => c.id === selection?.clipId);
   const mediaClip = clip && clip.type === "video" ? (clip as MediaClip) : null;
   const locked = track?.locked ?? true;

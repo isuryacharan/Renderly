@@ -47,6 +47,7 @@ export function WebviewPreview({
   const project = useEditorStore((s) => s.project);
   const playing = useEditorStore((s) => s.playing);
   const playhead = useEditorStore((s) => s.playhead);
+  const activeSequenceId = useEditorStore((s) => s.activeSequenceId);
 
   // Engine lifecycle: created once per mount. init() resolves the render-mode ladder
   // (WebGPU wasm compositor → Canvas2D fallback, see webviewPreviewEngine.ts) — draws
@@ -60,6 +61,7 @@ export function WebviewPreview({
     void engine.init().then(() => {
       // Push whatever state accumulated while the mode ladder resolved.
       engine.setProject(useEditorStore.getState().project ?? null);
+      engine.setActiveSequence(useEditorStore.getState().activeSequenceId);
       engine.seek(useEditorStore.getState().playhead);
     });
     return () => {
@@ -93,6 +95,12 @@ export function WebviewPreview({
   useEffect(() => {
     engineRef.current?.setProject(project ?? null);
   }, [project]);
+
+  // The open sequence (schema v7): the preview renders that container at the local playhead.
+  // After `setProject` above so a sequence that was just deleted resolves against the new project.
+  useEffect(() => {
+    engineRef.current?.setActiveSequence(activeSequenceId);
+  }, [activeSequenceId, project]);
 
   // Store subscription: while paused, redraw on any project mutation (e.g. optimistic
   // transform-drag patch from PreviewHandlesOverlay) so local edits show at full frame
