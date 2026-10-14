@@ -541,3 +541,122 @@ fn nest_clips_adjustment_layer_and_export() {
     );
     assert_fails_unchanged(&p, &out, "still placed");
 }
+
+// ---- OpenTimelineIO interop (docs/otio.md) --------------------------------------------
+
+fn project_with_clip(dir: &TempDir) -> PathBuf {
+    let p = new_project(dir, &["--fps", "30", "--width", "1280", "--height", "720"]);
+    let mut v = read_json(&p);
+    let media_id = uuid::Uuid::new_v4().to_string();
+    v["media"] = json!([{
+        "id": media_id, "path": "clips/a clip.mp4", "kind": "video",
+        "duration_secs": 10.0, "width": 1280, "height": 720, "fps": 30.0
+    }]);
+    std::fs::write(&p, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    let out = apply(&p, r#"{"command":"AddTrack","kind":"video","name":"V1"}"#);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let track = read_json(&p)["tracks"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for (pos, a, b) in [(0.0, 1.0, 3.0), (4.0, 0.0, 2.5)] {
+        let cmd = json!({"command": "AddClip", "track_id": track, "media_id": media_id,
+            "position_secs": pos, "source_in_secs": a, "source_out_secs": b});
+        let out = apply(&p, &cmd.to_string());
+        assert!(out.status.success(), "{}", stderr(&out));
+    }
+    p
+}
+
+#[test]
+fn export_otio_then_import_otio_roundtrips_a_project() {
+    let dir = TempDir::new();
+    let p = project_with_clip(&dir);
+    let otio = dir.path("edit.otio");
+    let out = run(&["export-otio".as_ref(), p.as_os_str(), otio.as_os_str()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("exported"));
+    let v = read_json(&otio);
+    assert_eq!(v["OTIO_SCHEMA"], "Timeline.1");
+    let kids = v["tracks"]["children"][0]["children"].as_array().unwrap();
+    assert_eq!(kids.len(), 3, "clip, gap, clip");
+    // The relative media path was resolved against the project's directory.
+    let url = kids[0]["media_references"]["DEFAULT_MEDIA"]["target_url"]
+        .as_str()
+        .unwrap();
+    assert!(
+        url.starts_with("file://") && url.ends_with("/clips/a%20clip.mp4"),
+        "{url}"
+    );
+
+    let back = dir.path("back.renderly.json");
+    let out = run(&["import-otio".as_ref(), otio.as_os_str(), back.as_os_str()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("imported"), "{}", stdout(&out));
+    let a = read_json(&p);
+    let b = read_json(&back);
+    assert_eq!(a["tracks"], b["tracks"], "tracks and clips are identical");
+    assert_eq!(a["settings"], b["settings"]);
+    // Media: same id; the path is now the absolute one written into the file.
+    assert_eq!(a["media"][0]["id"], b["media"][0]["id"]);
+    assert!(b["media"][0]["path"]
+        .as_str()
+        .unwrap()
+        .ends_with("clips/a clip.mp4"));
+    renderly_core::project::Project::from_json(&std::fs::read_to_string(&back).unwrap()).unwrap();
+}
+
+#[test]
+fn import_otio_reads_a_foreign_sample_and_reports_warnings() {
+    let dir = TempDir::new();
+    let sample = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../renderly-core/tests/fixtures/otio/nested_example.otio");
+    let out_path = dir.path("nested.renderly.json");
+    let out = run(&[
+        "import-otio".as_ref(),
+        sample.as_os_str(),
+        out_path.as_os_str(),
+        "--width".as_ref(),
+        "1080".as_ref(),
+        "--height".as_ref(),
+        "1920".as_ref(),
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("warning:"),
+        "warnings go to stderr: {}",
+        stderr(&out)
+    );
+    assert!(stdout(&out).contains("3 sequences"), "{}", stdout(&out));
+    let v = read_json(&out_path);
+    assert_eq!(v["settings"]["width"], 1080);
+    assert_eq!(v["settings"]["height"], 1920);
+    assert_eq!(v["settings"]["fps"], 24.0);
+    assert_eq!(v["sequences"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        v["schema_version"],
+        renderly_core::project::SCHEMA_VERSION as u64
+    );
+}
+
+#[test]
+fn import_otio_rejects_non_otio_and_writes_nothing() {
+    let dir = TempDir::new();
+    let bad = dir.path("bad.otio");
+    std::fs::write(&bad, r#"{"hello": "world"}"#).unwrap();
+    let out_path = dir.path("never.renderly.json");
+    let out = run(&[
+        "import-otio".as_ref(),
+        bad.as_os_str(),
+        out_path.as_os_str(),
+    ]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("OpenTimelineIO"), "{}", stderr(&out));
+    assert!(!out_path.exists());
+    let out = run(&[
+        "import-otio".as_ref(),
+        dir.path("missing.otio").as_os_str(),
+        out_path.as_os_str(),
+    ]);
+    assert!(!out.status.success());
+}

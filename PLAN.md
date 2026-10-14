@@ -86,7 +86,7 @@ drifting.
 | `ffmpeg-the-third` / linked FFmpeg | FFmpeg CLI subprocess behind a `VideoReader` boundary | Zero build-environment friction across contributors; the boundary keeps the migration open. Deferred until vcpkg/`FFMPEG_DIR` is wired everywhere. |
 | Svelte frontend | React 19 + Zustand | Contributor comfort, per the original bullet's own escape clause. |
 | MCP over stdio **+ HTTP** | stdio + a **loopback WebSocket bridge to the running app** | HTTP solved remote access, which nobody needed; the bridge solved co-editing, which turned out to be the actual product story — agent edits land in the open GUI and share the human's undo stack. [docs/bridge-protocol.md](docs/bridge-protocol.md) |
-| OTIO interop (§2) | Not built | No one has needed it yet; tracked on the parity board. |
+| OTIO interop (§2) | Built | Pure-Rust `.otio` import/export; see docs/otio.md. |
 | Phase 4 ML models (RVM/BiRefNet) | Heuristics + optional `RENDERLY_SEG_CLI` | WASM plugins can't host these efficiently, and linking ONNX needs AGPL-compatible license review. See the recorded decision in [docs/parity-board.md](docs/parity-board.md). |
 
 ## 4. Feature roadmap

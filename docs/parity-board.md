@@ -68,7 +68,7 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 | macOS / Linux — runtime QA | ⬜ | **Wanted:** run it, report what breaks |
 | Installer / packaged release | 🟡 | `tauri build` produces one; release flow being set up |
 | Linux preview on WebKitGTK | ⬜ | WebGPU lags there; may need a Chromium-based webview — see [preview-webview.md](preview-webview.md) risks. (The native per-OS preview, including the Wayland subsurface path, was removed in that migration's P4.) |
-| OTIO interop | ⬜ | PLAN.md §2; nobody has needed it yet |
+| OTIO interop | ✅ | Pure-Rust `.otio` import and export ([otio.md](otio.md)): `renderly export-otio` / `import-otio`, MCP `export_otio` / `import_otio`, app top bar. Renderly-only state rides in `metadata["renderly"]`, so a round trip is lossless apart from frame-snapping |
 
 ## Testing & infrastructure
 

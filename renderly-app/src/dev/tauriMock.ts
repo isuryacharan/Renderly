@@ -731,6 +731,15 @@ export function invoke<T = unknown>(cmd: string, args?: any): Promise<T> {
       redoStack.length = 0;
       revision = 1;
       return reply("C:/proj/ep12.renderly.json");
+    // OpenTimelineIO interop: export is a no-op; import "creates" the sample project file and
+    // returns one warning so the harness can exercise the toast path.
+    case "export_otio":
+      return reply(undefined);
+    case "import_otio":
+      return reply({
+        projectPath: "C:/proj/ep12.renderly.json",
+        warnings: [{ kind: "missing_media", path: "tracks.children[0]", message: "mock warning" }],
+      });
     case "list_extensions":
       return reply(extensionCatalog);
     case "list_registry":

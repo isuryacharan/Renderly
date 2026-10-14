@@ -5,7 +5,12 @@
 /// run logic. Keep `run` thin — call into `editorStore` / `projectFlows` / timeline helpers.
 
 import { useEditorStore, type EditorStore } from "../store/editorStore";
-import { createNewProjectFlow, openExistingProjectFlow } from "./projectFlows";
+import {
+  createNewProjectFlow,
+  exportOtioFlow,
+  importOtioFlow,
+  openExistingProjectFlow,
+} from "./projectFlows";
 import { deleteSelected, splitSelectedAtPlayhead } from "../timeline/interactions";
 import { activeTracks, containerDurationSecs, isNestedClip } from "./container";
 import { cycleTheme } from "./theme";
@@ -55,6 +60,18 @@ export const ACTIONS: Record<string, EditorAction> = {
     isEnabled: (s) => !!s.projectPath,
     run: (s) => void s.saveProject(),
     matchKey: (e, mod) => mod && (e.key === "s" || e.key === "S"),
+  },
+  "project.import-otio": {
+    id: "project.import-otio",
+    label: "Import timeline (OTIO)",
+    isEnabled: () => true,
+    run: () => void importOtioFlow(),
+  },
+  "project.export-otio": {
+    id: "project.export-otio",
+    label: "Export timeline (OTIO)",
+    isEnabled: hasProject,
+    run: () => void exportOtioFlow(),
   },
   "project.close": {
     id: "project.close",

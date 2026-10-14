@@ -791,6 +791,90 @@ async fn save_project(state: State<'_, AppState>) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Result of `import_otio`: the new project file plus what could not be carried over.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OtioImportResult {
+    project_path: String,
+    warnings: Vec<renderly_core::otio::OtioWarning>,
+}
+
+/// Write the open project as an OpenTimelineIO file (docs/otio.md).
+#[tauri::command]
+async fn export_otio(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    use renderly_core::otio::{export_otio_with_options, ExportOptions};
+
+    let (project_path, project) =
+        state.with_session(|s| Ok((s.path.clone(), Arc::clone(&s.project))))?;
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let options = ExportOptions {
+            base_dir: project_path.parent().map(PathBuf::from),
+        };
+        let otio = export_otio_with_options(&project, &options).map_err(|e| e.to_string())?;
+        std::fs::write(&path, otio).map_err(|e| format!("{path}: {e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Create a NEW project file (in the default projects folder) from an OpenTimelineIO file.
+/// Importing is a load-path operation, not a command: it does not touch the open project.
+/// The frontend opens the returned path with `open_project`.
+#[tauri::command]
+async fn import_otio(
+    input_path: String,
+    width: Option<u32>,
+    height: Option<u32>,
+) -> Result<OtioImportResult, String> {
+    use renderly_core::otio::{import_otio, probe_media, ImportOptions};
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<OtioImportResult, String> {
+        let input = PathBuf::from(&input_path);
+        let json = std::fs::read_to_string(&input).map_err(|e| format!("{input_path}: {e}"))?;
+        let base_dir = input.parent().map(PathBuf::from);
+        let options = ImportOptions {
+            base_dir: base_dir.clone(),
+            width,
+            height,
+            ..Default::default()
+        };
+        let (mut project, mut warnings) =
+            import_otio(&json, &options).map_err(|e| e.to_string())?;
+        warnings.extend(probe_media(&mut project, base_dir.as_deref()));
+
+        let dir = default_projects_dir()?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let wanted: String = project
+            .name
+            .chars()
+            .map(|c| {
+                if "<>:\"/\\|?*".contains(c) || c.is_control() {
+                    '_'
+                } else {
+                    c
+                }
+            })
+            .collect();
+        let wanted = wanted.trim();
+        let wanted = if wanted.is_empty() {
+            "Imported timeline"
+        } else {
+            wanted
+        };
+        let name = next_free_project_name(&existing_project_name_stems(&dir), wanted);
+        let path = dir.join(format!("{name}.renderly.json"));
+        project.name = name;
+        let data = serde_json::to_string_pretty(&project).map_err(|e| e.to_string())?;
+        std::fs::write(&path, data).map_err(|e| e.to_string())?;
+        Ok(OtioImportResult {
+            project_path: path.to_string_lossy().into_owned(),
+            warnings,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// G1: CapCut-style home gallery card.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1558,6 +1642,8 @@ pub fn run() {
             new_project,
             open_project,
             save_project,
+            export_otio,
+            import_otio,
             list_projects,
             rename_project,
             delete_project,

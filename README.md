@@ -47,6 +47,10 @@ Not affiliated with, endorsed by, or a clone of any commercial editor.
   to your footage before deciding where to cut.
 - **Local-first AI.** Whisper captions and Piper voiceover run on your machine; cloud TTS is
   strictly bring-your-own-key. Nothing leaves your computer unless you send it.
+- **Interop, not lock-in.** Projects are plain JSON, and timelines import from / export to
+  [OpenTimelineIO](docs/otio.md) (`.otio`) — in the app, the CLI and MCP — with a lossless
+  Renderly round trip and warnings (not failures) for whatever another tool's file contains
+  that Renderly cannot represent.
 - **A timeline that behaves like a pro NLE.** CapCut-style layer ordering (what stacks higher
   overlaps in frame), drag-to-reorder tracks, magnetic snapping, group operations, transition
   badges, filmstrip thumbnails and waveforms, keyframe curves — in a dark-first UI designed for

@@ -67,3 +67,34 @@ export async function openExistingProjectFlow(): Promise<void> {
   await store.loadProjectFromPath(path);
   store.toast("Project opened", "success");
 }
+
+export async function importOtioFlow(): Promise<void> {
+  const store = useEditorStore.getState();
+  try {
+    const path = await ipc.pickOtioToOpen();
+    if (!path) return;
+    const result = await ipc.importOtio(path);
+    await store.loadProjectFromPath(result.projectPath);
+    const n = result.warnings.length;
+    store.toast(
+      n === 0 ? "Timeline imported" : `Timeline imported with ${n} warning${n === 1 ? "" : "s"}`,
+      n === 0 ? "success" : "info",
+    );
+    if (n > 0) console.warn("OTIO import warnings", result.warnings);
+  } catch (e) {
+    store.toast(`Import failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+  }
+}
+
+export async function exportOtioFlow(): Promise<void> {
+  const store = useEditorStore.getState();
+  if (!store.project) return;
+  try {
+    const path = await ipc.pickOtioSavePath(`${store.project.name}.otio`);
+    if (!path) return;
+    await ipc.exportOtio(path);
+    store.toast("Timeline exported (OpenTimelineIO)", "success");
+  } catch (e) {
+    store.toast(`Export failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+  }
+}

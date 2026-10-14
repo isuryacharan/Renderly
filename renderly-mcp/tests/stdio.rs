@@ -17,11 +17,13 @@ const TOOLS: &[&str] = &[
     "detect_silence",
     "download_model",
     "export",
+    "export_otio",
     "get_audio_peaks",
     "get_background_matte_status",
     "get_editor_status",
     "get_project",
     "get_transcript",
+    "import_otio",
     "list_models",
     "new_project",
     "open_project",
@@ -257,6 +259,39 @@ fn stdio_session_new_apply_get_project() {
     let on_disk: Value =
         serde_json::from_str(&std::fs::read_to_string(&project_path).unwrap()).unwrap();
     assert_eq!(on_disk["tracks"].as_array().unwrap().len(), 2);
+
+    // OpenTimelineIO round trip over the wire: export, then import into a new project file.
+    let otio_path = dir.0.join("e2e.otio");
+    let (is_err, text) = mcp.call_tool(
+        "export_otio",
+        json!({ "output_path": otio_path.to_string_lossy() }),
+    );
+    assert!(!is_err && text.contains("exported to"), "{text}");
+    let otio: Value = serde_json::from_str(&std::fs::read_to_string(&otio_path).unwrap()).unwrap();
+    assert_eq!(otio["OTIO_SCHEMA"], "Timeline.1");
+    assert_eq!(otio["tracks"]["children"].as_array().unwrap().len(), 2);
+    let imported_path = dir.0.join("imported.renderly.json");
+    let (is_err, text) = mcp.call_tool(
+        "import_otio",
+        json!({ "input_path": otio_path.to_string_lossy(),
+                "output_path": imported_path.to_string_lossy() }),
+    );
+    assert!(!is_err, "{text}");
+    let summary: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(summary["tracks"], 2);
+    assert_eq!(summary["warnings"], json!([]));
+    // The imported project is now the open one; the first project's file is untouched.
+    let (_, text) = mcp.call_tool("get_project", json!({}));
+    let reopened: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(reopened["name"], "e2e");
+    assert_eq!(reopened["tracks"].as_array().unwrap().len(), 2);
+    assert!(imported_path.is_file());
+    let (is_err, text) = mcp.call_tool(
+        "import_otio",
+        json!({ "input_path": dir.0.join("nope.otio").to_string_lossy(),
+                "output_path": dir.0.join("x.json").to_string_lossy() }),
+    );
+    assert!(is_err || text.starts_with("error:"), "{text}");
 
     // Unknown tool => JSON-RPC error, server stays alive.
     let resp = mcp.request(

@@ -577,6 +577,15 @@ line); `apply_command(Command::Export)` and MCP still call the fire-and-forget
 `export_project` wrapper. Returning `false` from the progress callback yields
 `ExportError::Cancelled` and removes the export temp directory.
 
+### OpenTimelineIO export / import (not commands)
+Like `Export`, OpenTimelineIO **export** is a read of the project, not a mutation, and so is not
+a `Command`: `renderly_core::otio::export_otio` (CLI `export-otio`, MCP `export_otio`, app
+"Export timeline (OTIO)"). **Import** *creates a new project from a file* — it is a load-path
+function beside `Project::from_json`, not a `Command` (a `Command` mutates the open project, and
+importing replaces it wholesale): `renderly_core::otio::import_otio` (CLI `import-otio`, MCP
+`import_otio`, app "Import timeline (OTIO)"). All surfaces share the same two core functions.
+Mapping, rounding rules and warnings: [otio.md](otio.md).
+
 ## Batch application (GUI rebuild M3)
 
 The Tauri `apply_commands` command takes `Vec<Command>` and applies them in order against

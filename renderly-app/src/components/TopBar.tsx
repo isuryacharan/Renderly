@@ -5,6 +5,8 @@ import {
   Undo2,
   Redo2,
   Download,
+  FileInput,
+  FileOutput,
   House,
   Sun,
   Moon,
@@ -75,6 +77,19 @@ export function TopBar({ onExport }: { onExport: () => void }) {
           iconOnly
           tooltip={actionTooltip("project.save", "Save")}
           onClick={() => invokeAction("project.save")}
+        />
+        <IconButton
+          icon={FileInput}
+          iconOnly
+          tooltip={actionTooltip("project.import-otio", "Import timeline (OTIO)")}
+          onClick={() => invokeAction("project.import-otio")}
+        />
+        <IconButton
+          icon={FileOutput}
+          iconOnly
+          tooltip={actionTooltip("project.export-otio", "Export timeline (OTIO)")}
+          disabled={!hasProject}
+          onClick={() => invokeAction("project.export-otio")}
         />
       </div>
 

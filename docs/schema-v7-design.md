@@ -295,7 +295,10 @@ What the app does (implementation detail in "Implementation notes (app, phase B)
 - Nested audio: an outer fade is applied to the first/last expanded piece only, and a
   combined speed (outer x inner) outside `0.25..4` is clamped by the tempo filter.
 
-## OTIO mapping (for the interop work that follows)
+## OTIO mapping
+
+Implemented — see [otio.md](otio.md) for the full mapping table, rounding rules and warnings.
+Summary of the schema-v7 parts:
 
 - Root timeline → `Timeline` with a `Stack` of `Track`s.
 - A nested sequence clip → a nested `Stack` in place (OTIO's native representation), with

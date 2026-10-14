@@ -165,6 +165,35 @@ export function saveProject(): Promise<void> {
   return invoke("save_project");
 }
 
+/// OpenTimelineIO interop (docs/otio.md). Importing creates a NEW project file; the caller
+/// then opens `projectPath` like any other project.
+export interface OtioWarning {
+  kind: string;
+  path: string;
+  message: string;
+}
+
+export interface OtioImportResult {
+  projectPath: string;
+  warnings: OtioWarning[];
+}
+
+export function exportOtio(path: string): Promise<void> {
+  return invoke("export_otio", { path });
+}
+
+export function importOtio(
+  inputPath: string,
+  width?: number,
+  height?: number,
+): Promise<OtioImportResult> {
+  return invoke<OtioImportResult>("import_otio", {
+    inputPath,
+    width: width ?? null,
+    height: height ?? null,
+  });
+}
+
 export function getProject(): Promise<ProjectSnapshot> {
   return invoke<ProjectSnapshot>("get_project");
 }
@@ -554,6 +583,22 @@ export async function pickProjectFileToOpen(): Promise<string | null> {
 export async function pickProjectSavePath(): Promise<string | null> {
   const result = await save({
     filters: [{ name: "Renderly project", extensions: ["renderly.json"] }],
+  });
+  return firstPath(result);
+}
+
+export async function pickOtioToOpen(): Promise<string | null> {
+  const result = await open({
+    title: "Import OpenTimelineIO file",
+    filters: [{ name: "OpenTimelineIO", extensions: ["otio"] }],
+  });
+  return firstPath(result);
+}
+
+export async function pickOtioSavePath(defaultPath: string): Promise<string | null> {
+  const result = await save({
+    filters: [{ name: "OpenTimelineIO", extensions: ["otio"] }],
+    defaultPath,
   });
   return firstPath(result);
 }

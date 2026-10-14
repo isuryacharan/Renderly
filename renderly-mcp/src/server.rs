@@ -161,6 +161,29 @@ fn default_preset() -> String {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ExportOtioRequest {
+    /// Where to write the `.otio` file.
+    pub output_path: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ImportOtioRequest {
+    /// The `.otio` file to read.
+    pub input_path: String,
+    /// Where to write the NEW project file; it becomes the open project.
+    pub output_path: String,
+    /// Project width when the file carries none of its own (default 1920).
+    #[serde(default)]
+    pub width: Option<u32>,
+    /// Project height when the file carries none of its own (default 1080).
+    #[serde(default)]
+    pub height: Option<u32>,
+    /// Fill media durations / sizes from files that exist on disk (needs ffprobe).
+    #[serde(default)]
+    pub probe: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ProbeMediaRequest {
     pub path: String,
 }
@@ -367,6 +390,81 @@ impl RenderlyMcp {
                 Ok(format!("exported to {}", req.output_path))
             },
         )
+    }
+
+    #[tool(
+        description = "Write the open project as an OpenTimelineIO (.otio) file (see docs/otio.md); lossless for Renderly"
+    )]
+    fn export_otio(&self, Parameters(req): Parameters<ExportOtioRequest>) -> String {
+        self.export_otio_impl(req)
+            .unwrap_or_else(|e| format!("error: {e}"))
+    }
+
+    fn export_otio_impl(&self, req: ExportOtioRequest) -> Result<String, String> {
+        use renderly_core::otio::{export_otio_with_options, ExportOptions};
+        // Export what the user sees: the live app's project when it is connected.
+        let (project, base_dir) = self.with_live_or_headless(
+            |client| {
+                let value =
+                    Self::block_on_bridge(async { client.call("get_project", json!({})).await })?;
+                let project_val = value.get("project").cloned().unwrap_or(value);
+                let project: Project =
+                    serde_json::from_value(project_val).map_err(|e| e.to_string())?;
+                let base = self.with_session(|s| Ok(project_dir(&s.path)))?;
+                Ok((project, base))
+            },
+            |session| Ok((session.project.clone(), project_dir(&session.path))),
+        )?;
+        let otio = export_otio_with_options(&project, &ExportOptions { base_dir })
+            .map_err(|e| e.to_string())?;
+        std::fs::write(&req.output_path, otio).map_err(|e| e.to_string())?;
+        Ok(format!("exported to {}", req.output_path))
+    }
+
+    #[tool(
+        description = "Create a NEW project file from an OpenTimelineIO (.otio) file and open it; returns a summary and the import warnings (see docs/otio.md). Does not modify the currently open project file."
+    )]
+    fn import_otio(&self, Parameters(req): Parameters<ImportOtioRequest>) -> String {
+        self.import_otio_impl(req)
+            .unwrap_or_else(|e| format!("error: {e}"))
+    }
+
+    fn import_otio_impl(&self, req: ImportOtioRequest) -> Result<String, String> {
+        use renderly_core::otio::{import_otio, ImportOptions};
+        let input = PathBuf::from(&req.input_path);
+        let json =
+            std::fs::read_to_string(&input).map_err(|e| format!("{}: {e}", req.input_path))?;
+        let base_dir = project_dir(&input);
+        let (mut project, mut warnings) = import_otio(
+            &json,
+            &ImportOptions {
+                base_dir: base_dir.clone(),
+                width: req.width,
+                height: req.height,
+                ..Default::default()
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        if req.probe {
+            warnings.extend(renderly_core::otio::probe_media(
+                &mut project,
+                base_dir.as_deref(),
+            ));
+        }
+        let path = PathBuf::from(&req.output_path);
+        let data = serde_json::to_string_pretty(&project).map_err(|e| e.to_string())?;
+        std::fs::write(&path, data).map_err(|e| e.to_string())?;
+        let summary = json!({
+            "project_path": req.output_path,
+            "name": project.name,
+            "fps": project.settings.fps,
+            "tracks": project.tracks.len(),
+            "media": project.media.len(),
+            "sequences": project.sequences.len(),
+            "warnings": warnings,
+        });
+        *self.session.lock().map_err(|e| e.to_string())? = Some(Session { path, project });
+        serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())
     }
 
     #[tool(
@@ -623,6 +721,15 @@ impl RenderlyMcp {
     }
 }
 
+/// Directory of a project / .otio file (relative media paths resolve against it).
+fn project_dir(path: &std::path::Path) -> Option<PathBuf> {
+    let parent = path.parent()?;
+    if parent.as_os_str().is_empty() {
+        return std::env::current_dir().ok();
+    }
+    std::path::absolute(parent).ok()
+}
+
 fn media_path(project: &Project, media_id: uuid::Uuid) -> Result<std::path::PathBuf, String> {
     project
         .find_media(media_id)
@@ -677,7 +784,7 @@ impl ServerHandler for RenderlyMcp {
                  detect_silence, detect_scenes, get_audio_peaks, get_background_matte_status. \
                  Local ML models (AI background removal) are never downloaded implicitly: \
                  list_models shows licence/size/host, download_model needs the user's consent \
-                 (RENDERLY_MODEL_DIR points at an existing copy).",
+                 (RENDERLY_MODEL_DIR points at an existing copy). \n                 Interop: export_otio / import_otio (OpenTimelineIO files).",
         )
     }
 }
@@ -1038,11 +1145,13 @@ mod tests {
             "detect_silence",
             "download_model",
             "export",
+            "export_otio",
             "get_audio_peaks",
             "get_background_matte_status",
             "get_editor_status",
             "get_project",
             "get_transcript",
+            "import_otio",
             "list_models",
             "new_project",
             "open_project",
@@ -1173,6 +1282,12 @@ mod tests {
                     })),
                 ),
                 (
+                    "export_otio",
+                    mcp.export_otio(Parameters(ExportOtioRequest {
+                        output_path: "never.otio".into(),
+                    })),
+                ),
+                (
                     "detect_silence",
                     mcp.detect_silence_tool(Parameters(SilenceDetectRequest {
                         media_id: id.clone(),
@@ -1213,6 +1328,107 @@ mod tests {
                 );
             }
             assert!(!std::path::Path::new("never.mp4").exists());
+            assert!(!std::path::Path::new("never.otio").exists());
+        });
+    }
+
+    // ---- OpenTimelineIO -----------------------------------------------------------------
+
+    #[test]
+    fn export_otio_then_import_otio_round_trips_through_the_session() {
+        on_worker(|| {
+            let dir = TempDir::new("otio");
+            let mcp = open_new(&dir);
+            apply(
+                &mcp,
+                serde_json::json!({"command": "AddTrack", "kind": "video", "name": "V1"}),
+            )
+            .unwrap();
+            apply(
+                &mcp,
+                serde_json::json!({"command": "AddTrack", "kind": "audio", "name": "A1"}),
+            )
+            .unwrap();
+            let before = project_of(&mcp);
+            let otio = dir.join("out.otio").to_string_lossy().into_owned();
+            let out = mcp.export_otio(Parameters(ExportOtioRequest {
+                output_path: otio.clone(),
+            }));
+            assert!(out.starts_with("exported to"), "{out}");
+            let v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&otio).unwrap()).unwrap();
+            assert_eq!(v["OTIO_SCHEMA"], "Timeline.1");
+            assert_eq!(v["tracks"]["children"][1]["kind"], "Audio");
+
+            let new_path = dir
+                .join("imported.renderly.json")
+                .to_string_lossy()
+                .into_owned();
+            let out = mcp.import_otio(Parameters(ImportOtioRequest {
+                input_path: otio,
+                output_path: new_path.clone(),
+                width: None,
+                height: None,
+                probe: false,
+            }));
+            let summary: serde_json::Value = serde_json::from_str(&out).expect(&out);
+            assert_eq!(summary["tracks"], 2);
+            assert_eq!(summary["fps"], 30.0);
+            // Lossless: the saved file equals the original project, and it is the open one.
+            let imported = file_project(&new_path);
+            assert_eq!(
+                serde_json::to_value(&imported).unwrap(),
+                serde_json::to_value(&before).unwrap()
+            );
+            assert_eq!(project_of(&mcp).id, before.id);
+            // The original file was not touched.
+            assert_eq!(file_project(&dir.project_path()).tracks.len(), 2);
+        });
+    }
+
+    #[test]
+    fn import_otio_reports_warnings_options_and_errors() {
+        on_worker(|| {
+            let dir = TempDir::new("otio-foreign");
+            let mcp = RenderlyMcp::new();
+            let sample = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../renderly-core/tests/fixtures/otio/transition.otio");
+            let out_path = dir.join("t.renderly.json").to_string_lossy().into_owned();
+            let out = mcp.import_otio(Parameters(ImportOtioRequest {
+                input_path: sample.to_string_lossy().into_owned(),
+                output_path: out_path.clone(),
+                width: Some(1080),
+                height: Some(1920),
+                probe: true,
+            }));
+            let summary: serde_json::Value = serde_json::from_str(&out).expect(&out);
+            assert_eq!(summary["fps"], 24.0);
+            assert!(summary["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w["kind"] == "transition"));
+            let p = file_project(&out_path);
+            assert_eq!((p.settings.width, p.settings.height), (1080, 1920));
+            assert_eq!(p.tracks[0].clips.len(), 4);
+
+            let bad = dir.join("bad.otio");
+            std::fs::write(&bad, "{\"a\": 1}").unwrap();
+            let out = mcp.import_otio(Parameters(ImportOtioRequest {
+                input_path: bad.to_string_lossy().into_owned(),
+                output_path: dir.join("never.json").to_string_lossy().into_owned(),
+                width: None,
+                height: None,
+                probe: false,
+            }));
+            assert!(
+                out.starts_with("error:") && out.contains("OpenTimelineIO"),
+                "{out}"
+            );
+            assert!(!dir.join("never.json").exists());
+            let req: ImportOtioRequest =
+                serde_json::from_str(r#"{"input_path":"a","output_path":"b"}"#).unwrap();
+            assert!(!req.probe && req.width.is_none() && req.height.is_none());
         });
     }
 

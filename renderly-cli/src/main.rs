@@ -5,6 +5,9 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use renderly_core::commands::{Command, ExportPreset};
 use renderly_core::export::export_project_with_progress;
+use renderly_core::otio::{
+    export_otio_with_options, import_otio, probe_media, ExportOptions, ImportOptions,
+};
 use renderly_core::project::{Project, Settings};
 use std::fs;
 use std::path::PathBuf;
@@ -59,6 +62,28 @@ enum CliCommand {
         output: PathBuf,
         #[arg(long, default_value = "tiktok")]
         preset: String,
+    },
+    /// Write the project as an OpenTimelineIO (.otio) file (docs/otio.md).
+    ExportOtio {
+        path: PathBuf,
+        /// Where to write the .otio file.
+        output: PathBuf,
+    },
+    /// Create a NEW project file from an OpenTimelineIO (.otio) file (docs/otio.md).
+    ImportOtio {
+        /// The .otio file to read.
+        input: PathBuf,
+        /// Path to write the new project JSON to.
+        output: PathBuf,
+        /// Project width when the file carries none of its own.
+        #[arg(long)]
+        width: Option<u32>,
+        /// Project height when the file carries none of its own.
+        #[arg(long)]
+        height: Option<u32>,
+        /// Fill media durations / sizes from the files that exist on disk (needs ffprobe).
+        #[arg(long)]
+        probe: bool,
     },
     /// List or download the local ML models (never downloaded implicitly).
     Models {
@@ -137,6 +162,15 @@ fn run_models(action: ModelsCommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Directory a project / .otio file lives in (relative media paths resolve against it).
+fn parent_dir(path: &std::path::Path) -> Option<PathBuf> {
+    let parent = path.parent()?;
+    if parent.as_os_str().is_empty() {
+        return std::env::current_dir().ok();
+    }
+    std::path::absolute(parent).ok()
 }
 
 fn load_project(path: &PathBuf) -> Result<Project> {
@@ -234,6 +268,50 @@ fn main() -> Result<()> {
             })?;
             eprintln!();
             println!("exported {}", output.display());
+        }
+        CliCommand::ExportOtio { path, output } => {
+            let project = load_project(&path)?;
+            let options = ExportOptions {
+                base_dir: parent_dir(&path),
+            };
+            let otio = export_otio_with_options(&project, &options)?;
+            fs::write(&output, otio).with_context(|| format!("writing {}", output.display()))?;
+            println!("exported {}", output.display());
+        }
+        CliCommand::ImportOtio {
+            input,
+            output,
+            width,
+            height,
+            probe,
+        } => {
+            let json = fs::read_to_string(&input)
+                .with_context(|| format!("reading {}", input.display()))?;
+            let base_dir = parent_dir(&input);
+            let options = ImportOptions {
+                base_dir: base_dir.clone(),
+                width,
+                height,
+                ..Default::default()
+            };
+            let (mut project, mut warnings) = import_otio(&json, &options)
+                .with_context(|| format!("importing {}", input.display()))?;
+            if probe {
+                warnings.extend(probe_media(&mut project, base_dir.as_deref()));
+            }
+            save_project(&output, &project)?;
+            for w in &warnings {
+                eprintln!("warning: {w}");
+            }
+            println!(
+                "imported {} ({} tracks, {} media, {} sequences, {} warnings) -> {}",
+                input.display(),
+                project.tracks.len(),
+                project.media.len(),
+                project.sequences.len(),
+                warnings.len(),
+                output.display()
+            );
         }
     }
 
