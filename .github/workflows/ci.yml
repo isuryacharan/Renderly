@@ -154,4 +154,4 @@ jobs:
         run: cargo check -p renderly-core --features linked-ffmpeg
 
       - name: Test linked probe
-        run: cargo test -p renderly-core --features linked-ffmpeg --lib media::
+        run: "cargo test -p renderly-core --features linked-ffmpeg --lib media::"
