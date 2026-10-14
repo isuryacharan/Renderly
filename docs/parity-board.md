@@ -36,7 +36,7 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 | P4-3 | Chroma key | ✅ | `builtin:chroma_key`; WGSL pass in the shared compositor (export and preview), optional `spill` suppression. Keys on RGB distance |
 | P4-1b | Background removal | ✅ | `SetClipBackgroundRemoval`, `GenerateBackgroundMatte`; "Fast (heuristic)" or "AI" (below). `RENDERLY_SEG_CLI` still available |
 | P4-ML | AI video matting (Robust Video Matting) | ✅ | In-process with `tract`; per-frame matte baked to a PNG sequence (~107 ms/frame, about 3× slower than realtime at 1080p30). Model (15 MB, GPL-3.0) is downloaded on consent, never bundled. Preview can lag the matte by a frame while scrubbing; mattes live in the temp dir and need regenerating if it is cleared. Stills-quality matting (BiRefNet) not done |
-| — | Captions burned in | ✅ | Preview and export share the `ab_glyph` rasterizer |
+| — | Captions burned in | ✅ | Preview and export share the `ab_glyph` rasterizer; translucent boxes and shadows keep their alpha |
 | — | Captions in the Canvas2D fallback | ⏸️ | WebGPU covers evergreen browsers; low value |
 | — | Hardware decode (`-hwaccel`) / encode (NVENC/QSV) | ✅ | Probed, software fallback |
 | — | Linked FFmpeg (`ffmpeg-the-third`) | ⏸️ | Waiting on vcpkg/`FFMPEG_DIR` across all environments |

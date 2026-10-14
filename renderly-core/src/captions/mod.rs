@@ -319,7 +319,7 @@ fn draw_text(
                 let px = bounds.min.x as i32 + x as i32;
                 let py = bounds.min.y as i32 + y as i32;
                 let mut c = rgba;
-                c[3] = (coverage * rgba[3] as f32) as u8;
+                c[3] = (coverage * rgba[3] as f32).round().clamp(0.0, 255.0) as u8;
                 blend_pixel(pixels, width, height, px, py, c);
             });
         }
@@ -327,18 +327,28 @@ fn draw_text(
     }
 }
 
+/// Source-over compositing of one straight-alpha RGBA sample onto the caption canvas, which is
+/// also straight alpha (the layer convention the compositor's `ALPHA_BLENDING` expects).
+/// Keeping the canvas alpha honest is what lets semi-transparent boxes and shadows show the
+/// video through them, and keeps glyph edges at their coverage alpha instead of a dark fringe.
 fn blend_pixel(pixels: &mut [u8], width: u32, height: u32, x: i32, y: i32, rgba: [u8; 4]) {
     if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 || rgba[3] == 0 {
         return;
     }
     let idx = ((y as u32 * width + x as u32) * 4) as usize;
-    let alpha = rgba[3] as f32 / 255.0;
-    for i in 0..3 {
-        let dst = pixels[idx + i] as f32;
-        let src = rgba[i] as f32;
-        pixels[idx + i] = (src * alpha + dst * (1.0 - alpha)) as u8;
+    let src_a = rgba[3] as f32 / 255.0;
+    let dst_a = pixels[idx + 3] as f32 / 255.0;
+    let out_a = src_a + dst_a * (1.0 - src_a);
+    if out_a <= 0.0 {
+        return;
     }
-    pixels[idx + 3] = 255;
+    for i in 0..3 {
+        let src = rgba[i] as f32;
+        let dst = pixels[idx + i] as f32;
+        let out = (src * src_a + dst * dst_a * (1.0 - src_a)) / out_a;
+        pixels[idx + i] = out.round().clamp(0.0, 255.0) as u8;
+    }
+    pixels[idx + 3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
 }
 
 #[cfg(test)]
@@ -359,6 +369,99 @@ mod tests {
         let frame = render_caption("test caption", STYLE_TIKTOK_MINIMAL, 640, 360).unwrap();
         assert_eq!(frame.pixels.len(), 640 * 360 * 4);
         assert!(frame.pixels.iter().any(|&b| b > 0));
+    }
+
+    /// Blend `src` over a 1x1 canvas that starts as `dst` and return the resulting pixel.
+    fn blend_once(dst: [u8; 4], src: [u8; 4]) -> [u8; 4] {
+        let mut pixels = dst.to_vec();
+        blend_pixel(&mut pixels, 1, 1, 0, 0, src);
+        [pixels[0], pixels[1], pixels[2], pixels[3]]
+    }
+
+    #[test]
+    fn blend_opaque_over_transparent_is_exact_colour() {
+        assert_eq!(
+            blend_once([0, 0, 0, 0], [200, 100, 50, 255]),
+            [200, 100, 50, 255]
+        );
+    }
+
+    #[test]
+    fn blend_semi_over_transparent_keeps_alpha_and_colour() {
+        assert_eq!(blend_once([0, 0, 0, 0], [255, 0, 0, 128]), [255, 0, 0, 128]);
+    }
+
+    #[test]
+    fn blend_semi_over_semi_is_source_over() {
+        // Blue at alpha 128 under red at alpha 128: out_a = 0.502 + 0.502 * 0.498 = 0.752.
+        let [r, g, b, a] = blend_once([0, 0, 255, 128], [255, 0, 0, 128]);
+        assert!((190..=194).contains(&a), "alpha {a}");
+        // Premultiplied sums divided by out_a: r = 255 * 0.502 / 0.752 ~= 170, b ~= 85.
+        assert!((r as i32 - 170).abs() <= 2, "red {r}");
+        assert_eq!(g, 0);
+        assert!((b as i32 - 85).abs() <= 2, "blue {b}");
+    }
+
+    #[test]
+    fn blend_opaque_over_semi_is_source_colour() {
+        assert_eq!(
+            blend_once([0, 0, 255, 128], [255, 0, 0, 255]),
+            [255, 0, 0, 255]
+        );
+    }
+
+    #[test]
+    fn blend_zero_coverage_is_noop() {
+        assert_eq!(
+            blend_once([10, 20, 30, 40], [255, 255, 255, 0]),
+            [10, 20, 30, 40]
+        );
+    }
+
+    /// The tiktok-box preset must stay translucent: inside the box padding (clear of glyphs)
+    /// the canvas carries the box alpha and colour, and far outside the box it is empty.
+    #[test]
+    fn caption_box_pixels_carry_box_alpha() {
+        if load_font().is_err() {
+            eprintln!("skipping caption box alpha test: no font");
+            return;
+        }
+        let (w, h) = (640u32, 360u32);
+        let text = "Hello";
+        let frame = render_caption(text, STYLE_TIKTOK_BOX, w, h).unwrap();
+        // Same geometry as `render_caption_with_spec`: text centred, box padded 24px left.
+        let font = load_font().unwrap();
+        let scaled = font.as_scaled(PxScale::from(44.0));
+        let glyph_width: f32 = text
+            .chars()
+            .map(|c| scaled.h_advance(font.glyph_id(c)))
+            .sum();
+        let start_x = ((w as f32 - glyph_width) / 2.0) as u32;
+        let at = |x: u32, y: u32| {
+            let i = ((y * w + x) * 4) as usize;
+            [
+                frame.pixels[i],
+                frame.pixels[i + 1],
+                frame.pixels[i + 2],
+                frame.pixels[i + 3],
+            ]
+        };
+        // Box left padding: 8px inside the box edge (24px pad), clear of the first glyph and
+        // above the cap height (box top = baseline - 44 - 12 = 232).
+        let inside = at(start_x - 24 + 8, 240);
+        assert!(
+            (inside[3] as i32 - 160).abs() <= 1,
+            "box alpha {} should be ~160",
+            inside[3]
+        );
+        for (c, v) in inside[..3].iter().enumerate() {
+            assert!(*v <= 1, "box colour channel {c} = {v} should be ~0");
+        }
+        assert_eq!(
+            at(5, 5)[3],
+            0,
+            "pixel far outside the box must be transparent"
+        );
     }
 
     /// "F" is left-heavy; mirrored rendering puts more ink on the right half of its bbox.

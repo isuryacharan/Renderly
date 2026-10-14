@@ -2184,16 +2184,12 @@ fn still_image_media_renders_for_its_whole_span() {
     }
 }
 
-/// REAL BUG (shared by export AND preview - the `ab_glyph` caption rasterizer in
-/// `captions::blend_pixel`): it blends the style colour against the *transparent black* caption
-/// canvas but then forces `alpha = 255`, so a semi-transparent `box_rgba` (tiktok-box is
-/// `[0,0,0,160]`, youtube-lower-thirds `[20,20,20,200]`) and the `[0,0,0,180]` shadow come out
-/// as OPAQUE dark pixels instead of letting the video show through (and anti-aliased glyph
-/// edges get a dark fringe instead of coverage alpha). The committed `caption_box` /
-/// `caption_bold_yellow` goldens pin today's (buggy) look - regenerate them when this is fixed.
+/// Regression note: the caption rasterizer (`captions::blend_pixel`, shared by export and the
+/// wasm preview) once forced every drawn pixel to alpha 255, so the translucent `tiktok-box`
+/// background (`[0,0,0,160]`) rendered as solid black over the video. It now does proper
+/// straight-alpha source-over, so the box lets the video show through.
 #[test]
-#[ignore = "BUG: caption box/shadow alpha is forced opaque in captions::blend_pixel (tiktok-box [0,0,0,160] renders solid black over video); see doc comment"]
-fn bug_caption_box_is_opaque_instead_of_semi_transparent() {
+fn caption_box_is_semi_transparent_over_video() {
     let Some(_env) = env() else { return };
     let scene = find_scene("caption_box");
     let out = export_renderer()
