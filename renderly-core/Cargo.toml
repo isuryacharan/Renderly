@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 description = "Headless engine for Renderly: project model, command API, media I/O, compositing. No UI dependencies — see docs/architecture.md."
 
+[features]
+# Off by default. Links FFmpeg's libraries in-process for media probing (see
+# docs/linked-ffmpeg.md). Needs FFmpeg dev libraries and libclang at build time.
+linked-ffmpeg = ["dep:ffmpeg-the-third"]
+
 [dependencies]
 ab_glyph = "0.2.32"
 bytemuck = { version = "1.25.0", features = ["derive"] }
@@ -15,6 +20,9 @@ uuid.workspace = true
 wgpu = "30.0.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Optional in-process libav backend; only pulled in by the `linked-ffmpeg` feature.
+# Probe + decode only, so only codec/format/software-scaling are enabled.
+ffmpeg-the-third = { version = "=6.0.0", optional = true, default-features = false, features = ["codec", "format", "software-scaling"] }
 image = "0.25.10"
 nnnoiseless = { version = "0.5.2", default-features = false }
 pollster = "0.4.0"

@@ -208,7 +208,7 @@ fn parse_rational(s: &str) -> Result<f64, FfmpegCliError> {
 }
 
 /// Continuously drains a child process's stderr pipe on a background thread for the life
-/// of the process, discarding the bytes. `VideoReader`/`VideoEncoder` pipe stderr *and*
+/// of the process, discarding the bytes. `CliReader`/`VideoEncoder` pipe stderr *and*
 /// separately block synchronously reading stdout / writing stdin — an unread stderr pipe
 /// fills its OS buffer once ffmpeg writes enough (a handful of KB of warnings is plenty),
 /// at which point ffmpeg blocks trying to write more, while we're blocked reading/writing
@@ -223,7 +223,7 @@ fn drain_stderr(stderr: std::process::ChildStderr) {
 
 pub use crate::frame::RgbaFrame;
 
-/// Decode-time scaling/pacing knobs for `VideoReader`. Used by the playback engine to
+/// Decode-time scaling/pacing knobs for `CliReader`. Used by the playback engine to
 /// decode at panel resolution (instead of full source resolution) and at the project's
 /// output fps (instead of the source's native fps), rather than downscaling/retiming
 /// full-resolution frames after the fact.
@@ -429,7 +429,7 @@ const HWACCEL_CANDIDATES: &[&str] = &["cuda", "qsv", "d3d11va"];
 
 static COMPILED_HWACCELS: OnceLock<Vec<String>> = OnceLock::new();
 /// Whether a probed hwaccel actually produced a usable frame, cached for the rest of the
-/// process after the first `VideoReader::open_with` call — see its doc comment.
+/// process after the first `CliReader::open_with` call — see its doc comment.
 static HWACCEL_WORKS: OnceLock<bool> = OnceLock::new();
 
 /// Hardware accel names this `ffmpeg` binary was compiled with (`ffmpeg -hwaccels`).
@@ -469,8 +469,9 @@ fn preferred_hwaccel() -> Option<&'static str> {
         .copied()
 }
 
-/// Sequential RGBA frame reader backed by a long-lived `ffmpeg` decode pipe.
-pub struct VideoReader {
+/// Sequential RGBA frame reader backed by a long-lived `ffmpeg` decode pipe. Wrapped by the
+/// public `media::VideoReader` (see `media/backend.rs`); not exposed directly.
+pub(super) struct CliReader {
     child: Child,
     stdout: BufReader<ChildStdout>,
     width: u32,
@@ -484,14 +485,10 @@ pub struct VideoReader {
 
 type ChildStdout = std::process::ChildStdout;
 
-impl VideoReader {
-    pub fn open(path: &Path, start_secs: f64) -> Result<Self, FfmpegCliError> {
-        Self::open_with(path, start_secs, &ReaderOptions::default())
-    }
-
+impl CliReader {
     /// A3: hardware decode via `-hwaccel`, probed once per process and cached.
     ///
-    /// The *first* `VideoReader` opened in the process's lifetime pays the cost of
+    /// The *first* `CliReader` opened in the process's lifetime pays the cost of
     /// actually trying hardware decode: spawn ffmpeg with the best compiled-in *named*
     /// candidate (`cuda` / `qsv` / `d3d11va`), decode one real frame as a warm-up/health
     /// check, and remember the outcome in `HWACCEL_WORKS`. Every subsequent open in this
@@ -648,7 +645,7 @@ impl VideoReader {
     }
 }
 
-impl Drop for VideoReader {
+impl Drop for CliReader {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -1366,7 +1363,7 @@ mod scaling_tests {
 
 #[cfg(test)]
 mod video_reader_tests {
-    use super::{ffmpeg_path, ReaderOptions, SerialSpawn, VideoReader};
+    use super::{ffmpeg_path, CliReader, ReaderOptions, SerialSpawn};
 
     fn ffmpeg_available() -> bool {
         super::is_available()
@@ -1376,7 +1373,7 @@ mod video_reader_tests {
     /// passes `target_height` into the *continuous* playback decoder, not just paused
     /// scrub). `scaled_dimensions_*` in `scaling_tests` only checks the predicted (w, h)
     /// against the formula on paper; this test decodes a real odd-dimension source
-    /// through a live `VideoReader` (exactly like the playback loop does) and reads every
+    /// through a live `CliReader` (exactly like the playback loop does) and reads every
     /// frame to EOF. If our predicted `frame_bytes` ever drifted from what ffmpeg's
     /// `scale=-2:h` actually emits, `read_frame` would desync partway through and either
     /// error out or silently yield the wrong frame count — both are caught below.
@@ -1413,7 +1410,7 @@ mod video_reader_tests {
             .expect("ffmpeg encode");
         assert!(status.success());
 
-        let mut reader = VideoReader::open_with(
+        let mut reader = CliReader::open_with(
             &video_path,
             0.0,
             &ReaderOptions {
@@ -1458,7 +1455,7 @@ mod video_reader_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A3: hardware decode must not change decoded pixel content. `VideoReader::spawn`
+    /// A3: hardware decode must not change decoded pixel content. `CliReader::spawn`
     /// (private, called directly here to bypass the process-wide `HWACCEL_WORKS` cache
     /// and force each path deterministically) runs the exact same `-vf` color-conversion
     /// chain regardless of decode backend, so a software decode and a hwaccel decode of
@@ -1496,7 +1493,7 @@ mod video_reader_tests {
         assert!(status.success());
 
         let opts = ReaderOptions::default();
-        let mut sw = VideoReader::spawn(&video_path, 0.0, &opts, None).expect("software spawn");
+        let mut sw = CliReader::spawn(&video_path, 0.0, &opts, None).expect("software spawn");
         let sw_frame = sw
             .read_frame_from_pipe()
             .expect("software read")
@@ -1507,7 +1504,7 @@ mod video_reader_tests {
             std::fs::remove_dir_all(&dir).ok();
             return;
         };
-        let hw_frame = match VideoReader::spawn(&video_path, 0.0, &opts, Some(accel)) {
+        let hw_frame = match CliReader::spawn(&video_path, 0.0, &opts, Some(accel)) {
             Ok(mut hw) => match hw.read_frame_from_pipe() {
                 Ok(Some(frame)) => frame,
                 _ => {

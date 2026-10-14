@@ -39,7 +39,7 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 | — | Captions burned in | ✅ | Preview and export share the `ab_glyph` rasterizer; translucent boxes and shadows keep their alpha |
 | — | Captions in the Canvas2D fallback | ⏸️ | WebGPU covers evergreen browsers; low value |
 | — | Hardware decode (`-hwaccel`) / encode (NVENC/QSV) | ✅ | Probed, software fallback |
-| — | Linked FFmpeg (`ffmpeg-the-third`) | ⏸️ | Waiting on vcpkg/`FFMPEG_DIR` across all environments |
+| — | Linked FFmpeg (`ffmpeg-the-third`) | 🟡 | Foundation only: probe/decode backend seam, off-by-default `linked-ffmpeg` feature with a linked probe (uncompiled locally), informational Linux CI job. Linked decode, Windows/macOS libs and packaging remain — [linked-ffmpeg.md](linked-ffmpeg.md) |
 
 ## AI & automation
 

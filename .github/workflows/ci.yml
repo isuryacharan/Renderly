@@ -111,3 +111,47 @@ jobs:
                       assert (resolved / "plugin.json").is_file(), resolved
           print(f"ok: {len(data)} registry entries")
           PY
+
+  # INFORMATIONAL, NOT A MERGE GATE. This job compiles the optional `linked-ffmpeg` feature
+  # (in-process libav probe, see docs/linked-ffmpeg.md). The linked backend is not yet proven,
+  # so `continue-on-error: true` keeps a failure here from blocking merges. Remove that line
+  # only once the linked backend is shipped and this job has been reliably green.
+  linked-ffmpeg:
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install FFmpeg development libraries and CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libavcodec-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libswscale-dev \
+            libswresample-dev \
+            libavfilter-dev \
+            libavdevice-dev \
+            libclang-dev \
+            pkg-config \
+            clang \
+            ffmpeg
+
+      # Keep `toolchain` equal to `channel` in rust-toolchain.toml (see the note there).
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linked-ffmpeg
+
+      - name: Check linked-ffmpeg feature
+        run: cargo check -p renderly-core --features linked-ffmpeg
+
+      - name: Test linked probe
+        run: cargo test -p renderly-core --features linked-ffmpeg --lib media::

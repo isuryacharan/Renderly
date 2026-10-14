@@ -3,7 +3,10 @@
 //! `probe()` works without FFmpeg for a narrow set of formats (WAV). When FFmpeg is on
 //! PATH, video probing uses `ffprobe` during import and export.
 
+mod backend;
 mod ffmpeg_cli;
+#[cfg(feature = "linked-ffmpeg")]
+mod linked;
 
 use crate::project::MediaKind;
 use serde::{Deserialize, Serialize};
@@ -12,11 +15,11 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use thiserror::Error;
 
+pub use backend::{has_audio_stream, probe_video, selected_backend, MediaBackend, VideoReader};
 pub use ffmpeg_cli::{
-    ffmpeg_path, ffprobe_path, generate_thumbnail_strip, has_audio_stream,
-    is_available as ffmpeg_available, mix_timeline_audio, mux_video_audio, probe_video,
-    AudioMixClip, DuckSettings, FfmpegCliError, ReaderOptions, RgbaFrame, ThumbnailStrip,
-    VideoEncodeConfig, VideoEncoder, VideoEncoderPreference, VideoReader,
+    ffmpeg_path, ffprobe_path, generate_thumbnail_strip, is_available as ffmpeg_available,
+    mix_timeline_audio, mux_video_audio, AudioMixClip, DuckSettings, FfmpegCliError, ReaderOptions,
+    RgbaFrame, ThumbnailStrip, VideoEncodeConfig, VideoEncoder, VideoEncoderPreference,
 };
 
 #[derive(Debug, Error)]
@@ -84,7 +87,7 @@ pub fn probe(path: &Path) -> Result<ProbedMedia, MediaError> {
     }
 
     if kind == MediaKind::Video && ffmpeg_cli::is_available() {
-        if let Ok(video) = ffmpeg_cli::probe_video(path) {
+        if let Ok(video) = probe_video(path) {
             probed.duration_secs = Some(video.duration_secs);
             probed.width = Some(video.width);
             probed.height = Some(video.height);
