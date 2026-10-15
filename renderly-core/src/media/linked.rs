@@ -113,9 +113,6 @@ pub fn has_audio_stream(path: &Path) -> Result<bool, LinkedError> {
 /// depend on the bindings exposing the macro.
 const SWS_CS_ITU709: c_int = 1;
 
-/// Slack when comparing output-slot times with the end of the stream (seconds).
-const SLOT_EPS: f64 = 1e-6;
-
 /// Scaler for one source format and size, cached on `LinkedReader` and rebuilt if the decoded
 /// frame's format or size changes.
 struct Converter {
@@ -360,8 +357,11 @@ impl LinkedReader {
             return;
         };
         if let Some((_, last)) = self.latest.take() {
-            let end = self.last_rel + self.last_gap;
-            while (self.next_slot as f64) / fps < end - SLOT_EPS {
+            // Work in whole slots, as the slot placement above does, so timestamp jitter cannot
+            // add or remove a tail frame: the end is the last frame's slot plus its gap in slots.
+            let end = (self.last_rel * fps).round() as i64
+                + ((self.last_gap * fps).round() as i64).max(1);
+            while self.next_slot < end {
                 self.ready.push_back(last.clone());
                 self.next_slot += 1;
             }
