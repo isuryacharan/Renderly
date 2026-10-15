@@ -61,14 +61,17 @@ pub fn has_audio_stream(path: &Path) -> Result<bool, FfmpegCliError> {
     ffmpeg_cli::has_audio_stream(path)
 }
 
-/// Sequential RGBA frame reader. Decode always uses the CLI backend today; the enum below is
-/// where a decode backend would be added without changing any call site.
+/// Sequential RGBA frame reader. Decodes with the in-process libav reader when the
+/// `linked-ffmpeg` feature is compiled in and `RENDERLY_MEDIA_BACKEND=linked` is set, and
+/// falls back to the CLI reader if that fails to open. Otherwise it uses the CLI reader.
 pub struct VideoReader {
     reader: ReaderBackend,
 }
 
 enum ReaderBackend {
     Cli(CliReader),
+    #[cfg(feature = "linked-ffmpeg")]
+    Linked(super::linked::LinkedReader),
 }
 
 impl VideoReader {
@@ -81,6 +84,16 @@ impl VideoReader {
         start_secs: f64,
         opts: &ReaderOptions,
     ) -> Result<Self, FfmpegCliError> {
+        #[cfg(feature = "linked-ffmpeg")]
+        {
+            if selected_backend() == MediaBackend::Linked {
+                if let Ok(reader) = super::linked::LinkedReader::open(path, start_secs, opts) {
+                    return Ok(Self {
+                        reader: ReaderBackend::Linked(reader),
+                    });
+                }
+            }
+        }
         Ok(Self {
             reader: ReaderBackend::Cli(CliReader::open_with(path, start_secs, opts)?),
         })
@@ -89,18 +102,24 @@ impl VideoReader {
     pub fn width(&self) -> u32 {
         match &self.reader {
             ReaderBackend::Cli(reader) => reader.width(),
+            #[cfg(feature = "linked-ffmpeg")]
+            ReaderBackend::Linked(reader) => reader.width(),
         }
     }
 
     pub fn height(&self) -> u32 {
         match &self.reader {
             ReaderBackend::Cli(reader) => reader.height(),
+            #[cfg(feature = "linked-ffmpeg")]
+            ReaderBackend::Linked(reader) => reader.height(),
         }
     }
 
     pub fn read_frame(&mut self) -> Result<Option<RgbaFrame>, FfmpegCliError> {
         match &mut self.reader {
             ReaderBackend::Cli(reader) => reader.read_frame(),
+            #[cfg(feature = "linked-ffmpeg")]
+            ReaderBackend::Linked(reader) => reader.read_frame(),
         }
     }
 }

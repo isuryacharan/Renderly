@@ -251,7 +251,11 @@ fn ffalign_even(x: f64) -> u32 {
 /// Scaled (width, height) for `target_height`, matching ffmpeg's `scale=-2:h` behavior:
 /// height is even-aligned, width follows source aspect ratio and is also even-aligned
 /// (both rounded up, not down — see `ffalign_even`).
-fn scaled_dimensions(src_width: u32, src_height: u32, target_height: Option<u32>) -> (u32, u32) {
+pub(super) fn scaled_dimensions(
+    src_width: u32,
+    src_height: u32,
+    target_height: Option<u32>,
+) -> (u32, u32) {
     match target_height {
         Some(h) if h > 0 && h < src_height => {
             let height = ffalign_even(h as f64);
