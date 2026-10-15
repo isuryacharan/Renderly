@@ -48,7 +48,7 @@ pub enum Command {
     GenerateSticker { prompt: String, track_id: Id, position_secs: f64, output_path: String },
     CreateMulticamGroup { name: String, clip_ids: Vec<Id> },
     SetMulticamAngle { group_id: Id, active_angle: usize },
-    TrackMotion { track_id: Id, clip_id: Id, sample_count: u32, region: Option<TrackRegion>, track_rotation_scale: bool },
+    TrackMotion { track_id: Id, clip_id: Id, sample_count: u32, region: Option<TrackRegion>, track_rotation_scale: bool, target: Option<ClipRef> },
     StabilizeClip { track_id: Id, clip_id: Id, strength: Option<f64>, sample_count: Option<u32> },
     AutoReframeClip { track_id: Id, clip_id: Id, target_aspect: f64 },
     CreateSequence { name: String, width: Option<u32>, height: Option<u32>, id: Option<Id> },
@@ -350,10 +350,41 @@ keyframed fit is not read here. Previously written
 replaced; other keyframe tracks are untouched. `Rotation` is degrees, counter-clockwise on
 screen. Still images are a no-op (`Applied`, nothing written).
 
+- `target` (optional `ClipRef`, default `None` = this clip): write the keyframes onto another
+  video clip so that clip follows the tracked point (e.g. a sticker or text overlay pinned to
+  a moving object). The tracked clip is then not modified at all. Target semantics:
+  - The target must be a `Clip::Video` on a **video** track in the **same timeline** (root or
+    the same sequence) as the tracked clip, must not be the tracked clip, and must overlap it
+    in timeline time. Otherwise `InvalidTrackTarget` (with a reason), or `TrackKindMismatch`
+    for a non-video track.
+  - Coordinates: the tracked point is placed on the canvas with the tracked clip's transform
+    at each frame's time (`evaluate_transform`, keyframes included): with the tracked clip's
+    position `p` (cover-fit NDC, +y up), scale `(sx, sy)`, rotation `θ` (degrees, CCW) and
+    offset `(tx, ty)`, the canvas point is `P = R(θ) · (sx·p.x, sy·p.y) + (tx, ty)`.
+  - Offset (one behaviour, by design): the target's `PosX` = `P.x + target.transform.x` and
+    `PosY` = `P.y + target.transform.y`, i.e. the target's **static** `x`/`y` is kept as a
+    user-placed offset from the tracked point. Re-tracking does not accumulate it.
+  - Times: keyframe times are target-local (`timeline - target.position_secs`). The
+    `sample_count` keys are spread evenly over the **overlap** of the two clips, so every key
+    lies inside the target's span and the first/last keys sit on the overlap's ends.
+  - `track_rotation_scale`: `Rotation` = `target.transform.rotation_deg + Δθ`, `ScaleX` =
+    `target.transform.scale_x × Δsx`, `ScaleY` = `target.transform.scale_y × Δsy`, where `Δ` is
+    the region's rotation/scale relative to the first tracked frame, multiplied by the change
+    of the tracked clip's own rotation/scale since its first frame (so a scaled or rotated
+    tracked layer is accounted for).
+  - Replaces the target's existing `PosX`/`PosY` keyframe tracks (and `Rotation`/`ScaleX`/
+    `ScaleY` in rotation/scale mode). Its other keyframe tracks are left alone; its static
+    transform is never changed.
+  - Accuracy: tracking is unchanged; the mapping is exact per analysed frame, and the target
+    is linearly interpolated between its keys. The core tests measure < 0.001 NDC on a
+    synthetic pan with the tracked clip at identity and < 0.001 NDC with a scaled, rotated
+    and offset tracked clip.
+
 Errors: `TrackNotFound`, `ClipNotFound`, `NotMediaClip`, `TrackKindMismatch` (not a video
-track), `MediaNotFound`, `Analysis` (audio-only media, zero-length clip, invalid `region`, no
-trackable features in the region, decode failure). Old JSON without `region` /
-`track_rotation_scale` still deserialises.
+track), `MediaNotFound`, `InvalidTrackTarget(String)` (bad `target`: self, not a video media
+clip, other timeline, no overlap), `Analysis` (audio-only media, zero-length clip, invalid
+`region`, no trackable features in the region, decode failure). Old JSON without `region` /
+`track_rotation_scale` / `target` still deserialises.
 
 ### `StabilizeClip` (Phase 4)
 Estimates the camera's global motion and writes compensating transform keyframes.

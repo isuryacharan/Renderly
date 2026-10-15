@@ -343,7 +343,12 @@ export function trackMotion(
   trackId: string,
   clipId: string,
   sampleCount = 12,
-  opts: { region?: TrackRegion | null; trackRotationScale?: boolean } = {},
+  opts: {
+    region?: TrackRegion | null;
+    trackRotationScale?: boolean;
+    /** Write the keyframes to this video clip instead (it follows the tracked point). */
+    target?: { trackId: string; clipId: string } | null;
+  } = {},
 ) {
   return {
     command: "TrackMotion",
@@ -352,6 +357,7 @@ export function trackMotion(
     sample_count: sampleCount,
     region: opts.region ?? null,
     track_rotation_scale: opts.trackRotationScale ?? false,
+    target: opts.target ? { track_id: opts.target.trackId, clip_id: opts.target.clipId } : null,
   };
 }
 

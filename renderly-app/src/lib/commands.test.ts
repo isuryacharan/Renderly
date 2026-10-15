@@ -66,7 +66,11 @@ const samples: Record<string, unknown> = {
   GenerateSticker: c.generateSticker("cat", T, 1, "o.png"),
   CreateMulticamGroup: c.createMulticamGroup("g", ["a", "b"]),
   SetMulticamAngle: c.setMulticamAngle("g", 1),
-  TrackMotion: c.trackMotion(T, K, 12, { region: { x: 0.1, y: 0.1, width: 0.5, height: 0.5 }, trackRotationScale: true }),
+  TrackMotion: c.trackMotion(T, K, 12, {
+    region: { x: 0.1, y: 0.1, width: 0.5, height: 0.5 },
+    trackRotationScale: true,
+    target: { trackId: "t-2", clipId: "k-2" },
+  }),
   StabilizeClip: c.stabilizeClip(T, K, { strength: 0.5, sampleCount: 90 }),
   AutoReframeClip: c.autoReframeClip(T, K, 9 / 16),
   CreateSequence: c.createSequence("Intro", { width: 640, height: 360, id: "seq-1" }),
@@ -203,6 +207,14 @@ describe("builder payloads", () => {
   it("generateCaptions defaults the offset to 0 and trackMotion to 12 samples", () => {
     expect(c.generateCaptions("m", "t", "s").timeline_offset_secs).toBe(0);
     expect(c.trackMotion("t", "k").sample_count).toBe(12);
+  });
+
+  it("trackMotion sends target null (this clip) unless a target is given", () => {
+    expect(c.trackMotion("t", "k").target).toBeNull();
+    expect(c.trackMotion("t", "k", 12, { target: { trackId: "t2", clipId: "k2" } }).target).toEqual({
+      track_id: "t2",
+      clip_id: "k2",
+    });
   });
 
   it("generateVoiceover serialises the provider with the snake_case tag Rust expects", () => {

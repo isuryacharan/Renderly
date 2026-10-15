@@ -17,6 +17,8 @@ import {
 } from "../../lib/commands";
 import type { ClipTransform, MediaClip, Track, TrackAudioRole } from "../../lib/types";
 import { IDENTITY_TRANSFORM } from "../../lib/types";
+import { activeTracks } from "../../lib/container";
+import { motionTargetChoices, motionTargetRef } from "../../lib/motionTarget";
 import { MenuSelect } from "../ui/MenuSelect";
 import { Tooltip } from "../ui/Tooltip";
 import { KeyframeEditor } from "./KeyframeEditor";
@@ -82,6 +84,20 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
   const select = useEditorStore((s) => s.select);
   const project = useEditorStore((s) => s.project);
   const media = useEditorStore((s) => s.project?.media.find((m) => m.id === clip.media_id));
+  const activeSequenceId = useEditorStore((s) => s.activeSequenceId);
+
+  // "Apply to" for Track motion. The pick is remembered per clip; otherwise the default applies.
+  const [motionPick, setMotionPick] = useState<{ clipId: string; value: string } | null>(null);
+  const motionTargets = motionTargetChoices(
+    project,
+    activeTracks(project, activeSequenceId),
+    track,
+    clip,
+  );
+  const motionChoice =
+    motionPick?.clipId === clip.id && motionTargets.options.some((o) => o.value === motionPick.value)
+      ? motionPick.value
+      : motionTargets.defaultValue;
 
   const [gain, setGain] = useState(clip.gain_db);
   const [sourceIn, setSourceIn] = useState(clip.source_in_secs);
@@ -407,10 +423,23 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
             >
               Stabilize
             </button>
+            <label className="insp-cell">
+              <span>Apply to</span>
+              <MenuSelect
+                value={motionChoice}
+                disabled={track.locked}
+                options={motionTargets.options}
+                onChange={(value) => setMotionPick({ clipId: clip.id, value })}
+              />
+            </label>
             <button
               type="button"
               disabled={track.locked}
-              onClick={() => void dispatch(trackMotion(track.id, clip.id, 12))}
+              onClick={() =>
+                void dispatch(
+                  trackMotion(track.id, clip.id, 12, { target: motionTargetRef(motionChoice) }),
+                )
+              }
             >
               Track motion
             </button>

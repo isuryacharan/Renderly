@@ -52,7 +52,7 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 | — | TTS voiceover (local Piper / BYO cloud key) | ✅ | `GenerateVoiceover` |
 | — | Ducking, fades, mixing | ✅ | |
 | P4-2 | Audio denoise | ✅ | `SetClipAudioDenoise`; `rnnoise` backend (`nnnoiseless`, in-process, cached per source) alongside `afftdn`. Weak on steady white hiss; strong on hum, rumble and noise between words |
-| P4-4 | Motion tracking | ✅ | `TrackMotion`; Shi–Tomasi corners + pyramidal Lucas–Kanade in `renderly-core/src/tracking.rs`, optional region and rotation/scale. Frame-to-frame, no template re-anchoring |
+| P4-4 | Motion tracking | ✅ | `TrackMotion`; Shi–Tomasi corners + pyramidal Lucas–Kanade in `renderly-core/src/tracking.rs`, optional region and rotation/scale. Frame-to-frame, no template re-anchoring. Can pin another clip (sticker, overlay) to the tracked point |
 | P4-5 | Stabilization | ✅ | `StabilizeClip`; RANSAC similarity per frame, smoothed camera path, auto-zoom capped at 1.4×. No rolling-shutter or parallax correction |
 | P4-4b | Auto-reframe | ✅ | `AutoReframeClip`; follows the main face (bundled YuNet, run with `tract`) across the whole frame by keyframing the cover-fit pan (`fit_x`/`fit_y`). Faces only — no body or object subjects |
 | P4-6b | Text-to-sticker | 🟡 | `GenerateSticker`; locally generated PNG, not an image model |

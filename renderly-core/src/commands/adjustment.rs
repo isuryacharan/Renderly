@@ -639,6 +639,7 @@ mod tests {
                 sample_count: 50,
                 region: None,
                 track_rotation_scale: false,
+                target: None,
             },
             Command::StabilizeClip {
                 track_id: vtrack,

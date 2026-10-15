@@ -3,6 +3,7 @@ import { useEditorStore } from "../store/editorStore";
 import { activeTracks, isNestedClip, sequenceOfMedia } from "../lib/container";
 import { setClipEnabled, splitClip, trackMotion, stabilizeClip, autoReframeClip } from "../lib/commands";
 import { invokeAction } from "../lib/actions";
+import { motionTargetChoices, motionTargetRef } from "../lib/motionTarget";
 
 export function ContextMenu() {
   const menu = useEditorStore((s) => s.contextMenu);
@@ -154,7 +155,22 @@ export function ContextMenu() {
             onClick={() =>
               run(() =>
                 void runAnalysis("Track motion", () =>
-                  dispatch(trackMotion(menu.trackId, menu.clipId, 12)),
+                  dispatch(
+                    trackMotion(menu.trackId, menu.clipId, 12, {
+                      // Same default as the inspector's "Apply to" picker.
+                      target:
+                        track && clip && clip.type === "video"
+                          ? motionTargetRef(
+                              motionTargetChoices(
+                                project,
+                                activeTracks(project, activeSequenceId),
+                                track,
+                                clip,
+                              ).defaultValue,
+                            )
+                          : null,
+                    }),
+                  ),
                 ),
               )
             }

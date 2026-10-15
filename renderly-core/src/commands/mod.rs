@@ -287,7 +287,8 @@ pub enum Command {
     },
     /// Track a region of the clip with pyramidal Lucas-Kanade features + RANSAC and write
     /// `PosX`/`PosY` keyframes (the tracked point's position in NDC); optionally also
-    /// `Rotation`/`ScaleX`/`ScaleY` (Phase 4).
+    /// `Rotation`/`ScaleX`/`ScaleY` (Phase 4). With `target`, the keyframes are written to that
+    /// other video clip instead (it follows the tracked point); the tracked clip is untouched.
     TrackMotion {
         track_id: Id,
         clip_id: Id,
@@ -296,6 +297,8 @@ pub enum Command {
         region: Option<TrackRegion>,
         #[serde(default)]
         track_rotation_scale: bool,
+        #[serde(default)]
+        target: Option<ClipRef>,
     },
     /// Feature-based stabilization: estimate global similarity motion, smooth the camera path
     /// and write compensating `PosX`/`PosY`/`Rotation`/`ScaleX`/`ScaleY` keyframes (Phase 4).
@@ -486,6 +489,8 @@ pub enum CommandError {
     Multicam(String),
     #[error("analysis error: {0}")]
     Analysis(String),
+    #[error("invalid tracking target: {0}")]
+    InvalidTrackTarget(String),
     /// An ML model the command needs is not installed. Commands never download; fetch it with
     /// `renderly models download <id>` (or the `ml_download_model` / MCP `download_model` tools)
     /// after the user agreed.
@@ -751,6 +756,7 @@ pub fn apply_command(project: &mut Project, cmd: Command) -> Result<CommandOutco
             sample_count,
             region,
             track_rotation_scale,
+            target,
         } => motion::track_motion(
             project,
             track_id,
@@ -758,6 +764,7 @@ pub fn apply_command(project: &mut Project, cmd: Command) -> Result<CommandOutco
             sample_count,
             region,
             track_rotation_scale,
+            target,
         ),
         Command::StabilizeClip {
             track_id,

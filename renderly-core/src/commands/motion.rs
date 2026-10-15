@@ -12,11 +12,11 @@
 //!
 //! Image y runs downwards, so every vertical quantity and every angle is negated on the way out.
 
-use super::{CommandError, CommandOutcome, TrackRegion};
+use super::{ClipRef, CommandError, CommandOutcome, TrackRegion};
 use crate::media::{self, ReaderOptions, VideoReader};
 use crate::project::{
-    AnimProperty, ClipTransform, Easing, Id, Keyframe, KeyframeTrack, MediaClip, MediaKind,
-    Project, TrackKind,
+    evaluate_transform, AnimProperty, Clip, ClipTransform, Easing, Id, Keyframe, KeyframeTrack,
+    MediaClip, MediaKind, Project, TrackKind,
 };
 use crate::tracking::{
     gaussian_smooth, simplify_polyline, GrayImage, MotionModel, MotionTracker, Rect, Similarity,
@@ -282,6 +282,22 @@ pub(super) fn cover_fractions(src_w: f64, src_h: f64, out_w: f64, out_h: f64) ->
     }
 }
 
+/// How far (in layer-local NDC) a clip's cover-fit pan moves a source point relative to the
+/// centred cover window: the window slides by `fit`, so content moves the opposite way.
+fn fit_shift(
+    series: &MotionSeries,
+    transform: &ClipTransform,
+    out_w: f64,
+    out_h: f64,
+) -> (f64, f64) {
+    let fit = transform.clamp_fit();
+    let (cs_x, cs_y) = cover_fractions(series.width as f64, series.height as f64, out_w, out_h);
+    (
+        -(1.0 - cs_x) * fit.fit_x / cs_x,
+        (1.0 - cs_y) * fit.fit_y / cs_y,
+    )
+}
+
 pub(super) fn key(time_secs: f64, value: f64) -> Keyframe {
     Keyframe {
         time_secs,
@@ -352,11 +368,16 @@ pub(super) fn track_motion(
     sample_count: u32,
     region: Option<TrackRegion>,
     track_rotation_scale: bool,
+    target: Option<ClipRef>,
 ) -> Result<CommandOutcome, CommandError> {
     let vc = resolve(project, track_id, clip_id)?;
     if let Some(r) = &region {
         validate_region(r)?;
     }
+    let target = match target {
+        Some(t) => Some(resolve_target(project, track_id, clip_id, &vc.clip, t)?),
+        None => None,
+    };
     if vc.kind == MediaKind::Image {
         // A still never moves: nothing to track.
         return Ok(CommandOutcome::Applied);
@@ -374,40 +395,235 @@ pub(super) fn track_motion(
     };
     let series = analyse_motion(&vc, None, model, Some(region), true)?;
     let (out_w, out_h) = out_size(project);
-    let mut curves = tracking_curves(
-        &series,
-        out_w,
-        out_h,
-        sample_count as usize,
-        track_rotation_scale,
-    );
-    // `tracking_curves` places the point in the centred cover window. A static cover-fit
-    // position on the clip slides that window, so the tracked point sits this far further
-    // along the canvas (in NDC, before the clip transform). Zero for fit 0.
-    let fit = vc.clip.transform.clamp_fit();
-    let (cs_x, cs_y) = cover_fractions(series.width as f64, series.height as f64, out_w, out_h);
-    let (shift_x, shift_y) = (
-        -(1.0 - cs_x) * fit.fit_x / cs_x,
-        (1.0 - cs_y) * fit.fit_y / cs_y,
-    );
-    for v in &mut curves.pos_x {
-        *v += shift_x;
-    }
-    for v in &mut curves.pos_y {
-        *v += shift_y;
-    }
-    let mut tracks = vec![
-        (AnimProperty::PosX, keys_from(&curves.times, &curves.pos_x)),
-        (AnimProperty::PosY, keys_from(&curves.times, &curves.pos_y)),
-    ];
-    if let Some((rot, scale)) = curves.rot_scale {
-        tracks.push((AnimProperty::Rotation, keys_from(&curves.times, &rot)));
-        tracks.push((AnimProperty::ScaleX, keys_from(&curves.times, &scale)));
-        tracks.push((AnimProperty::ScaleY, keys_from(&curves.times, &scale)));
-    }
-    let clip = super::media_clip_mut(project, track_id, clip_id)?;
+    let (dest_track, dest_clip, tracks) = match target {
+        None => {
+            let mut curves = tracking_curves(
+                &series,
+                out_w,
+                out_h,
+                sample_count as usize,
+                track_rotation_scale,
+            );
+            // `tracking_curves` places the point in the centred cover window. A static
+            // cover-fit position on the clip slides that window, so the tracked point sits
+            // this far further along the canvas (in NDC, before the clip transform). Zero for
+            // fit 0.
+            let (shift_x, shift_y) = fit_shift(&series, &vc.clip.transform, out_w, out_h);
+            for v in &mut curves.pos_x {
+                *v += shift_x;
+            }
+            for v in &mut curves.pos_y {
+                *v += shift_y;
+            }
+            let mut tracks = vec![
+                (AnimProperty::PosX, keys_from(&curves.times, &curves.pos_x)),
+                (AnimProperty::PosY, keys_from(&curves.times, &curves.pos_y)),
+            ];
+            if let Some((rot, scale)) = curves.rot_scale {
+                tracks.push((AnimProperty::Rotation, keys_from(&curves.times, &rot)));
+                tracks.push((AnimProperty::ScaleX, keys_from(&curves.times, &scale)));
+                tracks.push((AnimProperty::ScaleY, keys_from(&curves.times, &scale)));
+            }
+            (track_id, clip_id, tracks)
+        }
+        Some(target) => {
+            let canvas = canvas_track(&series, &vc.clip, out_w, out_h);
+            let tracks = target_tracks(
+                &canvas,
+                &target,
+                sample_count as usize,
+                track_rotation_scale,
+            );
+            (target.track_id, target.clip_id, tracks)
+        }
+    };
+    let clip = super::media_clip_mut(project, dest_track, dest_clip)?;
     set_tracks(clip, tracks);
     Ok(CommandOutcome::Applied)
+}
+
+/// A validated `TrackMotion` target: the clip that will receive the keyframes.
+struct TargetInfo {
+    track_id: Id,
+    clip_id: Id,
+    position_secs: f64,
+    duration_secs: f64,
+    /// The target's static transform (its user-placed offset and base rotation/scale).
+    transform: ClipTransform,
+    /// Timeline span shared by the tracked clip and the target.
+    overlap: (f64, f64),
+}
+
+fn resolve_target(
+    project: &Project,
+    track_id: Id,
+    clip_id: Id,
+    tracked: &MediaClip,
+    target: ClipRef,
+) -> Result<TargetInfo, CommandError> {
+    if target.track_id == track_id && target.clip_id == clip_id {
+        return Err(CommandError::InvalidTrackTarget(
+            "a clip cannot be its own tracking target".into(),
+        ));
+    }
+    let track = project
+        .find_track(target.track_id)
+        .ok_or(CommandError::TrackNotFound(target.track_id))?;
+    if track.kind != TrackKind::Video {
+        return Err(CommandError::TrackKindMismatch(
+            target.track_id,
+            track.kind,
+            TrackKind::Video,
+        ));
+    }
+    if project.container_of_track(track_id) != project.container_of_track(target.track_id) {
+        return Err(CommandError::InvalidTrackTarget(
+            "the target must be on the same timeline (root or sequence) as the tracked clip".into(),
+        ));
+    }
+    let clip = match track
+        .clips
+        .iter()
+        .find(|c| c.id() == target.clip_id)
+        .ok_or(CommandError::ClipNotFound(target.clip_id, target.track_id))?
+    {
+        Clip::Video(m) => m,
+        Clip::Audio(_) => {
+            return Err(CommandError::InvalidTrackTarget(
+                "an audio clip cannot be a tracking target".into(),
+            ))
+        }
+        Clip::Caption(_) | Clip::Adjustment(_) => {
+            return Err(CommandError::InvalidTrackTarget(
+                "only a video clip can be a tracking target (not a caption or adjustment layer)"
+                    .into(),
+            ))
+        }
+    };
+    let start = tracked.position_secs.max(clip.position_secs);
+    let end = (tracked.position_secs + tracked.timeline_duration_secs())
+        .min(clip.position_secs + clip.timeline_duration_secs());
+    if end - start <= 1e-6 {
+        return Err(CommandError::InvalidTrackTarget(
+            "the target clip does not overlap the tracked clip in timeline time".into(),
+        ));
+    }
+    Ok(TargetInfo {
+        track_id: target.track_id,
+        clip_id: target.clip_id,
+        position_secs: clip.position_secs,
+        duration_secs: clip.timeline_duration_secs(),
+        transform: clip.transform,
+        overlap: (start, end),
+    })
+}
+
+/// Where the tracked point appears on the canvas, per analysed frame. Times are timeline
+/// seconds. Values include the tracked clip's own transform (static and keyframed), so they
+/// are what the viewer sees, not just the footage.
+struct CanvasTrack {
+    times: Vec<f64>,
+    /// Canvas NDC of the tracked point (+x right, +y up), centre-relative.
+    x: Vec<f64>,
+    y: Vec<f64>,
+    /// Rotation (degrees, compositor sign) and per-axis scale of the tracked point's
+    /// neighbourhood relative to the first frame.
+    rot: Vec<f64>,
+    scale_x: Vec<f64>,
+    scale_y: Vec<f64>,
+}
+
+fn canvas_track(series: &MotionSeries, tracked: &MediaClip, out_w: f64, out_h: f64) -> CanvasTrack {
+    let (ndc_x, ndc_y) = frame_ndc(series, out_w, out_h);
+    let (rel_rot, rel_scale) = relative_rot_scale(series);
+    let n = series.times.len();
+    let at = |i: usize| evaluate_transform(tracked, tracked.position_secs + series.times[i]);
+    let base = at(0);
+    let mut out = CanvasTrack {
+        times: Vec::with_capacity(n),
+        x: Vec::with_capacity(n),
+        y: Vec::with_capacity(n),
+        rot: Vec::with_capacity(n),
+        scale_x: Vec::with_capacity(n),
+        scale_y: Vec::with_capacity(n),
+    };
+    for i in 0..n {
+        let tf = at(i);
+        let (shift_x, shift_y) = fit_shift(series, &tf, out_w, out_h);
+        // Compositor order: scale the layer-local point, rotate, then translate.
+        let (sin, cos) = tf.rotation_deg.to_radians().sin_cos();
+        let (px, py) = (
+            (ndc_x[i] + shift_x) * tf.scale_x,
+            (ndc_y[i] + shift_y) * tf.scale_y,
+        );
+        out.times.push(tracked.position_secs + series.times[i]);
+        out.x.push(cos * px - sin * py + tf.x);
+        out.y.push(sin * px + cos * py + tf.y);
+        // The region's own motion, plus whatever the tracked layer's transform changed since
+        // its first frame.
+        out.rot
+            .push(rel_rot[i] + tf.rotation_deg - base.rotation_deg);
+        out.scale_x
+            .push(rel_scale[i] * scale_ratio(tf.scale_x, base.scale_x));
+        out.scale_y
+            .push(rel_scale[i] * scale_ratio(tf.scale_y, base.scale_y));
+    }
+    out
+}
+
+fn scale_ratio(value: f64, base: f64) -> f64 {
+    if base.abs() > 1e-9 {
+        value / base
+    } else {
+        1.0
+    }
+}
+
+/// Keyframes for a target clip that follows the tracked point. The `sample_count` keys are
+/// spread over the span the two clips share, so the target never gets keys outside its own
+/// span. Times are target-local (relative to the target's `position_secs`).
+///
+/// Offset: `PosX`/`PosY` = tracked point + the target's static `transform.x`/`y`, so a
+/// user-placed offset is kept (re-tracking does not accumulate it). Keyframed `PosX`/`PosY`
+/// on the target are replaced; its static values are not.
+fn target_tracks(
+    canvas: &CanvasTrack,
+    target: &TargetInfo,
+    samples: usize,
+    rot_scale: bool,
+) -> Vec<(AnimProperty, Vec<Keyframe>)> {
+    let n = canvas.times.len();
+    let m = samples.clamp(2, n.max(2));
+    let (start, end) = target.overlap;
+    let timeline: Vec<f64> = (0..m)
+        .map(|j| start + (end - start) * j as f64 / (m - 1) as f64)
+        .collect();
+    let local: Vec<f64> = timeline
+        .iter()
+        .map(|&t| (t - target.position_secs).clamp(0.0, target.duration_secs))
+        .collect();
+    let at = |v: &[f64]| -> Vec<f64> {
+        timeline
+            .iter()
+            .map(|&t| lerp_series(&canvas.times, v, t))
+            .collect()
+    };
+    let s = target.transform;
+    let pos_x: Vec<f64> = at(&canvas.x).iter().map(|v| v + s.x).collect();
+    let pos_y: Vec<f64> = at(&canvas.y).iter().map(|v| v + s.y).collect();
+    let mut tracks = vec![
+        (AnimProperty::PosX, keys_from(&local, &pos_x)),
+        (AnimProperty::PosY, keys_from(&local, &pos_y)),
+    ];
+    if rot_scale {
+        let rot: Vec<f64> = at(&canvas.rot).iter().map(|r| r + s.rotation_deg).collect();
+        let sx: Vec<f64> = at(&canvas.scale_x).iter().map(|k| k * s.scale_x).collect();
+        let sy: Vec<f64> = at(&canvas.scale_y).iter().map(|k| k * s.scale_y).collect();
+        tracks.push((AnimProperty::Rotation, keys_from(&local, &rot)));
+        tracks.push((AnimProperty::ScaleX, keys_from(&local, &sx)));
+        tracks.push((AnimProperty::ScaleY, keys_from(&local, &sy)));
+    }
+    tracks
 }
 
 fn keys_from(times: &[f64], values: &[f64]) -> Vec<Keyframe> {
@@ -430,28 +646,10 @@ fn tracking_curves(
     samples: usize,
     rot_scale: bool,
 ) -> TrackingCurves {
-    let (w, h) = (series.width as f64, series.height as f64);
-    let (cs_x, cs_y) = cover_fractions(w, h, out_w, out_h);
     let n = series.times.len();
     let m = samples.clamp(2, n.max(2));
     let dur = series.times[n - 1];
-    let ndc_x: Vec<f64> = series
-        .centres
-        .iter()
-        .map(|c| 2.0 * (0.5 + (c.0 / w - 0.5) / cs_x) - 1.0)
-        .collect();
-    let ndc_y: Vec<f64> = series
-        .centres
-        .iter()
-        .map(|c| 1.0 - 2.0 * (0.5 + (c.1 / h - 0.5) / cs_y))
-        .collect();
-    let (mut rot, mut scale) = (Vec::with_capacity(n), Vec::with_capacity(n));
-    let mut cum = Similarity::IDENTITY;
-    for s in &series.steps {
-        cum = cum.then(s);
-        rot.push(-cum.angle().to_degrees());
-        scale.push(cum.scale());
-    }
+    let (ndc_x, ndc_y) = frame_ndc(series, out_w, out_h);
     let times: Vec<f64> = (0..m).map(|j| dur * j as f64 / (m - 1) as f64).collect();
     let sample = |v: &[f64]| -> Vec<f64> {
         times
@@ -462,9 +660,44 @@ fn tracking_curves(
     TrackingCurves {
         pos_x: sample(&ndc_x),
         pos_y: sample(&ndc_y),
-        rot_scale: rot_scale.then(|| (sample(&rot), sample(&scale))),
+        rot_scale: rot_scale.then(|| {
+            let (rot, scale) = relative_rot_scale(series);
+            (sample(&rot), sample(&scale))
+        }),
         times,
     }
+}
+
+/// Tracked point per analysed frame as canvas-centred NDC of the cover-fitted layer (before
+/// the layer's own transform), +x right, +y up.
+fn frame_ndc(series: &MotionSeries, out_w: f64, out_h: f64) -> (Vec<f64>, Vec<f64>) {
+    let (w, h) = (series.width as f64, series.height as f64);
+    let (cs_x, cs_y) = cover_fractions(w, h, out_w, out_h);
+    let ndc_x: Vec<f64> = series
+        .centres
+        .iter()
+        .map(|c| 2.0 * (0.5 + (c.0 / w - 0.5) / cs_x) - 1.0)
+        .collect();
+    let ndc_y: Vec<f64> = series
+        .centres
+        .iter()
+        .map(|c| 1.0 - 2.0 * (0.5 + (c.1 / h - 0.5) / cs_y))
+        .collect();
+    (ndc_x, ndc_y)
+}
+
+/// Cumulative rotation (degrees, compositor sign) and uniform scale per analysed frame,
+/// relative to the first frame.
+fn relative_rot_scale(series: &MotionSeries) -> (Vec<f64>, Vec<f64>) {
+    let n = series.steps.len();
+    let (mut rot, mut scale) = (Vec::with_capacity(n), Vec::with_capacity(n));
+    let mut cum = Similarity::IDENTITY;
+    for s in &series.steps {
+        cum = cum.then(s);
+        rot.push(-cum.angle().to_degrees());
+        scale.push(cum.scale());
+    }
+    (rot, scale)
 }
 
 pub(super) fn stabilize_clip(
@@ -996,6 +1229,7 @@ mod tests {
                 sample_count: 12,
                 region: None,
                 track_rotation_scale: false,
+                target: None,
             },
         )
         .expect("track");
@@ -1039,6 +1273,7 @@ mod tests {
                     height: 0.4,
                 }),
                 track_rotation_scale: true,
+                target: None,
             },
         )
         .expect("track region");
@@ -1177,6 +1412,7 @@ mod tests {
                     sample_count: 12,
                     region: None,
                     track_rotation_scale: true,
+                    target: None,
                 },
             ),
         ] {
@@ -1245,6 +1481,7 @@ mod tests {
                 sample_count: 12,
                 region: None,
                 track_rotation_scale: false,
+                target: None,
             },
             Command::StabilizeClip {
                 track_id: tid,
@@ -1283,10 +1520,372 @@ mod tests {
                     height: 1.0
                 }),
                 track_rotation_scale: false,
+                target: None,
             }
         )
         .is_err());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Adds a video track above the existing ones with one clip of `media_id`.
+    fn add_video_clip(
+        project: &mut Project,
+        media_id: Id,
+        position: f64,
+        src_in: f64,
+        src_out: f64,
+    ) -> (Id, Id) {
+        let track_id = match apply_command(
+            project,
+            Command::AddTrack {
+                kind: TrackKind::Video,
+                name: "Overlay".into(),
+                id: None,
+                sequence_id: None,
+            },
+        )
+        .expect("track")
+        {
+            CommandOutcome::TrackAdded { track_id } => track_id,
+            _ => unreachable!(),
+        };
+        let clip_id = match apply_command(
+            project,
+            Command::AddClip {
+                track_id,
+                media_id,
+                position_secs: position,
+                source_in_secs: src_in,
+                source_out_secs: src_out,
+            },
+        )
+        .expect("clip")
+        {
+            CommandOutcome::ClipAdded { clip_id } => clip_id,
+            _ => unreachable!(),
+        };
+        (track_id, clip_id)
+    }
+
+    fn target_ref(track_id: Id, clip_id: Id) -> Option<ClipRef> {
+        Some(ClipRef { track_id, clip_id })
+    }
+
+    /// Tracked point's canvas NDC for the synthetic pan at timeline time `t`, when the tracked
+    /// clip starts at `tracked_pos` with an identity transform on a canvas matching the source
+    /// aspect (see `track_motion_follows_known_pan` for the derivation).
+    fn pan_ndc(t: f64, tracked_pos: f64, vel: (f64, f64)) -> (f64, f64) {
+        let local = t - tracked_pos;
+        (
+            -2.0 * vel.0 * local / W as f64,
+            2.0 * vel.1 * local / H as f64,
+        )
+    }
+
+    #[test]
+    fn track_motion_target_pins_another_clip_to_the_tracked_point() {
+        if !media::ffmpeg_available() {
+            eprintln!("skipping track_motion_target_pins_another_clip: ffmpeg not available");
+            return;
+        }
+        let dir = tmp_dir("trk-target");
+        let secs = 3.0;
+        let vel = (42.0, -13.0);
+        let n = (secs * FPS) as usize;
+        let offsets: Vec<(f64, f64)> = (0..n)
+            .map(|k| (vel.0 * k as f64 / FPS, vel.1 * k as f64 / FPS))
+            .collect();
+        let video = synth_video(&dir, &offsets);
+        // Tracked clip: timeline [2.0, 4.97). Target: timeline [3.0, 4.0), later and shorter.
+        let (mut project, tid, cid) = project_with_clip(&video, (n - 1) as f64 / FPS, (1280, 720));
+        let media_id = project.media[0].id;
+        let (ttid, tcid) = add_video_clip(&mut project, media_id, 3.0, 0.5, 1.5);
+        let tracked_before = clip_ref(&project, tid, cid).clone();
+        apply_command(
+            &mut project,
+            Command::TrackMotion {
+                track_id: tid,
+                clip_id: cid,
+                sample_count: 12,
+                region: None,
+                track_rotation_scale: false,
+                target: target_ref(ttid, tcid),
+            },
+        )
+        .expect("track to target");
+
+        // The tracked clip is untouched.
+        assert_eq!(
+            clip_ref(&project, tid, cid).keyframes,
+            tracked_before.keyframes
+        );
+        let target = clip_ref(&project, ttid, tcid);
+        // Keys are target-local and stay inside the target's 1 s span.
+        for prop in [AnimProperty::PosX, AnimProperty::PosY] {
+            let times: Vec<f64> = target
+                .keyframes
+                .iter()
+                .filter(|k| k.property == prop)
+                .flat_map(|k| k.keys.iter().map(|key| key.time_secs))
+                .collect();
+            assert_eq!(times.len(), 12, "{prop:?} keys");
+            assert!(times.first().expect("first").abs() < 1e-9);
+            assert!((times.last().expect("last") - 1.0).abs() < 1e-9);
+            assert!(times.iter().all(|&t| (-1e-9..=1.0 + 1e-9).contains(&t)));
+        }
+        assert!(target
+            .keyframes
+            .iter()
+            .all(|k| !matches!(k.property, AnimProperty::Rotation | AnimProperty::ScaleX)));
+
+        // Through the compositor's evaluation, the target's centre sits on the tracked point.
+        let mut max_err: f64 = 0.0;
+        for j in 0..=8 {
+            let t = 3.0 + j as f64 / 8.0;
+            let tf = evaluate_transform(target, t);
+            let (ex, ey) = pan_ndc(t, tracked_before.position_secs, vel);
+            max_err = max_err.max((tf.x - ex).abs()).max((tf.y - ey).abs());
+        }
+        eprintln!("track_motion target max NDC error: {max_err:.5}");
+        assert!(max_err < 0.001, "target NDC error {max_err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn track_motion_target_maps_through_the_tracked_clips_transform() {
+        if !media::ffmpeg_available() {
+            eprintln!("skipping track_motion_target_maps_through_the_tracked_clips_transform: ffmpeg not available");
+            return;
+        }
+        let dir = tmp_dir("trk-target-tf");
+        let vel = (42.0, -13.0);
+        let n = 90usize;
+        let offsets: Vec<(f64, f64)> = (0..n)
+            .map(|k| (vel.0 * k as f64 / FPS, vel.1 * k as f64 / FPS))
+            .collect();
+        let video = synth_video(&dir, &offsets);
+        let (mut project, tid, cid) = project_with_clip(&video, (n - 1) as f64 / FPS, (1280, 720));
+        // The tracked layer is itself scaled, rotated 90 degrees CCW and offset on the canvas.
+        let tracked_tf = ClipTransform {
+            x: 0.3,
+            y: -0.2,
+            scale_x: 0.5,
+            scale_y: 0.5,
+            rotation_deg: 90.0,
+            opacity: 1.0,
+            ..ClipTransform::default()
+        };
+        project
+            .find_track_mut(tid)
+            .and_then(|t| t.clips[0].as_media_mut())
+            .expect("tracked clip")
+            .transform = tracked_tf;
+        let media_id = project.media[0].id;
+        let (ttid, tcid) = add_video_clip(&mut project, media_id, 3.0, 0.0, 1.0);
+        apply_command(
+            &mut project,
+            Command::TrackMotion {
+                track_id: tid,
+                clip_id: cid,
+                sample_count: 8,
+                region: None,
+                track_rotation_scale: false,
+                target: target_ref(ttid, tcid),
+            },
+        )
+        .expect("track to target");
+        assert_eq!(clip_ref(&project, tid, cid).transform, tracked_tf);
+        assert!(clip_ref(&project, tid, cid).keyframes.is_empty());
+        // Compositor order: scale the point, rotate 90 degrees CCW, then translate.
+        let target = clip_ref(&project, ttid, tcid);
+        let mut max_err: f64 = 0.0;
+        for j in 0..=8 {
+            let t = 3.0 + j as f64 / 8.0;
+            let (ex, ey) = pan_ndc(t, 2.0, vel);
+            let (px, py) = (0.5 * ex, 0.5 * ey);
+            let want = (-py + 0.3, px - 0.2);
+            let tf = evaluate_transform(target, t);
+            max_err = max_err
+                .max((tf.x - want.0).abs())
+                .max((tf.y - want.1).abs());
+        }
+        eprintln!("track_motion transform-mapped max NDC error: {max_err:.5}");
+        assert!(max_err < 0.001, "NDC error {max_err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn track_motion_target_keeps_static_offset_and_writes_rotation_scale() {
+        if !media::ffmpeg_available() {
+            eprintln!("skipping track_motion_target_keeps_static_offset: ffmpeg not available");
+            return;
+        }
+        let dir = tmp_dir("trk-target-rs");
+        let vel = (42.0, -13.0);
+        let n = 90usize;
+        let offsets: Vec<(f64, f64)> = (0..n)
+            .map(|k| (vel.0 * k as f64 / FPS, vel.1 * k as f64 / FPS))
+            .collect();
+        let video = synth_video(&dir, &offsets);
+        let (mut project, tid, cid) = project_with_clip(&video, (n - 1) as f64 / FPS, (1280, 720));
+        let media_id = project.media[0].id;
+        let (ttid, tcid) = add_video_clip(&mut project, media_id, 3.0, 0.0, 1.0);
+        // User-placed offset and base rotation/scale on the target.
+        let base = {
+            let track = project.find_track_mut(ttid).expect("track");
+            let clip = track.clips[0].as_media_mut().expect("media");
+            clip.transform.x = 0.2;
+            clip.transform.y = -0.1;
+            clip.transform.rotation_deg = 10.0;
+            clip.transform.scale_x = 2.0;
+            clip.transform.scale_y = 2.0;
+            clip.transform
+        };
+        apply_command(
+            &mut project,
+            Command::TrackMotion {
+                track_id: tid,
+                clip_id: cid,
+                sample_count: 6,
+                region: None,
+                track_rotation_scale: true,
+                target: target_ref(ttid, tcid),
+            },
+        )
+        .expect("track to target");
+        let target = clip_ref(&project, ttid, tcid);
+        for j in 0..=4 {
+            let t = 3.0 + j as f64 / 4.0;
+            let tf = evaluate_transform(target, t);
+            let (ex, ey) = pan_ndc(t, 2.0, vel);
+            assert!((tf.x - (ex + base.x)).abs() < 0.005, "x at {t}: {tf:?}");
+            assert!((tf.y - (ey + base.y)).abs() < 0.005, "y at {t}: {tf:?}");
+            // Pure pan: the relative rotation is 0 and scale 1, so the static values remain.
+            assert!((tf.rotation_deg - base.rotation_deg).abs() < 0.3, "{tf:?}");
+            assert!((tf.scale_x - base.scale_x).abs() < 0.02, "{tf:?}");
+            assert!((tf.scale_y - base.scale_y).abs() < 0.02, "{tf:?}");
+        }
+        for prop in [
+            AnimProperty::Rotation,
+            AnimProperty::ScaleX,
+            AnimProperty::ScaleY,
+        ] {
+            assert!(target.keyframes.iter().any(|k| k.property == prop));
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn track_motion_target_rejects_invalid_targets() {
+        // Validation runs before any decoding, so the media path need not exist.
+        let (mut project, tid, cid) =
+            project_with_clip(&PathBuf::from("missing.mp4"), 2.0, (1280, 720));
+        let media_id = project.media[0].id;
+        let (ttid, tcid) = add_video_clip(&mut project, media_id, 3.0, 0.0, 1.0);
+        let track = |target: Option<ClipRef>| Command::TrackMotion {
+            track_id: tid,
+            clip_id: cid,
+            sample_count: 12,
+            region: None,
+            track_rotation_scale: false,
+            target,
+        };
+        let is_invalid_target = |r: Result<CommandOutcome, CommandError>| {
+            matches!(r, Err(CommandError::InvalidTrackTarget(_)))
+        };
+        // Self-target.
+        assert!(is_invalid_target(apply_command(
+            &mut project,
+            track(target_ref(tid, cid))
+        )));
+        // Unknown track and unknown clip.
+        assert!(matches!(
+            apply_command(&mut project, track(target_ref(Id::new_v4(), tcid))),
+            Err(CommandError::TrackNotFound(_))
+        ));
+        assert!(matches!(
+            apply_command(&mut project, track(target_ref(ttid, Id::new_v4()))),
+            Err(CommandError::ClipNotFound(_, _))
+        ));
+        // Audio track is not a video target.
+        let audio_track = match apply_command(
+            &mut project,
+            Command::AddTrack {
+                kind: TrackKind::Audio,
+                name: "A".into(),
+                id: None,
+                sequence_id: None,
+            },
+        )
+        .expect("audio track")
+        {
+            CommandOutcome::TrackAdded { track_id } => track_id,
+            _ => unreachable!(),
+        };
+        assert!(matches!(
+            apply_command(&mut project, track(target_ref(audio_track, Id::new_v4()))),
+            Err(CommandError::TrackKindMismatch(..))
+        ));
+        // Adjustment layer is not a media clip.
+        let adj_track = match apply_command(
+            &mut project,
+            Command::AddTrack {
+                kind: TrackKind::Video,
+                name: "Adj".into(),
+                id: None,
+                sequence_id: None,
+            },
+        )
+        .expect("adj track")
+        {
+            CommandOutcome::TrackAdded { track_id } => track_id,
+            _ => unreachable!(),
+        };
+        apply_command(
+            &mut project,
+            Command::AddAdjustmentLayer {
+                track_id: adj_track,
+                position_secs: 3.0,
+                duration_secs: 1.0,
+            },
+        )
+        .expect("adjustment");
+        let adj_clip = project
+            .find_track(adj_track)
+            .and_then(|t| t.clips.first())
+            .map(|c| c.id())
+            .expect("adjustment clip");
+        assert!(is_invalid_target(apply_command(
+            &mut project,
+            track(target_ref(adj_track, adj_clip))
+        )));
+        // No timeline overlap: tracked clip spans [2.0, 4.0); target starts at 4.5.
+        let (far_t, far_c) = add_video_clip(&mut project, media_id, 4.5, 0.0, 1.0);
+        assert!(is_invalid_target(apply_command(
+            &mut project,
+            track(target_ref(far_t, far_c))
+        )));
+        // Nothing was written by the failed attempts.
+        assert!(clip_ref(&project, ttid, tcid).keyframes.is_empty());
+    }
+
+    #[test]
+    fn track_motion_target_json_round_trips_and_defaults_to_none() {
+        let (t, c, tt, tc) = (Id::new_v4(), Id::new_v4(), Id::new_v4(), Id::new_v4());
+        let with_target: Command = serde_json::from_str(&format!(
+            r#"{{"command":"TrackMotion","track_id":"{t}","clip_id":"{c}","sample_count":12,"target":{{"track_id":"{tt}","clip_id":"{tc}"}}}}"#
+        ))
+        .expect("target json");
+        assert!(matches!(
+            with_target,
+            Command::TrackMotion { target: Some(ClipRef { track_id, clip_id }), .. }
+                if track_id == tt && clip_id == tc
+        ));
+        let legacy: Command = serde_json::from_str(&format!(
+            r#"{{"command":"TrackMotion","track_id":"{t}","clip_id":"{c}","sample_count":12}}"#
+        ))
+        .expect("legacy json");
+        assert!(matches!(legacy, Command::TrackMotion { target: None, .. }));
     }
 
     #[test]
@@ -1302,6 +1901,7 @@ mod tests {
             Command::TrackMotion {
                 region: None,
                 track_rotation_scale: false,
+                target: None,
                 ..
             }
         ));
