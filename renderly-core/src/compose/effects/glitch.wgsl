@@ -32,8 +32,18 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> VsOut {
     return out;
 }
 
+// Integer PCG hash. The usual `fract(sin(x) * 43758.5)` depends on each GPU's `sin`
+// precision, so the same frame glitched differently on different machines (and preview could
+// differ from export). Integer ops are exact everywhere.
+fn pcg(v: u32) -> u32 {
+    let state = v * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
 fn hash(p: f32) -> f32 {
-    return fract(sin(p * 127.1 + params.time_seed) * 43758.5453);
+    let h = pcg(u32(p) ^ pcg(bitcast<u32>(params.time_seed)));
+    return f32(h >> 8u) / 16777216.0;
 }
 
 @fragment

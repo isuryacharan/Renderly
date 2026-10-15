@@ -44,6 +44,12 @@ fn sample_or_black(tex: texture_2d<f32>, uv: vec2<f32>) -> vec4<f32> {
     return select(vec4(0.0, 0.0, 0.0, 1.0), c, inside);
 }
 
+fn pcg(v: u32) -> u32 {
+    let state = v * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let u = clamp(params.progress, 0.0, 1.0);
@@ -97,8 +103,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let radius = u * 0.75;
         return select(a, b, d < radius);
     }
-    // 9 blur_dissolve (soft edge mix using luma noise-ish from uv)
-    let noise = fract(sin(dot(uv, vec2(12.9898, 78.233))) * 43758.5453);
+    // 9 blur_dissolve: per-texel noise from an integer hash of the quantised uv (exact on every
+    // GPU, unlike a `fract(sin(..))` hash).
+    let cell = vec2<u32>(floor(uv * 4096.0));
+    let noise = f32(pcg(cell.x ^ pcg(cell.y)) >> 8u) / 16777216.0;
     let edge = smoothstep(u - 0.15, u + 0.15, noise);
     return mix(b, a, edge);
 }
