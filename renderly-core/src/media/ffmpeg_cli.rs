@@ -481,6 +481,16 @@ pub(super) struct CliReader {
     /// actually works, handed back on the caller's first `read_frame()` instead of being
     /// discarded and re-decoded.
     pending_first_frame: Option<RgbaFrame>,
+    /// Set while this reader decodes with `-hwaccel` and has not produced a frame yet: what
+    /// a software retry needs if the hardware decoder exits without one (see `read_frame`).
+    hw_retry: Option<HwRetry>,
+}
+
+/// The arguments of a hardware-decode spawn, kept so it can be redone in software.
+struct HwRetry {
+    path: std::path::PathBuf,
+    start_secs: f64,
+    opts: ReaderOptions,
 }
 
 type ChildStdout = std::process::ChildStdout;
@@ -613,6 +623,11 @@ impl CliReader {
             height,
             frame_bytes,
             pending_first_frame: None,
+            hw_retry: hwaccel.map(|_| HwRetry {
+                path: path.to_path_buf(),
+                start_secs,
+                opts: *opts,
+            }),
         })
     }
 
@@ -626,9 +641,23 @@ impl CliReader {
 
     pub fn read_frame(&mut self) -> Result<Option<RgbaFrame>, FfmpegCliError> {
         if let Some(frame) = self.pending_first_frame.take() {
+            self.hw_retry = None;
             return Ok(Some(frame));
         }
-        self.read_frame_from_pipe()
+        let frame = self.read_frame_from_pipe()?;
+        if frame.is_some() {
+            self.hw_retry = None;
+            return Ok(frame);
+        }
+        // A hardware decoder that ends before its first frame did not reach end of media:
+        // it failed to start (a busy or exhausted GPU does this even after the per-process
+        // probe succeeded). Reporting end-of-stream here made export silently drop the
+        // layer, so redo this open in software instead.
+        if let Some(retry) = self.hw_retry.take() {
+            *self = Self::spawn(&retry.path, retry.start_secs, &retry.opts, None)?;
+            return self.read_frame_from_pipe();
+        }
+        Ok(None)
     }
 
     fn read_frame_from_pipe(&mut self) -> Result<Option<RgbaFrame>, FfmpegCliError> {
@@ -1462,6 +1491,54 @@ mod video_reader_tests {
     /// the same source should agree almost exactly. Skips the comparison (not the whole
     /// test) if no working hwaccel is available on this machine — this is a correctness
     /// guard for when hwaccel *is* available, not a guarantee that it always is.
+    #[test]
+    fn hardware_decoder_that_yields_no_frame_falls_back_to_software() {
+        if !crate::media::ffmpeg_available() {
+            eprintln!("skipping hw fallback test: ffmpeg not on PATH");
+            return;
+        }
+        let dir =
+            std::env::temp_dir().join(format!("renderly-hwfallback-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let video = dir.join("src.mp4");
+        let status = crate::proc::command(ffmpeg_path().unwrap())
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+            ])
+            .arg("testsrc=duration=1:size=160x120:rate=10")
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p"])
+            .arg(&video)
+            .status_serial()
+            .unwrap();
+        assert!(status.success());
+        // An unknown -hwaccel makes ffmpeg exit before decoding anything — the same shape as
+        // a CUDA decoder that fails to start on a busy GPU. Before the fallback this read
+        // returned Ok(None) and export silently dropped the layer.
+        let mut reader = super::CliReader::spawn(
+            &video,
+            0.0,
+            &ReaderOptions::default(),
+            Some("renderly-no-such-hwaccel"),
+        )
+        .expect("spawn");
+        let frame = reader
+            .read_frame()
+            .expect("read")
+            .expect("software fallback frame");
+        assert_eq!((frame.width, frame.height), (160, 120));
+        assert!(
+            reader.read_frame().expect("read").is_some(),
+            "keeps decoding after fallback"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn hwaccel_decode_matches_software_decode_pixels() {
         if !ffmpeg_available() {
