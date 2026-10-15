@@ -113,8 +113,7 @@ pub fn has_audio_stream(path: &Path) -> Result<bool, LinkedError> {
 /// depend on the bindings exposing the macro.
 const SWS_CS_ITU709: c_int = 1;
 
-/// Slack when comparing output-slot times with frame times (seconds). Keeps exact multiples
-/// of the frame period on the side the CLI's frame-rate conversion picks.
+/// Slack when comparing output-slot times with the end of the stream (seconds).
 const SLOT_EPS: f64 = 1e-6;
 
 /// Scaler for one source format and size, cached on `LinkedReader` and rebuilt if the decoded
@@ -141,20 +140,22 @@ pub struct LinkedReader {
     frame_dur: f64,
     width: u32,
     height: u32,
-    output_fps: Option<f64>,
+    /// Output frame rate: `output_fps` when set, else the stream's frame rate. The CLI's
+    /// rawvideo output is constant-rate at that rate, so variable-rate sources are resampled
+    /// to it too. `None` only when neither is known.
+    out_fps: Option<f64>,
     converter: Option<Converter>,
     ready: VecDeque<RgbaFrame>,
     /// Time of the last decoded frame (file-relative), for frames without a timestamp.
     last_t: f64,
     decoder_eof: bool,
     finished: bool,
-    /// `output_fps` only: time of the first kept frame, which output slot 0 is aligned to
-    /// (as ffmpeg's `fps` filter aligns to its first frame).
-    base: Option<f64>,
-    /// `output_fps` only: the latest decoded frame, with its time relative to `base`.
-    latest: Option<(f64, RgbaFrame)>,
-    /// `output_fps` only: index of the next output slot; slot n is at time n / fps.
-    next_slot: u64,
+    /// Resampling state (see `accept`): the latest decoded frame with its output slot, the
+    /// next slot to emit, and the last frame's time (relative to the seek point) and duration.
+    latest: Option<(i64, RgbaFrame)>,
+    next_slot: i64,
+    last_rel: f64,
+    last_gap: f64,
 }
 
 impl LinkedReader {
@@ -184,10 +185,13 @@ impl LinkedReader {
             return Err(LinkedError::BadTimeBase);
         }
         let time_base_secs = time_base.numerator() as f64 / time_base.denominator() as f64;
-        let frame_dur = if rate.numerator() > 0 && rate.denominator() > 0 {
-            rate.denominator() as f64 / rate.numerator() as f64
+        let (frame_dur, rate_fps) = if rate.numerator() > 0 && rate.denominator() > 0 {
+            (
+                rate.denominator() as f64 / rate.numerator() as f64,
+                Some(rate.numerator() as f64 / rate.denominator() as f64),
+            )
         } else {
-            0.0
+            (0.0, None)
         };
         let (width, height) =
             scaled_dimensions(decoder.width(), decoder.height(), opts.target_height);
@@ -218,15 +222,19 @@ impl LinkedReader {
             frame_dur,
             width,
             height,
-            output_fps: opts.output_fps.filter(|f| f.is_finite() && *f > 0.0),
+            out_fps: opts
+                .output_fps
+                .filter(|f| f.is_finite() && *f > 0.0)
+                .or(rate_fps),
             converter: None,
             ready: VecDeque::new(),
             last_t: start_secs,
             decoder_eof: false,
             finished: false,
-            base: None,
             latest: None,
             next_slot: 0,
+            last_rel: 0.0,
+            last_gap: frame_dur,
         })
     }
 
@@ -312,35 +320,47 @@ impl LinkedReader {
         t
     }
 
-    /// Hands one decoded frame to the output. Without `output_fps` it is emitted as-is. With
-    /// it, every output slot before this frame's time takes the latest earlier frame, which
-    /// duplicates or drops frames as needed.
+    /// Hands one decoded frame to the output. Without an output rate it is emitted as-is.
+    /// Otherwise frames are placed on the output slot grid the way ffmpeg's `fps` filter places
+    /// them: a frame at `rel` seconds after the seek point goes to slot `round(rel * fps)`, and
+    /// each slot shows the latest frame placed at or before it. That duplicates frames when the
+    /// output rate is higher and drops them when it is lower. Rounding to the slot grid keeps
+    /// millisecond timestamp jitter from changing which frame a slot shows.
     fn accept(&mut self, t: f64, rgba: RgbaFrame) {
-        let Some(fps) = self.output_fps else {
+        let Some(fps) = self.out_fps else {
             self.ready.push_back(rgba);
             return;
         };
-        let base = *self.base.get_or_insert(t);
-        let rel = t - base;
-        while (self.next_slot as f64) / fps < rel - SLOT_EPS {
-            match &self.latest {
-                Some((_, held)) => self.ready.push_back(held.clone()),
-                None => self.ready.push_back(rgba.clone()),
-            }
+        let rel = t - self.start_secs;
+        let slot = (rel * fps).round() as i64;
+        // Slots before this frame's slot show the frame held so far.
+        while self.next_slot < slot {
+            let held = match &self.latest {
+                Some((_, held)) => held.clone(),
+                None => rgba.clone(),
+            };
+            self.ready.push_back(held);
             self.next_slot += 1;
         }
-        self.latest = Some((rel, rgba));
+        let gap = rel - self.last_rel;
+        if self.latest.is_some() && gap > 0.0 {
+            self.last_gap = gap;
+        } else {
+            self.last_gap = self.frame_dur;
+        }
+        self.last_rel = rel;
+        self.latest = Some((slot, rgba));
     }
 
-    /// End of stream. With `output_fps`, the last frame is held for one frame duration, so the
-    /// remaining slots up to that end are filled with it.
+    /// End of stream. The last frame lasts as long as the gap before it, so the output slots
+    /// up to the end of the stream take it.
     fn finish(&mut self) {
         self.finished = true;
-        let Some(fps) = self.output_fps else {
+        let Some(fps) = self.out_fps else {
             return;
         };
-        if let Some((last_rel, last)) = self.latest.take() {
-            let end = last_rel + self.frame_dur;
+        if let Some((_, last)) = self.latest.take() {
+            let end = self.last_rel + self.last_gap;
             while (self.next_slot as f64) / fps < end - SLOT_EPS {
                 self.ready.push_back(last.clone());
                 self.next_slot += 1;
