@@ -1,0 +1,382 @@
+# In-app agent chat: design note
+
+Status: **design, not implemented.** Parity row: [parity-board.md](parity-board.md) "In-app agent chat" (⬜).
+Date of research: 2026-10-15. Source-of-truth specs this builds on:
+[mcp-agent-guide.md](mcp-agent-guide.md), [bridge-protocol.md](bridge-protocol.md),
+[command-api.md](command-api.md), [architecture.md](architecture.md), [AGENTS.md](../AGENTS.md).
+
+Goal: a chat panel in `renderly-app` through which the user drives an **external coding agent they
+already have** (Claude Code, OpenAI Codex CLI, Gemini CLI, Google Antigravity, others) to edit the open
+project. The agent edits only through `renderly-mcp` (command API plus perception tools), so edits land
+in the open GUI and share the app's undo stack. Renderly bundles no model, proxies no API traffic, and
+never holds the user's agent credentials.
+
+---
+
+## 1. Summary
+
+- **Protocol: Agent Client Protocol (ACP).** Renderly acts as an ACP *client*, spawns the agent as a
+  stdio subprocess, and passes `renderly-mcp` to the agent as an MCP server in `session/new`.
+- **Where the client lives: Rust, in `renderly-app/src-tauri`**, as a new module. Not in `renderly-core`
+  (AGPL rule 2: the engine never depends on UI or process management), and not in the webview.
+- **Blocking policy issue for Claude and Gemini.** Vendor terms restrict using a subscription login
+  through a third-party integration. The Claude adapter itself ships a flag that refuses subscription
+  billing. The MVP must therefore default to **API-key auth** for Claude and Gemini, and the owner must
+  decide whether subscription login is offered at all (open question Q1, Q2).
+- **Codex is the least constrained** of the three on paper, but the ChatGPT-login reuse question is
+  unverified (Q3).
+- **Antigravity is proprietary** and has no official headless interface. It is a Phase 3 candidate
+  at best (Q4).
+
+---
+
+## 2. Research findings
+
+### 2.1 Agent Client Protocol
+
+| Item | Finding | Source |
+|---|---|---|
+| What it is | Open protocol "for connecting any editor to any agent", originated by Zed. Spec repo is **Apache-2.0** | [agentclientprotocol.com](https://agentclientprotocol.com), [spec repo](https://github.com/agentclientprotocol/agent-client-protocol) (repo licence: Apache-2.0, checked via GitHub API) |
+| Transport | JSON-RPC 2.0 over **stdio**; the agent runs as a subprocess of the client | [protocol overview](https://agentclientprotocol.com/protocol/overview) |
+| Protocol version | Integer major version; **current = `1`** | [initialization](https://agentclientprotocol.com/protocol/initialization), [libraries](https://agentclientprotocol.com/libraries/overview) |
+| Handshake | Client `initialize` sends `protocolVersion`, `clientCapabilities` (`fs.readTextFile`, `fs.writeTextFile`, `terminal`), `clientInfo`. Agent replies with `agentCapabilities` (`loadSession`, `mcpCapabilities.http/sse`, `promptCapabilities.image/audio/embeddedContext`), `agentInfo`, `authMethods` | [initialization](https://agentclientprotocol.com/protocol/initialization) |
+| Auth | Agent advertises `authMethods` in `initialize`; the client calls `authenticate` with one. Logout is optional | [overview](https://agentclientprotocol.com/protocol/overview) |
+| Session | `session/new` (requires absolute `cwd`), `session/load` (only if `loadSession`; agent replays history as `session/update`) | [session setup](https://agentclientprotocol.com/protocol/session-setup) |
+| MCP servers | Passed **in `session/new`** as `mcpServers`. Stdio transport is mandatory for agents: `name`, `command` (absolute path), `args`, optional `env` (`[{name,value}]`). HTTP and SSE only if advertised (SSE is deprecated) | [session setup](https://agentclientprotocol.com/protocol/session-setup) |
+| Prompt | `session/prompt` with content blocks; response carries `stopReason`: `end_turn`, `max_tokens`, `max_turn_requests`, `refusal`, `cancelled` | [prompt turn](https://agentclientprotocol.com/protocol/prompt-turn) |
+| Streaming | `session/update` notifications: message chunks, `tool_call` / `tool_call_update`, `plan` | [prompt turn](https://agentclientprotocol.com/protocol/prompt-turn), [tool calls](https://agentclientprotocol.com/protocol/tool-calls) |
+| Tool calls | `tool_call` needs `toolCallId` and `title`; `kind` is one of `read`, `edit`, `delete`, `move`, `search`, `execute`, `think`, `fetch`, `switch_mode`, `other`; `status` is `pending`, `in_progress`, `completed`, `failed`. Content may be `content`, `diff` (`path`, `oldText`, `newText`), or `terminal` (`terminalId`); `locations` carry `path` and `line` | [tool calls](https://agentclientprotocol.com/protocol/tool-calls) |
+| Permissions | Agent sends `session/request_permission` with `toolCall` and `options` (`optionId`, `name`, `kind`: `allow_once`, `allow_always`, `reject_once`, `reject_always`). Outcome is `selected` or `cancelled` | [tool calls](https://agentclientprotocol.com/protocol/tool-calls) |
+| Cancel | Client sends `session/cancel` (notification). Client must answer pending permission requests with `cancelled`; agent must return `stopReason: cancelled` | [prompt turn](https://agentclientprotocol.com/protocol/prompt-turn) |
+| Client methods | `fs/read_text_file`, `fs/write_text_file` (need the fs capability); `terminal/create`, `terminal/output`, `terminal/release`, `terminal/wait_for_exit`, `terminal/kill` (need `terminal`) | [overview](https://agentclientprotocol.com/protocol/overview) |
+
+**Client libraries (all Apache-2.0):**
+
+| Language | Package | Licence | Source |
+|---|---|---|---|
+| Rust | `agent-client-protocol` (crates.io) | Apache-2.0 (repo `agentclientprotocol/rust-sdk`); crate version **unverified**, crates.io was not reachable | [rust-sdk](https://github.com/agentclientprotocol/rust-sdk) |
+| TypeScript | `@agentclientprotocol/sdk` **1.8.0** | Apache-2.0 | [typescript-sdk](https://github.com/agentclientprotocol/typescript-sdk), [npm](https://www.npmjs.com/package/@agentclientprotocol/sdk) |
+| Python | `python-sdk` | not checked | [python-sdk](https://github.com/agentclientprotocol/python-sdk) |
+| Kotlin / Java | `acp-kotlin`, `java-sdk` | not checked | [kotlin-sdk](https://github.com/agentclientprotocol/kotlin-sdk), [java-sdk](https://github.com/agentclientprotocol/java-sdk) |
+
+All four candidates we would use are AGPL-compatible (Apache-2.0 is compatible with AGPL-3.0 distribution).
+
+### 2.2 Which agents speak ACP, and how
+
+The authoritative list is the **ACP registry** ([agentclientprotocol/registry](https://github.com/agentclientprotocol/registry), Apache-2.0). Each entry has an `agent.json` with the distribution command. Four entries matter here:
+
+| Agent | Registry id / version | Launch (per registry) | Adapter / agent licence | Auth model | MCP support |
+|---|---|---|---|---|---|
+| **Claude** (Claude Agent) | `claude-acp` **0.90.0** (preview 0.90.1-preview.14) | `npx @agentclientprotocol/claude-agent-acp@0.90.0` | Adapter repo LICENSE is **Apache-2.0** (checked). The registry manifest says `"license": "proprietary"`. **Conflict, flagged.** Wraps `@anthropic-ai/claude-agent-sdk` 0.3.296 (Commercial Terms, see §2.3) | ACP `authMethods`. The adapter has a `--hide-claude-auth` flag that refuses claude.ai subscription billing ([src/hide-claude-auth.ts](https://github.com/agentclientprotocol/claude-agent-acp/blob/main/src/hide-claude-auth.ts)). Without it, subscription login is offered | Client-provided MCP servers (stdio, HTTP, per capability negotiation) |
+| **Codex CLI** | `codex-acp` **2.2.2** (preview 2.2.3-preview.8) | `npx -y @agentclientprotocol/codex-acp@2.2.2` (wraps the local `codex` CLI; `CODEX_PATH` overrides the binary) | Apache-2.0 per registry and README ([repo](https://github.com/agentclientprotocol/codex-acp)). GitHub's licence detector reports "Other"; **unverified**, confirm the LICENSE file | ChatGPT login offered as an ACP auth method (subscription); or `CODEX_API_KEY` / `OPENAI_API_KEY` (API billing). `NO_BROWSER=1` hides the login method | stdio and HTTP MCP servers from the client, `/mcp` command |
+| **Gemini CLI** | `gemini` **0.64.0** | `npx @google/gemini-cli@0.64.0 --acp` | Apache-2.0 ([repo](https://github.com/google-gemini/gemini-cli)). Its `cli-reference.md` still documents `--experimental-acp`; the registry uses `--acp`. Check `gemini --help` in the installed version | "Sign in with Google" (free tier), Gemini API key, or Vertex AI | Not verified for the ACP path |
+| **Google Antigravity** | `antigravity-acp` **1.4.0** | Prebuilt binary downloaded from `dl.google.com`: `./agy_acp_server.exe` on Windows (`--uid=` arg on Linux) | **Proprietary** (`antigravity.google/terms`). Not redistributable. Binary is Google's; Renderly would only tell the user where to get it | Google sign-in on first launch (community reports; unverified against Google docs) | Not verified |
+
+Other registry entries, names only (licences and launch commands **not checked**): `opencode`, `goose`, `qwen-code`, `kimi`, `cursor`, `github-copilot`, `github-copilot-cli`, `junie`, `mistral-vibe`, `cline`, `pi-acp`, `poolside`, `qoder`, `fast-agent`, `factory-droid`, `crow-cli`, `kilo`, `amp-acp`, `devin`, `grok-build`, `auggie`, `vtcode`, and others. The [ACP agents page](https://agentclientprotocol.com/overview/agents) lists Claude Agent, Codex CLI, Gemini CLI, OpenCode and Poolside as registry-backed.
+
+**Antigravity note.** Google's own ACP wrapper is in the registry, but the ACP site's agent list does not name Antigravity. Community bridges (`agy-acp-bridge`, `agy-agent-acp`) drive `agy` via an undocumented `--output-format stream-json` flag. Do not depend on those. One community project quotes Google's terms as prohibiting third-party access via OAuth (see §2.3).
+
+**Do not use** `zed-industries/codex-acp` or `cola-io/codex-acp`. They are older or forked; the maintained entry is `agentclientprotocol/codex-acp`.
+
+### 2.3 Non-ACP fallback: vendor SDKs and subscription terms
+
+The question here is not "can we call it" but "can the user's subscription be used".
+
+| Vendor | SDK | Licence / terms | Auth it accepts | Reuses CLI subscription login? |
+|---|---|---|---|---|
+| Anthropic | Claude Agent SDK (TS/Python) | Governed by **Commercial Terms of Service**, not OSS. Must not be bundled | `ANTHROPIC_API_KEY`, Bedrock, Vertex | **No, for third-party products.** "Unless previously approved, Anthropic does not allow third party developers to offer claude.ai login or rate limits for their products, including agents built on the Claude Agent SDK." ([Agent SDK overview](https://code.claude.com/docs/en/agent-sdk/overview)) |
+| Anthropic | Claude Code CLI itself | Consumer/Commercial terms | OAuth (subscription) or API key | **Yes, for the end user's own use.** "Nor does it prevent an end user from signing in to the unmodified Claude Code binary with their own Claude subscription" ([legal and compliance](https://code.claude.com/docs/en/legal-and-compliance)) |
+| OpenAI | Codex TypeScript SDK | Licence not stated on the page | Runs the local `codex` CLI as a child process; injects `CODEX_API_KEY`. ChatGPT-login behaviour **unverified** ([sdk README](https://github.com/openai/codex/blob/main/sdk/typescript/README.md)) | Unverified |
+| OpenAI | Codex CLI sign-in | ChatGPT sign-in is "for subscription access"; API-key sign-in is "for usage-based access" ([Codex auth](https://learn.chatgpt.com/docs/auth)) | Either | Unverified for third-party clients. The page covers CLI, desktop app and IDE extension only |
+| Google | Gemini CLI OAuth | Apache-2.0 code, but Google's terms say third-party tools using the CLI's OAuth login "is a violation of applicable terms" and "may be grounds for suspension or termination" ([Gemini CLI ToS page](https://www.geminicli.com/docs/resources/tos-privacy)) | Google sign-in (free tier), Gemini API key, Vertex | **No, for third-party tools.** Use a Gemini API key |
+| Google | Agent Development Kit (ADK) | Apache-2.0 ([adk-python](https://github.com/google/adk-python)) | Model-agnostic, "optimized for Gemini"; auth details not on the README; **unverified** | Not a subscription path |
+
+**Conclusion for the design.** The only sanctioned way to use a *subscription* from a third-party app is the user running the vendor's own unmodified CLI themselves. Renderly can host that CLI through ACP, but a Renderly-branded integration that brokers or reuses a login is exactly what the vendors prohibit. That is why the MVP defaults to API keys and leaves subscription login as an owner decision (§9).
+
+---
+
+## 3. Architecture
+
+```
+ +-------------------------- renderly-app (Tauri 2) ---------------------------+
+ |  webview (React)                       Rust backend (src-tauri)             |
+ |  +--------------------+   Tauri cmds   +-----------------------------------+ |
+ |  | Agent chat panel   |<-------------->| agent_chat/ (new)                 | |
+ |  | - transcript       |  events:       |  - agent registry + detection     | |
+ |  | - tool-call cards  |  agent:update  |  - ACP client (Rust SDK)          | |
+ |  | - permission modal |  agent:perm    |  - child process (stdio)          | |
+ |  +--------------------+               |  - permission gate                 | |
+ |                                        +----------------|------------------+ |
+ |                                                         | stdio JSON-RPC    |
+ |                                        +----------------v------------------+ |
+ |                                        | agent subprocess (user's install) | |
+ |                                        |  claude / codex / gemini / agy    | |
+ |                                        +----------------|------------------+ |
+ |                                                         | spawns (MCP,      |
+ |                                                         |  stdio, from      |
+ |                                                         |  session/new)     |
+ |                                        +----------------v------------------+ |
+ |                                        | renderly-mcp (stdio)              | |
+ |                                        +----------------|------------------+ |
+ |                                                         | loopback WS,     |
+ |                                                         | token auth       |
+ |                                        +----------------v------------------+ |
+ |                                        | bridge.rs -> apply_command, undo  | |
+ |                                        | shared undo stack, project:changed| |
+ |                                        +-----------------------------------+ |
+ +----------------------------------------------------------------------------+
+```
+
+### 3.1 Where the ACP client lives: Rust backend (recommended)
+
+| Option | For | Against |
+|---|---|---|
+| **A. Rust in `src-tauri` (recommended)** | Process spawn and stdio pumping sit next to the existing bridge. No new webview capability for process execution. Keeps credentials and child-process handling out of the page. Rust SDK exists (§2.1). Lifecycle (kill on app close) is under our control | Need to write the Tauri event bridge for streamed updates. Rust SDK version and API unverified |
+| B. TypeScript in the webview with `@agentclientprotocol/sdk` | Fastest UI iteration; the SDK is mature | Webview cannot spawn processes without the Tauri shell plugin, which widens the attack surface for any XSS in the chat UI. Webview CSP and process supervision are harder |
+| C. Node sidecar running the TS SDK | Reuses the TS SDK and works with `npx` adapters | Ships a Node runtime or requires one; another process to supervise; still needs the Tauri side |
+
+Rust in `src-tauri` is recommended. It matches AGENTS.md rule 2: the engine (`renderly-core`) gets **no** new code, and the agent chat is a UI-layer dispatcher. The chat only ever causes edits through `renderly-mcp`, which goes through the existing command API (rule 1).
+
+### 3.2 Windows specifics
+
+- `npx` on Windows is `npx.cmd`. Spawning it without a shell fails. Launch through `cmd /c npx ...` or resolve the Node bin path. Pick one and test it (unverified until built).
+- Use `%LOCALAPPDATA%` discovery paths consistently with `bridge.rs`.
+- Agents installed by vendor installers are found on `PATH` (`where claude`, `where codex`, `where gemini`). Detection is a `PATH` lookup, never a directory scan.
+
+### 3.3 How the agent gets Renderly's MCP server
+
+In `session/new`, Renderly passes:
+
+```jsonc
+{
+  "cwd": "C:/Users/me/Videos/my-project",        // absolute, = project folder
+  "mcpServers": [{
+    "name": "renderly",
+    "command": "C:/Program Files/Renderly/renderly-mcp.exe",   // absolute
+    "args": ["--project", "C:/Users/me/Videos/my-project/edit.renderly.json"],   // see note
+    "env": [{ "name": "RENDERLY_BRIDGE_DISCOVERY", "value": "" }]   // unset in real use
+  }]
+}
+```
+
+Notes:
+
+- **The MCP server refuses to act without an open project.** `renderly-mcp/src/server.rs` returns `no project open; call open_project or new_project first`, and the agent guide says the bridge is used only when the project matches the app's open project. A bare `renderly-mcp` will therefore fail every edit until the agent calls `open_project`.
+- Two bootstrap options:
+  1. **Prompt the agent** to call `open_project` with the path from `get_editor_status`. Simple, but depends on model compliance, and the first turn can fail silently.
+  2. **Add a pinned-project startup argument** (`--project <path>`) to `renderly-mcp`, which opens that file at startup. It keeps the safety rule (never act on whatever is on screen): the server opens only the path the app passed, and the bridge still checks `project_path` against the discovery file. **Recommended**, but it is a change to `renderly-mcp`, so it needs owner sign-off (Q5).
+- `RENDERLY_BRIDGE_DISCOVERY` is for tests and sandboxes only (mcp-agent-guide). Never set it in the chat path.
+
+### 3.4 How edits reach the GUI with shared undo
+
+No new edit path. The chain is:
+
+1. Agent calls `apply_command` on `renderly-mcp`.
+2. `renderly-mcp` finds the live bridge via `bridge.json` and calls `apply_command` over the loopback WebSocket (bridge-protocol).
+3. `bridge.rs` applies the command to the app's project, pushes to the app's history stack (shared undo), and emits `project:changed` so the timeline refetches.
+4. The chat panel shows the same change through the tool-call card (below).
+
+So Ctrl+Z in the app undoes an agent edit, and the chat undo button calls the bridge's `undo`. Per-turn undo grouping is an open question (Q6).
+
+### 3.5 Session lifecycle
+
+- One agent subprocess per open project, started on first message, kept alive for the session.
+- `session/new` per chat thread. `session/load` only if the agent advertises `loadSession`.
+- Closing the project or app: send `session/cancel`, wait briefly, then kill the child process tree (Windows: `taskkill /T`).
+- A crashed agent shows an error card and a "restart agent" button. Renderly never restarts it silently.
+
+---
+
+## 4. UX
+
+### 4.1 Placement
+
+- Right-hand dock, next to the inspector, toggled from the toolbar. Collapsible. Does not cover the preview canvas (preview is webview; keep the chat in a separate column so the preview's `#preview-host` keeps its layout).
+- Empty state: agent picker, "Connect your agent" if none is detected.
+
+### 4.2 Message model
+
+| Element | Shown as |
+|---|---|
+| User prompt | Plain bubble. Attach the playhead time and selection automatically (opt-out) |
+| Agent text | Streamed chunks, Markdown, no HTML |
+| Plan (`plan` update) | Collapsible checklist with status icons |
+| Tool call (`tool_call`) | Card: title (e.g. `renderly.apply_command`), kind icon, status, collapsible JSON input and output |
+| Renderly edit card | For `apply_command`: a human summary of the command ("Trim clip V1/3 to 2.0 s"), the RFC-6902 patch count, and an **Undo** button |
+| Perception result | Thumbnail for `render_frame`, waveform/transcript snippet for `get_transcript` / `get_audio_peaks`. Full data collapsed |
+| Terminal output | Only if the agent uses terminal capability (MVP: disabled) |
+| Stop reason | Footer on each turn; `cancelled` and `refusal` get their own message |
+
+### 4.3 Permissions
+
+ACP only tells us *that* a tool needs approval (`session/request_permission`). It does not classify risk, so Renderly maps tools itself by name and `kind`:
+
+| Tool class | Examples | Default |
+|---|---|---|
+| Perception (read-only) | `get_project`, `render_frame`, `get_transcript`, `detect_silence`, `detect_scenes`, `get_audio_peaks`, `probe_media`, `list_models` | Allow (no prompt) |
+| Edits (undoable via shared undo) | `apply_command`, `apply_commands`, `NestClips`, `GenerateCaptions`, `GenerateVoiceover` | Allow, with an "Allow edits" toggle that is on by default for the session, visible in the header |
+| File writes outside the project | `export`, `export_otio`, `import_otio` (writes a new project), `GenerateVoiceover` `output_path` | **Ask** each time |
+| Export / render to disk | `export` | **Ask** each time |
+| Model downloads | `download_model` | **Ask**, and the tool itself refuses without `user_consented` |
+| Agent-native tools (shell, file edit, web) | depends on agent | **Ask**, and show the exact command or path |
+| Anything not classified | new tools | **Ask** |
+
+Rules:
+
+- Options come from the agent (`allow_once`, `allow_always`, `reject_once`, `reject_always`). Renderly shows them, and `allow_always` is scoped to the session only, never persisted.
+- A permission prompt never auto-approves on timeout. It stays pending and blocks the turn.
+- Cancel answers every pending permission with `cancelled` (protocol requirement).
+
+### 4.4 Other controls
+
+- **Cancel** button: sends `session/cancel`. The turn ends with `cancelled`; any edits already applied remain, and the undo button covers them.
+- **Agent picker**: list of detected agents with version, auth state, and a "how to sign in" link. Switching agent starts a new thread (agents do not share sessions).
+- **Stop everything**: kills the subprocess tree.
+
+### 4.5 First-run "connect your agent"
+
+1. Detect installed agents (`PATH` lookup for `claude`, `codex`, `gemini`, `agy`; `node`/`npx` for the npx-distributed adapters). Show what is missing, with the install command from the registry manifest.
+2. For the chosen agent, show the auth options that Renderly permits (§5.2). API-key entry is handled by the **vendor's** own CLI or environment variable, not by a Renderly form. Renderly does not store keys.
+3. Run `initialize` and check `authMethods`. If the agent needs sign-in, show "Open a terminal and run `<agent login command>`" (command taken from the agent's own docs, not guessed) and a "Check again" button.
+4. Confirm once: "This agent runs with your user account and can read and write files on this computer. Renderly will forward its permission requests to you." User acknowledges; stored locally.
+
+---
+
+## 5. Safety and privacy
+
+### 5.1 Threat model
+
+- **The agent runs with the user's privileges.** ACP client capabilities (`fs`, `terminal`) only govern what the agent *asks the client to do*. An agent's own native shell, file and network tools run regardless. Renderly therefore cannot sandbox the agent through ACP alone.
+- **Mitigations we control:**
+  - Set `cwd` to the project folder.
+  - Advertise `fs` and `terminal` as **not supported** in `initialize` (MVP), so the agent cannot use Renderly as a file/terminal proxy at all.
+  - Forward every agent-native permission request to the user (§4.3). Do not pass a permissive agent mode such as "bypass permissions" from Renderly. If the vendor's permission mode is configurable, Renderly sets the strictest mode it supports.
+  - The MCP server is the only Renderly-provided tool surface. It exposes the same command set as the CLI, nothing more.
+- **Prompt injection.** Transcripts, file names, captions and media metadata reach the agent through perception results. Treat them as data. Renderly never auto-approves a non-edit action because a tool result asked for it.
+- **Bridge token.** `bridge.json` holds the loopback token and is readable by any process running as the user, including the agent. This is the same trust level as the user; document it, do not treat the bridge as a security boundary against the local user.
+
+### 5.2 Credentials
+
+- Renderly stores **no** vendor credentials. Login state stays with the vendor's CLI (`~/.claude`, `~/.codex/auth.json`, the Gemini CLI store, the Antigravity store).
+- Renderly never reads, copies, or displays those files. It only checks the agent's `authMethods` and status through ACP.
+- API keys come from the user's environment or the vendor CLI. Renderly does not prompt for them in a form (the rule is "Never enter passwords or keys into a Renderly UI"). Test keys during development follow the AGENTS.md test-only exception, not production.
+- **Subscription login is off by default for Claude and Gemini** (§2.3, Q1, Q2). For Claude, the adapter must be launched with `--hide-claude-auth`; the owner decides otherwise.
+
+### 5.3 Data leaving the machine
+
+- Everything the agent sees (prompts, project JSON, transcripts, rendered frames) goes to **the vendor's model service through the user's own agent**. Renderly is not a party to that request and proxies nothing.
+- The chat must say so in the first-run step and in the header ("Agent: Claude Code. Messages and project data are sent to Anthropic under your account.").
+- Renderly sends no telemetry about chat content. No analytics on prompts.
+
+### 5.4 Perception size limits
+
+- `render_frame` returns base64 PNG in JSON (mcp-agent-guide, bridge-protocol). Proposed caps, to be validated: long edge ≤ 1280 px for frames sent to the agent, at most 4 images per turn, and total image bytes per turn ≤ 8 MB. Unverified against vendor image limits.
+- Transcripts and peaks are truncated to a documented maximum with an explicit "truncated" marker.
+
+### 5.5 Licensing
+
+| Component | Licence | Use | Verdict |
+|---|---|---|---|
+| `agent-client-protocol` (Rust) | Apache-2.0 | Link into `renderly-app` | Compatible. Version unverified |
+| `@agentclientprotocol/sdk` | Apache-2.0 | Only if the sidecar option is chosen | Compatible |
+| `claude-agent-acp` | Apache-2.0 (repo LICENSE); registry says "proprietary" | Launched by the user via `npx`. **Not bundled** | Compatible if not bundled. Resolve the registry conflict first |
+| `codex-acp` | Apache-2.0 per registry/README; GitHub says "Other" | Launched by the user via `npx`. Not bundled | Compatible if not bundled. Confirm LICENSE file |
+| `@google/gemini-cli` | Apache-2.0 | Launched by the user via `npx`. Not bundled | Compatible if not bundled |
+| Antigravity `agy_acp_server` | Proprietary | Downloaded by the user from Google's host | **Never bundled.** Link to the registry only |
+| Claude Agent SDK | Commercial Terms | Not used directly; reached only via the adapter the user launches | Do not bundle |
+
+**Rule for Renderly:** never redistribute a vendor CLI, adapter binary, or SDK. The app only **detects** and **launches** what the user has installed. Installer, README and in-app text must not imply that Renderly is affiliated with or endorsed by any vendor (AGPL/§0 rule 9).
+
+---
+
+## 6. Phased plan
+
+### Phase 1: MVP, one agent end to end (Claude Code OR Codex)
+
+Pick one agent for MVP. Recommend **Codex** first: Apache-2.0 adapter, documented API-key path, no subscription-policy question for API-key use. Claude is second because its adapter needs `--hide-claude-auth` and the policy answer (Q1) is still open.
+
+- `agent_chat/` module in `src-tauri`: detect, spawn, `initialize`, `session/new` (with `renderly-mcp`), `session/prompt`, `session/cancel`, event forwarding.
+- Chat panel: transcript, streaming text, tool-call cards, cancel.
+- Permission modal with the §4.3 defaults.
+- Bootstrap via prompt-to-`open_project` (option 1) until Q5 is decided.
+- Undo button on edit cards.
+- Tests: a fake ACP agent (a small test binary that speaks JSON-RPC over stdio) drives the chat backend in `cargo test`. No vendor CLI needed in CI.
+
+Exit criterion: user types "trim the first clip to 5 seconds" in the chat, the edit appears live in the timeline, and Ctrl+Z undoes it.
+
+### Phase 2: picker, permissions UI, first-run flow
+
+- Agent picker with detection, version and auth status.
+- "Allow edits" toggle, per-action permission history for the session.
+- First-run "connect your agent" flow (§4.5).
+- `--project` startup argument for `renderly-mcp` (if Q5 approved) to replace prompt bootstrap.
+- Per-turn undo grouping (if Q6 decided).
+
+### Phase 3: more agents
+
+- Gemini CLI (`--acp`), using an API key only, unless Q2 says otherwise.
+- Claude (`--hide-claude-auth`) if Q1 is resolved.
+- Other registry agents, each with a licence check before listing. Antigravity only if Q4 resolves to "supported".
+
+### Explicitly out of scope
+
+- Bundling or redistributing any vendor CLI, adapter, binary or SDK.
+- Renderly-hosted model access, key storage, billing, or any proxy of vendor traffic.
+- Renderly-side login or OAuth flows for vendor accounts.
+- Community ACP bridges for Antigravity (undocumented flags, ToS risk).
+- Remote or multi-user agent sessions. The bridge stays loopback-only.
+- Agent-driven filesystem or terminal access through ACP client capabilities (kept off in the MVP).
+- Any change to `renderly-core` beyond what the existing command API already provides.
+
+---
+
+## 7. Test plan
+
+- Unit: ACP message handling against a fake agent binary (spec shapes from §2.1).
+- Unit: permission classifier (every MCP tool name maps to one class; unknown tools map to Ask).
+- Integration: `renderly-mcp` launched by the fake agent with `open_project`, `apply_command` over a test bridge; assert `project:changed` and undo.
+- Manual, Windows: spawn `npx` adapter through `cmd /c`; cancel mid-turn; close the app and confirm no orphan `node` processes.
+- Regression: AGENTS.md definition of done (`cargo build/test`, fmt, clippy `-D warnings`).
+
+---
+
+## 8. Phase-0 spikes before committing to Phase 1
+
+1. Run `npx @agentclientprotocol/codex-acp@2.2.2` from Rust over stdio; complete `initialize`, `session/new` with a stub `mcpServers` entry, and one `session/prompt`. Record the actual field names (the public docs are not precise on `mcpServers` shape).
+2. Confirm the Rust crate version and API from crates.io, which was unreachable during research.
+3. Confirm `gemini --help` shows `--acp` at the registry version.
+4. Confirm the `claude-agent-acp` registry licence conflict with its maintainers.
+5. Measure `renderly-mcp` cold start when the agent launches it per session.
+
+---
+
+## 9. Open questions for the owner
+
+| # | Question | Why it matters | Current default |
+|---|---|---|---|
+| Q1 | **Claude subscription login.** Can Renderly offer "sign in with your Claude subscription" through the adapter, or is that a third-party integration the vendor prohibits? Ask Anthropic sales if unsure | Decides whether Claude is usable for subscribers at all. Vendor docs allow a user to sign into the *unmodified* CLI, but the adapter is a third-party wrapper | API key only; adapter launched with `--hide-claude-auth` |
+| Q2 | **Gemini Google sign-in.** Google's terms say third-party tools using CLI OAuth violate the terms. Is Renderly "a third-party tool" in that sense? | Decides whether the free Google-account tier can be offered | Gemini API key only |
+| Q3 | **Codex ChatGPT login.** Is reusing a ChatGPT subscription login through a third-party ACP client permitted? Not found in OpenAI docs | Decides whether Codex subscription users are supported | API key only until confirmed |
+| Q4 | **Antigravity.** Proprietary binary, no documented headless interface, and only community bridges. Is it in scope at all? | Affects the "Antigravity" promise in the parity row | Not in MVP; re-check in Phase 3 |
+| Q5 | **Bootstrap.** Approve a `--project <path>` startup argument for `renderly-mcp`? It would change a server that AGENTS.md treats as stable | Replaces unreliable prompt-driven `open_project` | Prompt-driven until approved |
+| Q6 | **Undo granularity.** One undo step per agent *edit*, per *turn*, or per *user message*? | Shared undo with the human is only useful if agent turns group cleanly | Per edit (matches today's history) |
+| Q7 | **Permission defaults.** Accept the §4.3 table, or stricter (ask for every edit)? | Trades speed against control | As written |
+| Q8 | **Vendor mode.** Should Renderly ever request the agent's most permissive mode? | Recommendation is no | No |
+| Q9 | **Sign-off on data disclosure text** in §5.3 (wording on Anthropic, Google, OpenAI) | Legal-sensitive copy | Draft in §5.3 |
+| Q10 | **Shipping `renderly-mcp`.** Does the installer ship `renderly-mcp.exe` next to the app, so the agent can launch it by absolute path? | `command` must be an absolute path (ACP §2.1) | Assumed yes; not verified against the installer config |
+
+---
+
+## 10. Claims not verified
+
+- The Rust `agent-client-protocol` crate version and API. crates.io was unreachable.
+- The exact `mcpServers` object shape in `session/new` beyond the stdio fields listed on the session-setup page (Spike 1).
+- Codex ChatGPT login behaviour for third-party ACP clients (Q3).
+- Whether `claude-agent-acp` at 0.90.0 offers subscription login by default (the flag exists; the default was read from source, not run).
+- Gemini `--acp` vs `--experimental-acp` in the installed version (Spike 3).
+- Antigravity's Google-sign-in flow and whether it is covered by any documented terms for third-party use.
+- Licences and launch commands for the registry entries not named in §2.2.
+- `codex-acp` LICENSE file: README and registry say Apache-2.0; GitHub detects "Other".
+- Vendor image size limits behind the §5.4 numbers.
+- Whether the Claude Agent SDK's permission modes can be set per session through the adapter.
+- Windows `npx` launch via `cmd /c` (§3.2) is untested.
