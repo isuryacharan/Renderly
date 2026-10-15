@@ -1,0 +1,8 @@
+Crate: simd_helpers
+Version: 0.1.0
+Repository: https://github.com/lu-zero/simd_helpers
+Ref: default branch master (tag v0.1.0 has no licence file)
+Path: (repository root)
+Files:
+  - LICENSE from https://raw.githubusercontent.com/lu-zero/simd_helpers/master/LICENSE
+Fetched: 2026-10-15

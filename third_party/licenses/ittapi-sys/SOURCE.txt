@@ -1,0 +1,9 @@
+Crate: ittapi-sys
+Version: 0.4.0
+Repository: https://github.com/intel/ittapi
+Ref: commit a825eeacbcce (crates.io VCS record)
+Path: LICENSES
+Files:
+  - BSD-3-Clause.txt from https://raw.githubusercontent.com/intel/ittapi/a825eeacbcce13729ce1c9feb4c355b1c3be265a/LICENSES/BSD-3-Clause.txt
+  - GPL-2.0-only.txt from https://raw.githubusercontent.com/intel/ittapi/a825eeacbcce13729ce1c9feb4c355b1c3be265a/LICENSES/GPL-2.0-only.txt
+Fetched: 2026-10-15

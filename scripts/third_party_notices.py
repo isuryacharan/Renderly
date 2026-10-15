@@ -76,7 +76,8 @@ ALLOWED_SPDX = frozenset({
 # Allowed, but file-level copyleft: listed in the review section for visibility.
 VISIBILITY_SPDX = frozenset({"MPL-2.0"})
 
-LICENCE_FILE_PATTERNS = ("LICENSE", "LICENCE", "COPYING", "NOTICE")
+# COPYRIGHT and AUTHORS carry the copyright holders for a few crates that ship no LICENSE.
+LICENCE_FILE_PATTERNS = ("LICENSE", "LICENCE", "COPYING", "NOTICE", "COPYRIGHT", "AUTHORS")
 
 # Fixed entries: bundled files that no package manager describes.
 # (display name, version/note, licence SPDX id, licence file relative to repo root, source note)
@@ -226,6 +227,7 @@ class Package:
     vcs_path: str = ""  # Rust: directory of the crate inside its repository (.cargo_vcs_info.json)
     vcs_sha: str = ""  # Rust: commit the crate was published from (.cargo_vcs_info.json)
     vendored_from: str = ""  # set when the licence texts come from third_party/licenses
+    authors: tuple[str, ...] = ()  # Rust: Cargo.toml `authors`, the fallback attribution
 
     @property
     def key(self) -> tuple[str, str, str]:
@@ -404,6 +406,7 @@ def rust_packages(metadata: dict) -> list[Package]:
             licence_files=find_licence_files(manifest_dir, extra),
             vcs_path=vcs_path,
             vcs_sha=vcs_sha,
+            authors=tuple(pkg.get("authors") or ()),
         ))
     return packages
 
@@ -630,7 +633,11 @@ def render(rust: list[Package], npm: list[Package], fixed_texts: list[tuple[str,
                 if package.vendored_from:
                     text_ref += f" (vendored from upstream, {package.vendored_from})"
             elif package.spdx:
-                text_ref = f"No licence file in source; licence text: see {package.spdx} standard text"
+                # Upstream ships no licence file anywhere (checked at the published tag/commit
+                # and the default branch), so attribute via the crate's declared authors.
+                holders = "; ".join(package.authors) if package.authors else "the crate authors"
+                text_ref = (f"No licence file upstream; copyright {holders}; "
+                            f"licence text: see {package.spdx} standard text")
             else:
                 text_ref = "No licence file in source and no licence declared"
             out.append(
@@ -838,6 +845,14 @@ GITHUB_REPO = re.compile(
 )
 
 
+# Crates whose published metadata names no repository. Looked up by hand.
+REPOSITORY_OVERRIDES = {
+    # Cranelift ships from the Wasmtime monorepo (cranelift/assembler-x64).
+    "cranelift-assembler-x64": "https://github.com/bytecodealliance/wasmtime",
+    "libappindicator-sys": "https://github.com/tauri-apps/libappindicator-rs",
+}
+
+
 def parse_github_url(url: str) -> tuple[str, str, str] | None:
     """(owner, repo, subdirectory) for a github.com repository URL, or None."""
     match = GITHUB_REPO.match(url.rstrip("/"))
@@ -911,14 +926,28 @@ class Fetcher:
             if entry.get("type") == "file" and LICENCE_NAME.match(entry.get("name", ""))
         ]
 
+    def entries_at(self, owner: str, repo: str, ref: str, subpath: str) -> tuple[list[dict], str]:
+        """Licence files in the crate's directory at `ref`, else in the repository root."""
+        if subpath:
+            entries = self.licence_entries(owner, repo, ref, subpath)
+            if entries:
+                return entries, subpath
+        entries = self.licence_entries(owner, repo, ref, "")
+        if entries:
+            return entries, "(repository root)"
+        # REUSE-style repositories keep one file per licence in LICENSES/.
+        listing = self.listing(owner, repo, ref, "LICENSES")
+        return [e for e in listing if e.get("type") == "file"], "LICENSES"
+
     def fetch(self, package: Package) -> FetchResult:
         result = FetchResult(package)
-        if not package.repository:
+        repository = package.repository or REPOSITORY_OVERRIDES.get(package.name, "")
+        if not repository:
             result.reason = "no repository URL in the package metadata"
             return result
-        parsed = parse_github_url(package.repository)
+        parsed = parse_github_url(repository)
         if parsed is None:
-            result.reason = f"repository is not on github.com ({package.repository}); not fetched"
+            result.reason = f"repository is not on github.com ({repository}); not fetched"
             return result
         owner, repo, url_subpath = parsed
         subpath = package.vcs_path or url_subpath
@@ -934,11 +963,14 @@ class Fetcher:
             ref = self.default_branch(owner, repo)
             result.ref = f"default branch {ref} (no matching tag or commit)"
 
-        entries = self.licence_entries(owner, repo, ref, subpath) if subpath else []
-        result.path = subpath
-        if not entries:
-            entries = self.licence_entries(owner, repo, ref, "")
-            result.path = "(repository root)"
+        entries, result.path = self.entries_at(owner, repo, ref, subpath)
+        default = self.default_branch(owner, repo)
+        if not entries and ref != default:
+            # Some crates were published from a tag or commit that predates the repository's
+            # licence file. The default branch is the next best source for the same licence.
+            entries, result.path = self.entries_at(owner, repo, default, subpath)
+            if entries:
+                result.ref = f"default branch {default} ({result.ref} has no licence file)"
         if not entries:
             where = f"{subpath} or the repository root" if subpath else "the repository root"
             result.reason = f"no LICENSE/LICENCE/COPYING/NOTICE file at {result.ref} in {where}"

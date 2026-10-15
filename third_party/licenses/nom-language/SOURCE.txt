@@ -1,0 +1,8 @@
+Crate: nom-language
+Version: 0.1.0
+Repository: https://github.com/rust-bakery/nom
+Ref: default branch main (tag 0.1.0 has no licence file)
+Path: nom-language
+Files:
+  - LICENSE from https://raw.githubusercontent.com/rust-bakery/nom/main/nom-language/LICENSE
+Fetched: 2026-10-15

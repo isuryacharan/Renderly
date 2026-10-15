@@ -1,0 +1,9 @@
+Crate: libappindicator-sys
+Version: 0.9.0
+Repository: 
+Ref: tag libappindicator-sys-v0.9.0
+Path: (repository root)
+Files:
+  - LICENSE-APACHE from https://raw.githubusercontent.com/tauri-apps/libappindicator-rs/libappindicator-sys-v0.9.0/LICENSE-APACHE
+  - LICENSE-MIT from https://raw.githubusercontent.com/tauri-apps/libappindicator-rs/libappindicator-sys-v0.9.0/LICENSE-MIT
+Fetched: 2026-10-15
