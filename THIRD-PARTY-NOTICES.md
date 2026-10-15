@@ -28,10 +28,10 @@ The following entries have a licence that is not on Renderly's permitted list, o
 
 ## Summary
 
-- Rust packages: 732
+- Rust packages: 735
 - npm packages: 9
 - Fixed entries (bundled model and font): 2
-- Distinct licence texts: 361
+- Distinct licence texts: 364
 
 ## Rust crates
 
@@ -258,107 +258,108 @@ The following entries have a licence that is not on Renderly's permitted list, o
 | http-range | 0.1.5 | MIT | https://github.com/bancek/rust-http-range | [T144](#licence-text-144) |
 | http | 1.4.2 | MIT OR Apache-2.0 | https://github.com/hyperium/http | [T140](#licence-text-140), [T141](#licence-text-141) |
 | httparse | 1.10.1 | MIT OR Apache-2.0 | https://github.com/seanmonstar/httparse | [T2](#licence-text-2), [T145](#licence-text-145) |
-| hyper-rustls | 0.27.9 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/hyper-rustls | [T2](#licence-text-2), [T147](#licence-text-147), [T148](#licence-text-148) |
-| hyper-util | 0.1.20 | MIT | https://github.com/hyperium/hyper-util | [T149](#licence-text-149) |
-| hyper | 1.10.1 | MIT | https://github.com/hyperium/hyper | [T146](#licence-text-146) |
-| iana-time-zone-haiku | 0.1.2 | MIT OR Apache-2.0 | https://github.com/strawlab/iana-time-zone | [T150](#licence-text-150), [T151](#licence-text-151) |
-| iana-time-zone | 0.1.65 | MIT OR Apache-2.0 | https://github.com/strawlab/iana-time-zone | [T150](#licence-text-150), [T151](#licence-text-151) |
-| ico | 0.5.0 | MIT | https://github.com/mdsteele/rust-ico | [T152](#licence-text-152) |
-| icu_collections | 2.2.0 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T153](#licence-text-153) |
-| icu_locale_core | 2.2.0 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T153](#licence-text-153) |
-| icu_normalizer | 2.2.0 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T153](#licence-text-153) |
-| icu_normalizer_data | 2.2.0 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T153](#licence-text-153) |
-| icu_properties | 2.2.0 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T153](#licence-text-153) |
-| icu_properties_data | 2.2.0 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T153](#licence-text-153) |
-| icu_provider | 2.2.0 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T153](#licence-text-153) |
+| httpdate | 1.0.3 | MIT OR Apache-2.0 | https://github.com/pyfisch/httpdate | [T146](#licence-text-146), [T147](#licence-text-147) |
+| hyper-rustls | 0.27.9 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/hyper-rustls | [T2](#licence-text-2), [T149](#licence-text-149), [T150](#licence-text-150) |
+| hyper-util | 0.1.20 | MIT | https://github.com/hyperium/hyper-util | [T151](#licence-text-151) |
+| hyper | 1.10.1 | MIT | https://github.com/hyperium/hyper | [T148](#licence-text-148) |
+| iana-time-zone-haiku | 0.1.2 | MIT OR Apache-2.0 | https://github.com/strawlab/iana-time-zone | [T152](#licence-text-152), [T153](#licence-text-153) |
+| iana-time-zone | 0.1.65 | MIT OR Apache-2.0 | https://github.com/strawlab/iana-time-zone | [T152](#licence-text-152), [T153](#licence-text-153) |
+| ico | 0.5.0 | MIT | https://github.com/mdsteele/rust-ico | [T154](#licence-text-154) |
+| icu_collections | 2.2.0 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T155](#licence-text-155) |
+| icu_locale_core | 2.2.0 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T155](#licence-text-155) |
+| icu_normalizer | 2.2.0 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T155](#licence-text-155) |
+| icu_normalizer_data | 2.2.0 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T155](#licence-text-155) |
+| icu_properties | 2.2.0 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T155](#licence-text-155) |
+| icu_properties_data | 2.2.0 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T155](#licence-text-155) |
+| icu_provider | 2.2.0 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T155](#licence-text-155) |
 | id-arena | 2.3.0 | MIT/Apache-2.0 | https://github.com/fitzgen/id-arena | [T2](#licence-text-2), [T56](#licence-text-56) |
 | ident_case | 1.0.1 | MIT/Apache-2.0 | https://github.com/TedDriggs/ident_case | [T136](#licence-text-136) |
-| idna | 1.1.0 | MIT OR Apache-2.0 | https://github.com/servo/rust-url/ | [T2](#licence-text-2), [T154](#licence-text-154) |
-| idna_adapter | 1.2.2 | Apache-2.0 OR MIT | https://github.com/hsivonen/idna_adapter | [T2](#licence-text-2), [T155](#licence-text-155) |
+| idna | 1.1.0 | MIT OR Apache-2.0 | https://github.com/servo/rust-url/ | [T2](#licence-text-2), [T156](#licence-text-156) |
+| idna_adapter | 1.2.2 | Apache-2.0 OR MIT | https://github.com/hsivonen/idna_adapter | [T2](#licence-text-2), [T157](#licence-text-157) |
 | image-webp | 0.2.4 | MIT OR Apache-2.0 | https://github.com/image-rs/image-webp | [T1](#licence-text-1), [T115](#licence-text-115) |
 | image | 0.25.10 | MIT OR Apache-2.0 | https://github.com/image-rs/image | [T1](#licence-text-1), [T115](#licence-text-115) |
 | imgref | 1.12.2 | CC0-1.0 OR Apache-2.0 | https://github.com/kornelski/imgref | [T60](#licence-text-60), [T100](#licence-text-100) |
-| indexmap | 1.9.3 | Apache-2.0 OR MIT | https://github.com/bluss/indexmap | [T2](#licence-text-2), [T156](#licence-text-156) |
-| indexmap | 2.14.0 | Apache-2.0 OR MIT | https://github.com/indexmap-rs/indexmap | [T2](#licence-text-2), [T156](#licence-text-156) |
-| infer | 0.19.0 | MIT | https://github.com/bojand/infer | [T157](#licence-text-157) |
+| indexmap | 1.9.3 | Apache-2.0 OR MIT | https://github.com/bluss/indexmap | [T2](#licence-text-2), [T158](#licence-text-158) |
+| indexmap | 2.14.0 | Apache-2.0 OR MIT | https://github.com/indexmap-rs/indexmap | [T2](#licence-text-2), [T158](#licence-text-158) |
+| infer | 0.19.0 | MIT | https://github.com/bojand/infer | [T159](#licence-text-159) |
 | inventory | 0.3.25 | MIT OR Apache-2.0 | https://github.com/dtolnay/inventory | [T12](#licence-text-12), [T6](#licence-text-6) |
-| ipnet | 2.12.0 | MIT OR Apache-2.0 | https://github.com/krisprice/ipnet | [T158](#licence-text-158), [T159](#licence-text-159) |
+| ipnet | 2.12.0 | MIT OR Apache-2.0 | https://github.com/krisprice/ipnet | [T160](#licence-text-160), [T161](#licence-text-161) |
 | is_terminal_polyfill | 1.70.2 | MIT OR Apache-2.0 | https://github.com/polyfill-rs/is_terminal_polyfill | [T17](#licence-text-17), [T18](#licence-text-18) |
 | itertools | 0.14.0 | MIT OR Apache-2.0 | https://github.com/rust-itertools/itertools | [T2](#licence-text-2), [T67](#licence-text-67) |
 | itertools | 0.15.0 | MIT OR Apache-2.0 | https://github.com/rust-itertools/itertools | [T2](#licence-text-2), [T67](#licence-text-67) |
 | itoa | 1.0.18 | MIT OR Apache-2.0 | https://github.com/dtolnay/itoa | [T12](#licence-text-12), [T6](#licence-text-6) |
 | ittapi-sys | 0.4.0 | GPL-2.0-only OR BSD-3-Clause | https://github.com/intel/ittapi | No licence file upstream; copyright Johnnie Birch <45402135+jlb6740@users.noreply.github.com>; licence text: see GPL-2.0-only OR BSD-3-Clause standard text |
 | ittapi | 0.4.0 | GPL-2.0-only OR BSD-3-Clause | https://github.com/intel/ittapi | No licence file upstream; copyright Johnnie Birch <45402135+jlb6740@users.noreply.github.com>; Benjamin Bouvier <public@benj.me>; licence text: see GPL-2.0-only OR BSD-3-Clause standard text |
-| javascriptcore-rs-sys | 1.1.1 | MIT | https://github.com/tauri-apps/javascriptcore-rs | [T161](#licence-text-161) |
-| javascriptcore-rs | 1.1.2 | MIT | https://github.com/tauri-apps/javascriptcore-rs | [T160](#licence-text-160) |
-| jni-macros | 0.22.4 | MIT OR Apache-2.0 | https://github.com/jni-rs/jni-rs | [T2](#licence-text-2), [T162](#licence-text-162) (vendored from upstream, tag v0.22.4) |
-| jni-sys-macros | 0.4.1 | MIT OR Apache-2.0 | https://github.com/jni-rs/jni-sys | [T17](#licence-text-17), [T163](#licence-text-163) (vendored from upstream, tag v0.4.1) |
-| jni-sys | 0.3.1 | MIT OR Apache-2.0 | https://github.com/jni-rs/jni-sys | [T17](#licence-text-17), [T163](#licence-text-163) |
-| jni-sys | 0.4.1 | MIT OR Apache-2.0 | https://github.com/jni-rs/jni-sys | [T17](#licence-text-17), [T163](#licence-text-163) |
-| jni | 0.21.1 | MIT/Apache-2.0 | https://github.com/jni-rs/jni-rs | [T2](#licence-text-2), [T162](#licence-text-162) |
-| jni | 0.22.4 | MIT OR Apache-2.0 | https://github.com/jni-rs/jni-rs | [T2](#licence-text-2), [T162](#licence-text-162) (vendored from upstream, tag v0.22.4) |
+| javascriptcore-rs-sys | 1.1.1 | MIT | https://github.com/tauri-apps/javascriptcore-rs | [T163](#licence-text-163) |
+| javascriptcore-rs | 1.1.2 | MIT | https://github.com/tauri-apps/javascriptcore-rs | [T162](#licence-text-162) |
+| jni-macros | 0.22.4 | MIT OR Apache-2.0 | https://github.com/jni-rs/jni-rs | [T2](#licence-text-2), [T164](#licence-text-164) (vendored from upstream, tag v0.22.4) |
+| jni-sys-macros | 0.4.1 | MIT OR Apache-2.0 | https://github.com/jni-rs/jni-sys | [T17](#licence-text-17), [T165](#licence-text-165) (vendored from upstream, tag v0.4.1) |
+| jni-sys | 0.3.1 | MIT OR Apache-2.0 | https://github.com/jni-rs/jni-sys | [T17](#licence-text-17), [T165](#licence-text-165) |
+| jni-sys | 0.4.1 | MIT OR Apache-2.0 | https://github.com/jni-rs/jni-sys | [T17](#licence-text-17), [T165](#licence-text-165) |
+| jni | 0.21.1 | MIT/Apache-2.0 | https://github.com/jni-rs/jni-rs | [T2](#licence-text-2), [T164](#licence-text-164) |
+| jni | 0.22.4 | MIT OR Apache-2.0 | https://github.com/jni-rs/jni-rs | [T2](#licence-text-2), [T164](#licence-text-164) (vendored from upstream, tag v0.22.4) |
 | js-sys | 0.3.103 | MIT OR Apache-2.0 | https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys | [T2](#licence-text-2), [T56](#licence-text-56) |
-| json-patch | 3.0.1 | MIT/Apache-2.0 | https://github.com/idubrov/json-patch | [T17](#licence-text-17), [T164](#licence-text-164) |
-| json-patch | 4.2.0 | MIT/Apache-2.0 | https://github.com/idubrov/json-patch | [T17](#licence-text-17), [T164](#licence-text-164) |
-| jsonptr | 0.6.3 | MIT OR Apache-2.0 | https://github.com/chanced/jsonptr | [T165](#licence-text-165), [T166](#licence-text-166) |
-| jsonptr | 0.7.1 | MIT OR Apache-2.0 | https://github.com/chanced/jsonptr | [T165](#licence-text-165), [T166](#licence-text-166) |
-| keyboard-types | 0.7.0 | MIT OR Apache-2.0 | https://github.com/pyfisch/keyboard-types | [T2](#licence-text-2), [T167](#licence-text-167) |
+| json-patch | 3.0.1 | MIT/Apache-2.0 | https://github.com/idubrov/json-patch | [T17](#licence-text-17), [T166](#licence-text-166) |
+| json-patch | 4.2.0 | MIT/Apache-2.0 | https://github.com/idubrov/json-patch | [T17](#licence-text-17), [T166](#licence-text-166) |
+| jsonptr | 0.6.3 | MIT OR Apache-2.0 | https://github.com/chanced/jsonptr | [T167](#licence-text-167), [T168](#licence-text-168) |
+| jsonptr | 0.7.1 | MIT OR Apache-2.0 | https://github.com/chanced/jsonptr | [T167](#licence-text-167), [T168](#licence-text-168) |
+| keyboard-types | 0.7.0 | MIT OR Apache-2.0 | https://github.com/pyfisch/keyboard-types | [T2](#licence-text-2), [T169](#licence-text-169) |
 | khronos-egl | 6.0.0 | MIT/Apache-2.0 | https://github.com/timothee-haudebourg/khronos-egl | [T2](#licence-text-2), [T6](#licence-text-6) |
-| lazy_static | 1.5.0 | MIT OR Apache-2.0 | https://github.com/rust-lang-nursery/lazy-static.rs | [T2](#licence-text-2), [T168](#licence-text-168) |
+| lazy_static | 1.5.0 | MIT OR Apache-2.0 | https://github.com/rust-lang-nursery/lazy-static.rs | [T2](#licence-text-2), [T170](#licence-text-170) |
 | leb128fmt | 0.1.0 | MIT OR Apache-2.0 | https://github.com/bluk/leb128fmt | [T2](#licence-text-2), [T6](#licence-text-6) |
-| lebe | 0.5.3 | BSD-3-Clause | https://github.com/johannesvollmer/lebe | [T169](#licence-text-169) |
-| libappindicator-sys | 0.9.0 | Apache-2.0 OR MIT |  | [T2](#licence-text-2), [T170](#licence-text-170) (vendored from upstream, tag libappindicator-sys-v0.9.0) |
-| libappindicator | 0.9.0 | Apache-2.0 OR MIT |  | [T2](#licence-text-2), [T170](#licence-text-170) |
-| libc | 0.2.186 | MIT OR Apache-2.0 | https://github.com/rust-lang/libc | [T12](#licence-text-12), [T171](#licence-text-171) |
+| lebe | 0.5.3 | BSD-3-Clause | https://github.com/johannesvollmer/lebe | [T171](#licence-text-171) |
+| libappindicator-sys | 0.9.0 | Apache-2.0 OR MIT |  | [T2](#licence-text-2), [T172](#licence-text-172) (vendored from upstream, tag libappindicator-sys-v0.9.0) |
+| libappindicator | 0.9.0 | Apache-2.0 OR MIT |  | [T2](#licence-text-2), [T172](#licence-text-172) |
+| libc | 0.2.186 | MIT OR Apache-2.0 | https://github.com/rust-lang/libc | [T12](#licence-text-12), [T173](#licence-text-173) |
 | libdbus-sys | 0.2.7 | Apache-2.0/MIT | https://github.com/diwic/dbus-rs | [T82](#licence-text-82), [T83](#licence-text-83) |
-| libloading | 0.7.4 | ISC | https://github.com/nagisa/rust_libloading/ | [T172](#licence-text-172) |
-| libloading | 0.8.9 | ISC | https://github.com/nagisa/rust_libloading/ | [T172](#licence-text-172) |
-| libm | 0.2.16 | MIT | https://github.com/rust-lang/compiler-builtins | [T173](#licence-text-173) |
-| libredox | 0.1.18 | MIT | https://gitlab.redox-os.org/redox-os/libredox | [T174](#licence-text-174) |
-| linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/sunfishcode/linux-raw-sys | [T175](#licence-text-175), [T2](#licence-text-2), [T70](#licence-text-70), [T6](#licence-text-6) |
-| litemap | 0.8.2 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T153](#licence-text-153) |
-| litrs | 1.0.0 | MIT OR Apache-2.0 | https://github.com/LukasKalbertodt/litrs | [T12](#licence-text-12), [T176](#licence-text-176) |
-| lock_api | 0.4.14 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot | [T2](#licence-text-2), [T177](#licence-text-177) |
+| libloading | 0.7.4 | ISC | https://github.com/nagisa/rust_libloading/ | [T174](#licence-text-174) |
+| libloading | 0.8.9 | ISC | https://github.com/nagisa/rust_libloading/ | [T174](#licence-text-174) |
+| libm | 0.2.16 | MIT | https://github.com/rust-lang/compiler-builtins | [T175](#licence-text-175) |
+| libredox | 0.1.18 | MIT | https://gitlab.redox-os.org/redox-os/libredox | [T176](#licence-text-176) |
+| linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/sunfishcode/linux-raw-sys | [T177](#licence-text-177), [T2](#licence-text-2), [T70](#licence-text-70), [T6](#licence-text-6) |
+| litemap | 0.8.2 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T155](#licence-text-155) |
+| litrs | 1.0.0 | MIT OR Apache-2.0 | https://github.com/LukasKalbertodt/litrs | [T12](#licence-text-12), [T178](#licence-text-178) |
+| lock_api | 0.4.14 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot | [T2](#licence-text-2), [T179](#licence-text-179) |
 | log | 0.4.33 | MIT OR Apache-2.0 | https://github.com/rust-lang/log | [T2](#licence-text-2), [T41](#licence-text-41) |
-| loop9 | 0.1.5 | MIT | https://gitlab.com/kornelski/loop9 | [T178](#licence-text-178) |
-| lru-slab | 0.1.2 | MIT OR Apache-2.0 OR Zlib | https://github.com/Ralith/lru-slab | [T60](#licence-text-60), [T179](#licence-text-179), [T180](#licence-text-180) |
-| mach2 | 0.4.3 | BSD-2-Clause OR MIT OR Apache-2.0 | https://github.com/JohnTitor/mach2 | [T12](#licence-text-12), [T181](#licence-text-181), [T182](#licence-text-182) |
+| loop9 | 0.1.5 | MIT | https://gitlab.com/kornelski/loop9 | [T180](#licence-text-180) |
+| lru-slab | 0.1.2 | MIT OR Apache-2.0 OR Zlib | https://github.com/Ralith/lru-slab | [T60](#licence-text-60), [T181](#licence-text-181), [T182](#licence-text-182) |
+| mach2 | 0.4.3 | BSD-2-Clause OR MIT OR Apache-2.0 | https://github.com/JohnTitor/mach2 | [T12](#licence-text-12), [T183](#licence-text-183), [T184](#licence-text-184) |
 | maplit | 1.0.2 | MIT/Apache-2.0 | https://github.com/bluss/maplit | [T2](#licence-text-2), [T67](#licence-text-67) |
 | markup5ever | 0.38.0 | MIT OR Apache-2.0 | https://github.com/servo/html5ever | [T2](#licence-text-2), [T139](#licence-text-139) |
-| matchers | 0.2.0 | MIT | https://github.com/hawkw/matchers | [T183](#licence-text-183) |
-| matrixmultiply | 0.3.11 | MIT/Apache-2.0 | https://github.com/bluss/matrixmultiply/ | [T2](#licence-text-2), [T184](#licence-text-184) |
-| maybe-rayon | 0.1.1 | MIT | https://github.com/shssoichiro/maybe-rayon | [T185](#licence-text-185) |
+| matchers | 0.2.0 | MIT | https://github.com/hawkw/matchers | [T185](#licence-text-185) |
+| matrixmultiply | 0.3.11 | MIT/Apache-2.0 | https://github.com/bluss/matrixmultiply/ | [T2](#licence-text-2), [T186](#licence-text-186) |
+| maybe-rayon | 0.1.1 | MIT | https://github.com/shssoichiro/maybe-rayon | [T187](#licence-text-187) |
 | memchr | 2.8.2 | Unlicense OR MIT | https://github.com/BurntSushi/memchr | [T7](#licence-text-7), [T8](#licence-text-8) |
-| memfd | 0.6.5 | MIT OR Apache-2.0 | https://github.com/lucab/memfd-rs | [T60](#licence-text-60), [T186](#licence-text-186) |
-| memmap2 | 0.9.11 | MIT OR Apache-2.0 | https://github.com/RazrFalcon/memmap2-rs | [T187](#licence-text-187), [T188](#licence-text-188) |
-| memoffset | 0.9.1 | MIT | https://github.com/Gilnaa/memoffset | [T189](#licence-text-189) |
-| mime | 0.3.17 | MIT OR Apache-2.0 | https://github.com/hyperium/mime | [T2](#licence-text-2), [T190](#licence-text-190) |
-| miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 | https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide | [T191](#licence-text-191), [T1](#licence-text-1), [T192](#licence-text-192), [T193](#licence-text-193) |
-| mio | 1.2.1 | MIT | https://github.com/tokio-rs/mio | [T194](#licence-text-194) |
-| moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 | https://github.com/awxkee/moxcms | [T195](#licence-text-195), [T196](#licence-text-196) |
-| muda | 0.19.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/muda | [T2](#licence-text-2), [T197](#licence-text-197), [T198](#licence-text-198) |
-| naga-types | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T199](#licence-text-199) |
-| naga | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T199](#licence-text-199) |
-| ndarray | 0.17.2 | MIT OR Apache-2.0 | https://github.com/rust-ndarray/ndarray | [T2](#licence-text-2), [T200](#licence-text-200) |
+| memfd | 0.6.5 | MIT OR Apache-2.0 | https://github.com/lucab/memfd-rs | [T60](#licence-text-60), [T188](#licence-text-188) |
+| memmap2 | 0.9.11 | MIT OR Apache-2.0 | https://github.com/RazrFalcon/memmap2-rs | [T189](#licence-text-189), [T190](#licence-text-190) |
+| memoffset | 0.9.1 | MIT | https://github.com/Gilnaa/memoffset | [T191](#licence-text-191) |
+| mime | 0.3.17 | MIT OR Apache-2.0 | https://github.com/hyperium/mime | [T2](#licence-text-2), [T192](#licence-text-192) |
+| miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 | https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide | [T193](#licence-text-193), [T1](#licence-text-1), [T194](#licence-text-194), [T195](#licence-text-195) |
+| mio | 1.2.1 | MIT | https://github.com/tokio-rs/mio | [T196](#licence-text-196) |
+| moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 | https://github.com/awxkee/moxcms | [T197](#licence-text-197), [T198](#licence-text-198) |
+| muda | 0.19.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/muda | [T2](#licence-text-2), [T199](#licence-text-199), [T200](#licence-text-200) |
+| naga-types | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T201](#licence-text-201) |
+| naga | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T201](#licence-text-201) |
+| ndarray | 0.17.2 | MIT OR Apache-2.0 | https://github.com/rust-ndarray/ndarray | [T2](#licence-text-2), [T202](#licence-text-202) |
 | ndk-context | 0.1.1 | MIT OR Apache-2.0 | https://github.com/rust-windowing/android-ndk-rs | [T60](#licence-text-60), [T136](#licence-text-136) (vendored from upstream, tag ndk-context-0.1.1) |
 | ndk-sys | 0.6.0+11769913 | MIT OR Apache-2.0 | https://github.com/rust-mobile/ndk | [T60](#licence-text-60), [T136](#licence-text-136) (vendored from upstream, commit 49bbbba16c58 (crates.io VCS record)) |
 | ndk | 0.9.0 | MIT OR Apache-2.0 | https://github.com/rust-mobile/ndk | [T60](#licence-text-60), [T136](#licence-text-136) (vendored from upstream, tag ndk-0.9.0) |
-| new_debug_unreachable | 1.0.6 | MIT | https://github.com/mbrubeck/rust-debug-unreachable | [T201](#licence-text-201) |
-| nnnoiseless | 0.5.2 | BSD-3-Clause | https://github.com/jneem/nnnoiseless | [T202](#licence-text-202), [T203](#licence-text-203) |
-| no_std_io2 | 0.9.4 | Apache-2.0 OR MIT | https://github.com/wcampbell0x2a/no-std-io2 | [T17](#licence-text-17), [T204](#licence-text-204) |
-| nom-language | 0.1.0 | MIT | https://github.com/rust-bakery/nom | [T206](#licence-text-206) (vendored from upstream, default branch main (tag 0.1.0 has no licence file)) |
-| nom | 8.0.0 | MIT | https://github.com/rust-bakery/nom | [T205](#licence-text-205) |
-| noop_proc_macro | 0.3.0 | MIT | https://github.com/lu-zero/noop_proc_macro | [T207](#licence-text-207) |
-| nu-ansi-term | 0.50.3 | MIT | https://github.com/nushell/nu-ansi-term | [T208](#licence-text-208) |
+| new_debug_unreachable | 1.0.6 | MIT | https://github.com/mbrubeck/rust-debug-unreachable | [T203](#licence-text-203) |
+| nnnoiseless | 0.5.2 | BSD-3-Clause | https://github.com/jneem/nnnoiseless | [T204](#licence-text-204), [T205](#licence-text-205) |
+| no_std_io2 | 0.9.4 | Apache-2.0 OR MIT | https://github.com/wcampbell0x2a/no-std-io2 | [T17](#licence-text-17), [T206](#licence-text-206) |
+| nom-language | 0.1.0 | MIT | https://github.com/rust-bakery/nom | [T208](#licence-text-208) (vendored from upstream, default branch main (tag 0.1.0 has no licence file)) |
+| nom | 8.0.0 | MIT | https://github.com/rust-bakery/nom | [T207](#licence-text-207) |
+| noop_proc_macro | 0.3.0 | MIT | https://github.com/lu-zero/noop_proc_macro | [T209](#licence-text-209) |
+| nu-ansi-term | 0.50.3 | MIT | https://github.com/nushell/nu-ansi-term | [T210](#licence-text-210) |
 | num-bigint | 0.4.8 | MIT OR Apache-2.0 | https://github.com/rust-num/num-bigint | [T2](#licence-text-2), [T41](#licence-text-41) |
 | num-complex | 0.4.6 | MIT OR Apache-2.0 | https://github.com/rust-num/num-complex | [T2](#licence-text-2), [T41](#licence-text-41) |
-| num-conv | 0.2.2 | MIT OR Apache-2.0 | https://github.com/jhpratt/num-conv | [T1](#licence-text-1), [T209](#licence-text-209) |
+| num-conv | 0.2.2 | MIT OR Apache-2.0 | https://github.com/jhpratt/num-conv | [T1](#licence-text-1), [T211](#licence-text-211) |
 | num-derive | 0.4.2 | MIT OR Apache-2.0 | https://github.com/rust-num/num-derive | [T2](#licence-text-2), [T41](#licence-text-41) |
 | num-integer | 0.1.46 | MIT OR Apache-2.0 | https://github.com/rust-num/num-integer | [T2](#licence-text-2), [T41](#licence-text-41) |
 | num-rational | 0.4.2 | MIT OR Apache-2.0 | https://github.com/rust-num/num-rational | [T2](#licence-text-2), [T41](#licence-text-41) |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 | https://github.com/rust-num/num-traits | [T2](#licence-text-2), [T41](#licence-text-41) |
-| num_enum | 0.7.6 | BSD-3-Clause OR MIT OR Apache-2.0 | https://github.com/illicitonion/num_enum | [T12](#licence-text-12), [T210](#licence-text-210), [T6](#licence-text-6) |
-| num_enum_derive | 0.7.6 | BSD-3-Clause OR MIT OR Apache-2.0 | https://github.com/illicitonion/num_enum | [T12](#licence-text-12), [T210](#licence-text-210), [T6](#licence-text-6) |
+| num_enum | 0.7.6 | BSD-3-Clause OR MIT OR Apache-2.0 | https://github.com/illicitonion/num_enum | [T12](#licence-text-12), [T212](#licence-text-212), [T6](#licence-text-6) |
+| num_enum_derive | 0.7.6 | BSD-3-Clause OR MIT OR Apache-2.0 | https://github.com/illicitonion/num_enum | [T12](#licence-text-12), [T212](#licence-text-212), [T6](#licence-text-6) |
 | objc2-app-kit | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2 | [T45](#licence-text-45) (vendored from upstream, commit 7b1abfd750a2 (crates.io VCS record)) |
 | objc2-audio-toolbox | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2 | [T45](#licence-text-45) (vendored from upstream, commit 7b1abfd750a2 (crates.io VCS record)) |
 | objc2-cloud-kit | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2 | [T45](#licence-text-45) (vendored from upstream, commit 7b1abfd750a2 (crates.io VCS record)) |
@@ -380,119 +381,119 @@ The following entries have a licence that is not on Renderly's permitted list, o
 | objc2-user-notifications | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2 | [T45](#licence-text-45) (vendored from upstream, commit 7b1abfd750a2 (crates.io VCS record)) |
 | objc2-web-kit | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/madsmtm/objc2 | [T45](#licence-text-45) (vendored from upstream, commit 7b1abfd750a2 (crates.io VCS record)) |
 | objc2 | 0.6.4 | MIT | https://github.com/madsmtm/objc2 | [T45](#licence-text-45) (vendored from upstream, tag objc2-0.6.4) |
-| object | 0.37.3 | Apache-2.0 OR MIT | https://github.com/gimli-rs/object | [T2](#licence-text-2), [T211](#licence-text-211) |
+| object | 0.37.3 | Apache-2.0 OR MIT | https://github.com/gimli-rs/object | [T2](#licence-text-2), [T213](#licence-text-213) |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 | https://github.com/matklad/once_cell | [T2](#licence-text-2), [T6](#licence-text-6) |
 | once_cell_polyfill | 1.70.2 | MIT OR Apache-2.0 | https://github.com/polyfill-rs/once_cell_polyfill | [T17](#licence-text-17), [T18](#licence-text-18) |
 | openssl-probe | 0.2.1 | MIT OR Apache-2.0 | https://github.com/rustls/openssl-probe | [T2](#licence-text-2), [T56](#licence-text-56) |
-| option-ext | 0.2.0 | MPL-2.0 | https://github.com/soc/option-ext | [T212](#licence-text-212) |
-| ordered-float | 5.3.0 | MIT | https://github.com/reem/rust-ordered-float | [T201](#licence-text-201) |
+| option-ext | 0.2.0 | MPL-2.0 | https://github.com/soc/option-ext | [T214](#licence-text-214) |
+| ordered-float | 5.3.0 | MIT | https://github.com/reem/rust-ordered-float | [T203](#licence-text-203) |
 | owned_ttf_parser | 0.25.1 | Apache-2.0 | https://github.com/alexheretic/owned-ttf-parser | [T1](#licence-text-1) |
 | pango-sys | 0.18.0 | MIT | https://github.com/gtk-rs/gtk-rs-core | [T29](#licence-text-29) |
 | pango | 0.18.3 | MIT | https://github.com/gtk-rs/gtk-rs-core | [T28](#licence-text-28), [T29](#licence-text-29) |
-| parking_lot | 0.12.5 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot | [T2](#licence-text-2), [T177](#licence-text-177) |
-| parking_lot_core | 0.9.12 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot | [T2](#licence-text-2), [T177](#licence-text-177) |
+| parking_lot | 0.12.5 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot | [T2](#licence-text-2), [T179](#licence-text-179) |
+| parking_lot_core | 0.9.12 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot | [T2](#licence-text-2), [T179](#licence-text-179) |
 | paste | 1.0.15 | MIT OR Apache-2.0 | https://github.com/dtolnay/paste | [T12](#licence-text-12), [T6](#licence-text-6) |
 | pastey | 0.1.1 | MIT OR Apache-2.0 | https://github.com/as1100k/pastey | [T12](#licence-text-12), [T6](#licence-text-6) |
 | pastey | 0.2.3 | MIT OR Apache-2.0 | https://github.com/as1100k/pastey | [T12](#licence-text-12), [T6](#licence-text-6) |
-| percent-encoding | 2.3.2 | MIT OR Apache-2.0 | https://github.com/servo/rust-url/ | [T2](#licence-text-2), [T154](#licence-text-154) |
-| phf | 0.13.1 | MIT | https://github.com/rust-phf/rust-phf | [T213](#licence-text-213) |
-| phf_generator | 0.13.1 | MIT | https://github.com/rust-phf/rust-phf | [T213](#licence-text-213) |
-| phf_macros | 0.13.1 | MIT | https://github.com/rust-phf/rust-phf | [T213](#licence-text-213) |
-| phf_shared | 0.13.1 | MIT | https://github.com/rust-phf/rust-phf | [T213](#licence-text-213) |
+| percent-encoding | 2.3.2 | MIT OR Apache-2.0 | https://github.com/servo/rust-url/ | [T2](#licence-text-2), [T156](#licence-text-156) |
+| phf | 0.13.1 | MIT | https://github.com/rust-phf/rust-phf | [T215](#licence-text-215) |
+| phf_generator | 0.13.1 | MIT | https://github.com/rust-phf/rust-phf | [T215](#licence-text-215) |
+| phf_macros | 0.13.1 | MIT | https://github.com/rust-phf/rust-phf | [T215](#licence-text-215) |
+| phf_shared | 0.13.1 | MIT | https://github.com/rust-phf/rust-phf | [T215](#licence-text-215) |
 | pin-project-lite | 0.2.17 | Apache-2.0 OR MIT | https://github.com/taiki-e/pin-project-lite | [T1](#licence-text-1), [T6](#licence-text-6) |
-| plist | 1.10.0 | MIT | https://github.com/ebarnard/rust-plist/ | [T214](#licence-text-214) |
-| png | 0.17.16 | MIT OR Apache-2.0 | https://github.com/image-rs/image-png | [T2](#licence-text-2), [T215](#licence-text-215) |
-| png | 0.18.1 | MIT OR Apache-2.0 | https://github.com/image-rs/image-png | [T2](#licence-text-2), [T215](#licence-text-215) |
-| pollster | 0.4.0 | Apache-2.0/MIT | https://github.com/zesterer/pollster | [T2](#licence-text-2), [T216](#licence-text-216) |
+| plist | 1.10.0 | MIT | https://github.com/ebarnard/rust-plist/ | [T216](#licence-text-216) |
+| png | 0.17.16 | MIT OR Apache-2.0 | https://github.com/image-rs/image-png | [T2](#licence-text-2), [T217](#licence-text-217) |
+| png | 0.18.1 | MIT OR Apache-2.0 | https://github.com/image-rs/image-png | [T2](#licence-text-2), [T217](#licence-text-217) |
+| pollster | 0.4.0 | Apache-2.0/MIT | https://github.com/zesterer/pollster | [T2](#licence-text-2), [T218](#licence-text-218) |
 | portable-atomic-util | 0.2.7 | Apache-2.0 OR MIT | https://github.com/taiki-e/portable-atomic-util | [T1](#licence-text-1), [T6](#licence-text-6) |
 | portable-atomic | 1.13.1 | Apache-2.0 OR MIT | https://github.com/taiki-e/portable-atomic | [T1](#licence-text-1), [T6](#licence-text-6) |
-| postcard | 1.1.3 | MIT OR Apache-2.0 | https://github.com/jamesmunns/postcard | [T2](#licence-text-2), [T217](#licence-text-217) |
-| potential_utf | 0.1.5 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T153](#licence-text-153) |
-| powerfmt | 0.2.0 | MIT OR Apache-2.0 | https://github.com/jhpratt/powerfmt | [T218](#licence-text-218), [T219](#licence-text-219) |
-| ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 | https://github.com/cryptocorrosion/cryptocorrosion | [T220](#licence-text-220), [T221](#licence-text-221) |
-| precomputed-hash | 0.1.1 | MIT | https://github.com/emilio/precomputed-hash | [T222](#licence-text-222) |
-| presser | 0.3.1 | MIT OR Apache-2.0 | https://github.com/EmbarkStudios/presser | [T37](#licence-text-37), [T223](#licence-text-223) |
-| primal-check | 0.3.4 | MIT OR Apache-2.0 | https://github.com/huonw/primal | [T2](#licence-text-2), [T224](#licence-text-224) |
+| postcard | 1.1.3 | MIT OR Apache-2.0 | https://github.com/jamesmunns/postcard | [T2](#licence-text-2), [T219](#licence-text-219) |
+| potential_utf | 0.1.5 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T155](#licence-text-155) |
+| powerfmt | 0.2.0 | MIT OR Apache-2.0 | https://github.com/jhpratt/powerfmt | [T220](#licence-text-220), [T221](#licence-text-221) |
+| ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 | https://github.com/cryptocorrosion/cryptocorrosion | [T222](#licence-text-222), [T223](#licence-text-223) |
+| precomputed-hash | 0.1.1 | MIT | https://github.com/emilio/precomputed-hash | [T224](#licence-text-224) |
+| presser | 0.3.1 | MIT OR Apache-2.0 | https://github.com/EmbarkStudios/presser | [T37](#licence-text-37), [T225](#licence-text-225) |
+| primal-check | 0.3.4 | MIT OR Apache-2.0 | https://github.com/huonw/primal | [T2](#licence-text-2), [T226](#licence-text-226) |
 | proc-macro-crate | 1.3.1 | MIT OR Apache-2.0 | https://github.com/bkchr/proc-macro-crate | [T5](#licence-text-5), [T6](#licence-text-6) |
 | proc-macro-crate | 2.0.0 | MIT OR Apache-2.0 | https://github.com/bkchr/proc-macro-crate | [T5](#licence-text-5), [T6](#licence-text-6) |
 | proc-macro-crate | 3.5.0 | MIT OR Apache-2.0 | https://github.com/bkchr/proc-macro-crate | [T5](#licence-text-5), [T6](#licence-text-6) |
-| proc-macro-error-attr | 1.0.4 | MIT OR Apache-2.0 | https://gitlab.com/CreepySkeleton/proc-macro-error | [T225](#licence-text-225), [T226](#licence-text-226) |
-| proc-macro-error | 1.0.4 | MIT OR Apache-2.0 | https://gitlab.com/CreepySkeleton/proc-macro-error | [T225](#licence-text-225), [T226](#licence-text-226) |
+| proc-macro-error-attr | 1.0.4 | MIT OR Apache-2.0 | https://gitlab.com/CreepySkeleton/proc-macro-error | [T227](#licence-text-227), [T228](#licence-text-228) |
+| proc-macro-error | 1.0.4 | MIT OR Apache-2.0 | https://gitlab.com/CreepySkeleton/proc-macro-error | [T227](#licence-text-227), [T228](#licence-text-228) |
 | proc-macro2 | 1.0.106 | MIT OR Apache-2.0 | https://github.com/dtolnay/proc-macro2 | [T12](#licence-text-12), [T6](#licence-text-6) |
-| profiling-procmacros | 1.0.18 | MIT OR Apache-2.0 | https://github.com/aclysma/profiling | [T2](#licence-text-2), [T227](#licence-text-227) (vendored from upstream, commit 8271551172eb (crates.io VCS record)) |
-| profiling | 1.0.18 | MIT OR Apache-2.0 | https://github.com/aclysma/profiling | [T2](#licence-text-2), [T227](#licence-text-227) (vendored from upstream, commit 8271551172eb (crates.io VCS record)) |
+| profiling-procmacros | 1.0.18 | MIT OR Apache-2.0 | https://github.com/aclysma/profiling | [T2](#licence-text-2), [T229](#licence-text-229) (vendored from upstream, commit 8271551172eb (crates.io VCS record)) |
+| profiling | 1.0.18 | MIT OR Apache-2.0 | https://github.com/aclysma/profiling | [T2](#licence-text-2), [T229](#licence-text-229) (vendored from upstream, commit 8271551172eb (crates.io VCS record)) |
 | prost-derive | 0.14.4 | Apache-2.0 | https://github.com/tokio-rs/prost | [T2](#licence-text-2) |
 | prost | 0.14.4 | Apache-2.0 | https://github.com/tokio-rs/prost | [T2](#licence-text-2) |
 | pulley-interpreter | 36.0.12 | Apache-2.0 WITH LLVM-exception | https://github.com/bytecodealliance/wasmtime/tree/main/pulley | [T70](#licence-text-70) (vendored from upstream, tag v36.0.12) |
 | pulley-macros | 36.0.12 | Apache-2.0 WITH LLVM-exception | https://github.com/bytecodealliance/wasmtime/tree/main/pulley/macros | [T70](#licence-text-70) (vendored from upstream, tag v36.0.12) |
-| pxfm | 0.1.30 | BSD-3-Clause OR Apache-2.0 | https://github.com/awxkee/pxfm | [T195](#licence-text-195), [T196](#licence-text-196) |
-| qoi | 0.4.1 | MIT/Apache-2.0 | https://github.com/aldanor/qoi-rust | [T37](#licence-text-37), [T228](#licence-text-228) |
-| quick-error | 2.0.1 | MIT/Apache-2.0 | http://github.com/tailhook/quick-error | [T17](#licence-text-17), [T229](#licence-text-229) |
-| quick-xml | 0.41.0 | MIT | https://github.com/tafia/quick-xml | [T230](#licence-text-230) |
-| quinn-proto | 0.11.16 | MIT OR Apache-2.0 | https://github.com/quinn-rs/quinn | [T60](#licence-text-60), [T231](#licence-text-231) |
-| quinn-udp | 0.5.15 | MIT OR Apache-2.0 | https://github.com/quinn-rs/quinn | [T60](#licence-text-60), [T231](#licence-text-231) |
-| quinn | 0.11.11 | MIT OR Apache-2.0 | https://github.com/quinn-rs/quinn | [T60](#licence-text-60), [T231](#licence-text-231) |
+| pxfm | 0.1.30 | BSD-3-Clause OR Apache-2.0 | https://github.com/awxkee/pxfm | [T197](#licence-text-197), [T198](#licence-text-198) |
+| qoi | 0.4.1 | MIT/Apache-2.0 | https://github.com/aldanor/qoi-rust | [T37](#licence-text-37), [T230](#licence-text-230) |
+| quick-error | 2.0.1 | MIT/Apache-2.0 | http://github.com/tailhook/quick-error | [T17](#licence-text-17), [T231](#licence-text-231) |
+| quick-xml | 0.41.0 | MIT | https://github.com/tafia/quick-xml | [T232](#licence-text-232) |
+| quinn-proto | 0.11.16 | MIT OR Apache-2.0 | https://github.com/quinn-rs/quinn | [T60](#licence-text-60), [T233](#licence-text-233) |
+| quinn-udp | 0.5.15 | MIT OR Apache-2.0 | https://github.com/quinn-rs/quinn | [T60](#licence-text-60), [T233](#licence-text-233) |
+| quinn | 0.11.11 | MIT OR Apache-2.0 | https://github.com/quinn-rs/quinn | [T60](#licence-text-60), [T233](#licence-text-233) |
 | quote | 1.0.46 | MIT OR Apache-2.0 | https://github.com/dtolnay/quote | [T12](#licence-text-12), [T6](#licence-text-6) |
-| r-efi | 5.3.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later | https://github.com/r-efi/r-efi | [T232](#licence-text-232) |
-| r-efi | 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later | https://github.com/r-efi/r-efi | [T233](#licence-text-233) |
-| rand | 0.10.2 | MIT OR Apache-2.0 | https://github.com/rust-random/rand | [T234](#licence-text-234), [T235](#licence-text-235), [T236](#licence-text-236) |
-| rand | 0.8.7 | MIT OR Apache-2.0 | https://github.com/rust-random/rand | [T234](#licence-text-234), [T235](#licence-text-235), [T236](#licence-text-236) |
-| rand | 0.9.4 | MIT OR Apache-2.0 | https://github.com/rust-random/rand | [T234](#licence-text-234), [T235](#licence-text-235), [T236](#licence-text-236) |
-| rand_chacha | 0.3.1 | MIT OR Apache-2.0 | https://github.com/rust-random/rand | [T234](#licence-text-234), [T127](#licence-text-127), [T236](#licence-text-236) |
-| rand_chacha | 0.9.0 | MIT OR Apache-2.0 | https://github.com/rust-random/rand | [T234](#licence-text-234), [T235](#licence-text-235), [T236](#licence-text-236) |
-| rand_core | 0.10.1 | MIT OR Apache-2.0 | https://github.com/rust-random/rand_core | [T237](#licence-text-237), [T238](#licence-text-238), [T239](#licence-text-239) |
-| rand_core | 0.6.4 | MIT OR Apache-2.0 | https://github.com/rust-random/rand | [T234](#licence-text-234), [T238](#licence-text-238), [T236](#licence-text-236) |
-| rand_core | 0.9.5 | MIT OR Apache-2.0 | https://github.com/rust-random/rand | [T234](#licence-text-234), [T238](#licence-text-238), [T236](#licence-text-236) |
-| rand_distr | 0.6.0 | MIT OR Apache-2.0 | https://github.com/rust-random/rand_distr | [T234](#licence-text-234), [T238](#licence-text-238), [T240](#licence-text-240) |
-| rand_pcg | 0.10.2 | MIT OR Apache-2.0 | https://github.com/rust-random/rngs | [T234](#licence-text-234), [T238](#licence-text-238), [T241](#licence-text-241) |
-| range-alloc | 0.1.5 | MIT OR Apache-2.0 | https://github.com/gfx-rs/range-alloc | [T1](#licence-text-1), [T242](#licence-text-242) |
-| rav1e | 0.8.1 | BSD-2-Clause | https://github.com/xiph/rav1e/ | [T243](#licence-text-243) |
-| ravif | 0.13.0 | BSD-3-Clause | https://github.com/kornelski/cavif-rs | [T244](#licence-text-244) |
-| raw-window-handle | 0.6.2 | MIT OR Apache-2.0 OR Zlib | https://github.com/rust-windowing/raw-window-handle | [T1](#licence-text-1), [T245](#licence-text-245), [T246](#licence-text-246) |
+| r-efi | 5.3.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later | https://github.com/r-efi/r-efi | [T234](#licence-text-234) |
+| r-efi | 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later | https://github.com/r-efi/r-efi | [T235](#licence-text-235) |
+| rand | 0.10.2 | MIT OR Apache-2.0 | https://github.com/rust-random/rand | [T236](#licence-text-236), [T237](#licence-text-237), [T238](#licence-text-238) |
+| rand | 0.8.7 | MIT OR Apache-2.0 | https://github.com/rust-random/rand | [T236](#licence-text-236), [T237](#licence-text-237), [T238](#licence-text-238) |
+| rand | 0.9.4 | MIT OR Apache-2.0 | https://github.com/rust-random/rand | [T236](#licence-text-236), [T237](#licence-text-237), [T238](#licence-text-238) |
+| rand_chacha | 0.3.1 | MIT OR Apache-2.0 | https://github.com/rust-random/rand | [T236](#licence-text-236), [T127](#licence-text-127), [T238](#licence-text-238) |
+| rand_chacha | 0.9.0 | MIT OR Apache-2.0 | https://github.com/rust-random/rand | [T236](#licence-text-236), [T237](#licence-text-237), [T238](#licence-text-238) |
+| rand_core | 0.10.1 | MIT OR Apache-2.0 | https://github.com/rust-random/rand_core | [T239](#licence-text-239), [T240](#licence-text-240), [T241](#licence-text-241) |
+| rand_core | 0.6.4 | MIT OR Apache-2.0 | https://github.com/rust-random/rand | [T236](#licence-text-236), [T240](#licence-text-240), [T238](#licence-text-238) |
+| rand_core | 0.9.5 | MIT OR Apache-2.0 | https://github.com/rust-random/rand | [T236](#licence-text-236), [T240](#licence-text-240), [T238](#licence-text-238) |
+| rand_distr | 0.6.0 | MIT OR Apache-2.0 | https://github.com/rust-random/rand_distr | [T236](#licence-text-236), [T240](#licence-text-240), [T242](#licence-text-242) |
+| rand_pcg | 0.10.2 | MIT OR Apache-2.0 | https://github.com/rust-random/rngs | [T236](#licence-text-236), [T240](#licence-text-240), [T243](#licence-text-243) |
+| range-alloc | 0.1.5 | MIT OR Apache-2.0 | https://github.com/gfx-rs/range-alloc | [T1](#licence-text-1), [T244](#licence-text-244) |
+| rav1e | 0.8.1 | BSD-2-Clause | https://github.com/xiph/rav1e/ | [T245](#licence-text-245) |
+| ravif | 0.13.0 | BSD-3-Clause | https://github.com/kornelski/cavif-rs | [T246](#licence-text-246) |
+| raw-window-handle | 0.6.2 | MIT OR Apache-2.0 OR Zlib | https://github.com/rust-windowing/raw-window-handle | [T1](#licence-text-1), [T247](#licence-text-247), [T248](#licence-text-248) |
 | raw-window-metal | 1.1.0 | MIT OR Apache-2.0 | https://github.com/rust-windowing/raw-window-metal | [T60](#licence-text-60), [T29](#licence-text-29) |
 | rawpointer | 0.2.1 | MIT/Apache-2.0 | https://github.com/bluss/rawpointer/ | [T2](#licence-text-2), [T67](#licence-text-67) |
-| rayon-core | 1.13.0 | MIT OR Apache-2.0 | https://github.com/rayon-rs/rayon | [T2](#licence-text-2), [T168](#licence-text-168) |
-| rayon | 1.12.0 | MIT OR Apache-2.0 | https://github.com/rayon-rs/rayon | [T2](#licence-text-2), [T168](#licence-text-168) |
+| rayon-core | 1.13.0 | MIT OR Apache-2.0 | https://github.com/rayon-rs/rayon | [T2](#licence-text-2), [T170](#licence-text-170) |
+| rayon | 1.12.0 | MIT OR Apache-2.0 | https://github.com/rayon-rs/rayon | [T2](#licence-text-2), [T170](#licence-text-170) |
 | realfft | 3.5.0 | MIT | https://github.com/HEnquist/realfft | No licence file upstream; copyright HEnquist <henrik.enquist@gmail.com>; licence text: see MIT standard text |
-| redox_syscall | 0.5.18 | MIT | https://gitlab.redox-os.org/redox-os/syscall | [T247](#licence-text-247) |
-| redox_users | 0.4.6 | MIT | https://gitlab.redox-os.org/redox-os/users | [T248](#licence-text-248) |
-| redox_users | 0.5.2 | MIT | https://gitlab.redox-os.org/redox-os/users | [T248](#licence-text-248) |
+| redox_syscall | 0.5.18 | MIT | https://gitlab.redox-os.org/redox-os/syscall | [T249](#licence-text-249) |
+| redox_users | 0.4.6 | MIT | https://gitlab.redox-os.org/redox-os/users | [T250](#licence-text-250) |
+| redox_users | 0.5.2 | MIT | https://gitlab.redox-os.org/redox-os/users | [T250](#licence-text-250) |
 | ref-cast-impl | 1.0.25 | MIT OR Apache-2.0 | https://github.com/dtolnay/ref-cast | [T12](#licence-text-12), [T6](#licence-text-6) |
 | ref-cast | 1.0.25 | MIT OR Apache-2.0 | https://github.com/dtolnay/ref-cast | [T12](#licence-text-12), [T6](#licence-text-6) |
 | regalloc2 | 0.12.2 | Apache-2.0 WITH LLVM-exception | https://github.com/bytecodealliance/regalloc2 | [T70](#licence-text-70) |
 | regex-automata | 0.4.14 | MIT OR Apache-2.0 | https://github.com/rust-lang/regex | [T2](#licence-text-2), [T41](#licence-text-41) |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 | https://github.com/rust-lang/regex | [T2](#licence-text-2), [T41](#licence-text-41) |
 | regex | 1.12.4 | MIT OR Apache-2.0 | https://github.com/rust-lang/regex | [T2](#licence-text-2), [T41](#licence-text-41) |
-| renderdoc-sys | 1.1.0 | MIT OR Apache-2.0 | https://github.com/ebkalderon/renderdoc-rs | [T2](#licence-text-2), [T249](#licence-text-249) |
-| reqwest | 0.13.4 | MIT OR Apache-2.0 | https://github.com/seanmonstar/reqwest | [T250](#licence-text-250), [T251](#licence-text-251) |
-| rfd | 0.16.0 | MIT | https://github.com/PolyMeilex/rfd | [T252](#licence-text-252) |
-| rgb | 0.8.53 | MIT | https://github.com/kornelski/rust-rgb | [T253](#licence-text-253) |
-| ring | 0.17.14 | Apache-2.0 AND ISC | https://github.com/briansmith/ring | [T254](#licence-text-254), [T255](#licence-text-255), [T256](#licence-text-256) |
-| rmcp-macros | 2.1.0 | Apache-2.0 | https://github.com/modelcontextprotocol/rust-sdk/ | [T257](#licence-text-257) (vendored from upstream, tag rmcp-macros-v2.1.0) |
-| rmcp | 2.1.0 | Apache-2.0 | https://github.com/modelcontextprotocol/rust-sdk/ | [T257](#licence-text-257) (vendored from upstream, tag rmcp-v2.1.0) |
-| rodio | 0.21.1 | MIT OR Apache-2.0 | https://github.com/RustAudio/rodio | [T258](#licence-text-258), [T6](#licence-text-6) |
+| renderdoc-sys | 1.1.0 | MIT OR Apache-2.0 | https://github.com/ebkalderon/renderdoc-rs | [T2](#licence-text-2), [T251](#licence-text-251) |
+| reqwest | 0.13.4 | MIT OR Apache-2.0 | https://github.com/seanmonstar/reqwest | [T252](#licence-text-252), [T253](#licence-text-253) |
+| rfd | 0.16.0 | MIT | https://github.com/PolyMeilex/rfd | [T254](#licence-text-254) |
+| rgb | 0.8.53 | MIT | https://github.com/kornelski/rust-rgb | [T255](#licence-text-255) |
+| ring | 0.17.14 | Apache-2.0 AND ISC | https://github.com/briansmith/ring | [T256](#licence-text-256), [T257](#licence-text-257), [T258](#licence-text-258) |
+| rmcp-macros | 2.1.0 | Apache-2.0 | https://github.com/modelcontextprotocol/rust-sdk/ | [T259](#licence-text-259) (vendored from upstream, tag rmcp-macros-v2.1.0) |
+| rmcp | 2.1.0 | Apache-2.0 | https://github.com/modelcontextprotocol/rust-sdk/ | [T259](#licence-text-259) (vendored from upstream, tag rmcp-v2.1.0) |
+| rodio | 0.21.1 | MIT OR Apache-2.0 | https://github.com/RustAudio/rodio | [T260](#licence-text-260), [T6](#licence-text-6) |
 | rustc-demangle | 0.1.28 | MIT/Apache-2.0 | https://github.com/rust-lang/rustc-demangle | [T2](#licence-text-2), [T56](#licence-text-56) |
 | rustc-hash | 1.1.0 | Apache-2.0/MIT | https://github.com/rust-lang-nursery/rustc-hash | [T2](#licence-text-2), [T6](#licence-text-6) |
 | rustc-hash | 2.1.3 | Apache-2.0 OR MIT | https://github.com/rust-lang/rustc-hash | [T12](#licence-text-12), [T6](#licence-text-6) |
 | rustfft | 6.4.1 | MIT OR Apache-2.0 | https://github.com/ejmahler/RustFFT | [T17](#licence-text-17), [T101](#licence-text-101) |
-| rustix | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/bytecodealliance/rustix | [T259](#licence-text-259), [T2](#licence-text-2), [T70](#licence-text-70), [T6](#licence-text-6) |
-| rustls-native-certs | 0.8.4 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/rustls-native-certs | [T260](#licence-text-260), [T2](#licence-text-2), [T147](#licence-text-147), [T148](#licence-text-148) |
-| rustls-pki-types | 1.15.0 | MIT OR Apache-2.0 | https://github.com/rustls/pki-types | [T261](#licence-text-261), [T262](#licence-text-262) |
-| rustls-platform-verifier-android | 0.1.1 | MIT OR Apache-2.0 | https://github.com/rustls/rustls-platform-verifier | [T60](#licence-text-60), [T263](#licence-text-263) (vendored from upstream, default branch main (no matching tag or commit)) |
-| rustls-platform-verifier | 0.7.0 | MIT OR Apache-2.0 | https://github.com/rustls/rustls-platform-verifier | [T60](#licence-text-60), [T263](#licence-text-263) |
-| rustls-webpki | 0.103.13 | ISC | https://github.com/rustls/webpki | [T264](#licence-text-264) |
-| rustls | 0.23.41 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/rustls | [T2](#licence-text-2), [T147](#licence-text-147), [T148](#licence-text-148) |
+| rustix | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/bytecodealliance/rustix | [T261](#licence-text-261), [T2](#licence-text-2), [T70](#licence-text-70), [T6](#licence-text-6) |
+| rustls-native-certs | 0.8.4 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/rustls-native-certs | [T262](#licence-text-262), [T2](#licence-text-2), [T149](#licence-text-149), [T150](#licence-text-150) |
+| rustls-pki-types | 1.15.0 | MIT OR Apache-2.0 | https://github.com/rustls/pki-types | [T263](#licence-text-263), [T264](#licence-text-264) |
+| rustls-platform-verifier-android | 0.1.1 | MIT OR Apache-2.0 | https://github.com/rustls/rustls-platform-verifier | [T60](#licence-text-60), [T265](#licence-text-265) (vendored from upstream, default branch main (no matching tag or commit)) |
+| rustls-platform-verifier | 0.7.0 | MIT OR Apache-2.0 | https://github.com/rustls/rustls-platform-verifier | [T60](#licence-text-60), [T265](#licence-text-265) |
+| rustls-webpki | 0.103.13 | ISC | https://github.com/rustls/webpki | [T266](#licence-text-266) |
+| rustls | 0.23.41 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/rustls | [T2](#licence-text-2), [T149](#licence-text-149), [T150](#licence-text-150) |
 | rustversion | 1.0.23 | MIT OR Apache-2.0 | https://github.com/dtolnay/rustversion | [T12](#licence-text-12), [T6](#licence-text-6) |
-| same-file | 1.0.6 | Unlicense/MIT | https://github.com/BurntSushi/same-file | [T7](#licence-text-7), [T265](#licence-text-265) |
-| schannel | 0.1.29 | MIT | https://github.com/steffengy/schannel-rs | [T266](#licence-text-266) |
-| schemars | 0.8.22 | MIT | https://github.com/GREsau/schemars | [T267](#licence-text-267) |
-| schemars | 0.9.0 | MIT | https://github.com/GREsau/schemars | [T267](#licence-text-267) |
-| schemars | 1.2.1 | MIT | https://github.com/GREsau/schemars | [T267](#licence-text-267) |
-| schemars_derive | 0.8.22 | MIT | https://github.com/GREsau/schemars | [T267](#licence-text-267) |
-| schemars_derive | 1.2.1 | MIT | https://github.com/GREsau/schemars | [T267](#licence-text-267) |
-| scopeguard | 1.2.0 | MIT OR Apache-2.0 | https://github.com/bluss/scopeguard | [T2](#licence-text-2), [T268](#licence-text-268) |
-| security-framework-sys | 2.17.0 | MIT OR Apache-2.0 | https://github.com/kornelski/rust-security-framework | [T2](#licence-text-2), [T269](#licence-text-269) |
-| security-framework | 3.7.0 | MIT OR Apache-2.0 | https://github.com/kornelski/rust-security-framework | [T2](#licence-text-2), [T269](#licence-text-269) |
+| same-file | 1.0.6 | Unlicense/MIT | https://github.com/BurntSushi/same-file | [T7](#licence-text-7), [T267](#licence-text-267) |
+| schannel | 0.1.29 | MIT | https://github.com/steffengy/schannel-rs | [T268](#licence-text-268) |
+| schemars | 0.8.22 | MIT | https://github.com/GREsau/schemars | [T269](#licence-text-269) |
+| schemars | 0.9.0 | MIT | https://github.com/GREsau/schemars | [T269](#licence-text-269) |
+| schemars | 1.2.1 | MIT | https://github.com/GREsau/schemars | [T269](#licence-text-269) |
+| schemars_derive | 0.8.22 | MIT | https://github.com/GREsau/schemars | [T269](#licence-text-269) |
+| schemars_derive | 1.2.1 | MIT | https://github.com/GREsau/schemars | [T269](#licence-text-269) |
+| scopeguard | 1.2.0 | MIT OR Apache-2.0 | https://github.com/bluss/scopeguard | [T2](#licence-text-2), [T270](#licence-text-270) |
+| security-framework-sys | 2.17.0 | MIT OR Apache-2.0 | https://github.com/kornelski/rust-security-framework | [T2](#licence-text-2), [T271](#licence-text-271) |
+| security-framework | 3.7.0 | MIT OR Apache-2.0 | https://github.com/kornelski/rust-security-framework | [T2](#licence-text-2), [T271](#licence-text-271) |
 | selectors | 0.36.1 | MPL-2.0 | https://github.com/servo/stylo | No licence file upstream; copyright The Servo Project Developers; licence text: see MPL-2.0 standard text |
 | semver | 1.0.28 | MIT OR Apache-2.0 | https://github.com/dtolnay/semver | [T12](#licence-text-12), [T6](#licence-text-6) |
 | serde-untagged | 0.1.9 | MIT OR Apache-2.0 | https://github.com/dtolnay/serde-untagged | [T12](#licence-text-12), [T6](#licence-text-6) |
@@ -506,33 +507,34 @@ The following entries have a licence that is not on Renderly's permitted list, o
 | serde_spanned | 1.1.1 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml | [T17](#licence-text-17), [T18](#licence-text-18) |
 | serde_with | 3.21.0 | MIT OR Apache-2.0 | https://github.com/jonasbb/serde_with/ | [T2](#licence-text-2), [T67](#licence-text-67) |
 | serde_with_macros | 3.21.0 | MIT OR Apache-2.0 | https://github.com/jonasbb/serde_with/ | [T2](#licence-text-2), [T67](#licence-text-67) |
-| serialize-to-javascript-impl | 0.1.2 | MIT OR Apache-2.0 | https://github.com/chippers/serialize-to-javascript | [T60](#licence-text-60), [T270](#licence-text-270) |
-| serialize-to-javascript | 0.1.2 | MIT OR Apache-2.0 | https://github.com/chippers/serialize-to-javascript | [T60](#licence-text-60), [T270](#licence-text-270) |
+| serialize-to-javascript-impl | 0.1.2 | MIT OR Apache-2.0 | https://github.com/chippers/serialize-to-javascript | [T60](#licence-text-60), [T272](#licence-text-272) |
+| serialize-to-javascript | 0.1.2 | MIT OR Apache-2.0 | https://github.com/chippers/serialize-to-javascript | [T60](#licence-text-60), [T272](#licence-text-272) |
 | servo_arc | 0.4.3 | MIT OR Apache-2.0 | https://github.com/servo/stylo | [T2](#licence-text-2), [T6](#licence-text-6) |
-| sha1 | 0.10.7 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes | [T43](#licence-text-43), [T271](#licence-text-271) |
-| sha2 | 0.10.9 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes | [T43](#licence-text-43), [T271](#licence-text-271) |
-| sharded-slab | 0.1.7 | MIT | https://github.com/hawkw/sharded-slab | [T272](#licence-text-272) |
-| simd-adler32 | 0.3.9 | MIT | https://github.com/mcountryman/simd-adler32 | [T273](#licence-text-273) |
+| sha1 | 0.10.7 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes | [T43](#licence-text-43), [T273](#licence-text-273) |
+| sha2 | 0.10.9 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes | [T43](#licence-text-43), [T273](#licence-text-273) |
+| sharded-slab | 0.1.7 | MIT | https://github.com/hawkw/sharded-slab | [T274](#licence-text-274) |
+| simd-adler32 | 0.3.9 | MIT | https://github.com/mcountryman/simd-adler32 | [T275](#licence-text-275) |
 | simd_cesu8 | 1.1.1 | Apache-2.0 OR MIT | https://github.com/seancroach/simd_cesu8 | [T2](#licence-text-2), [T6](#licence-text-6) |
-| simd_helpers | 0.1.0 | MIT | https://github.com/lu-zero/simd_helpers | [T207](#licence-text-207) (vendored from upstream, default branch master (tag v0.1.0 has no licence file)) |
+| simd_helpers | 0.1.0 | MIT | https://github.com/lu-zero/simd_helpers | [T209](#licence-text-209) (vendored from upstream, default branch master (tag v0.1.0 has no licence file)) |
 | simdutf8 | 0.1.5 | MIT OR Apache-2.0 | https://github.com/rusticstuff/simdutf8 | [T1](#licence-text-1), [T136](#licence-text-136) |
-| siphasher | 1.0.3 | MIT/Apache-2.0 | https://github.com/jedisct1/rust-siphash | [T274](#licence-text-274) |
-| slab | 0.4.12 | MIT | https://github.com/tokio-rs/slab | [T275](#licence-text-275) |
-| slotmap | 1.1.1 | Zlib | https://github.com/orlp/slotmap | [T276](#licence-text-276) |
-| smallvec | 1.15.2 | MIT OR Apache-2.0 | https://github.com/servo/rust-smallvec | [T2](#licence-text-2), [T277](#licence-text-277) |
+| siphasher | 1.0.3 | MIT/Apache-2.0 | https://github.com/jedisct1/rust-siphash | [T276](#licence-text-276) |
+| slab | 0.4.12 | MIT | https://github.com/tokio-rs/slab | [T277](#licence-text-277) |
+| slotmap | 1.1.1 | Zlib | https://github.com/orlp/slotmap | [T278](#licence-text-278) |
+| smallvec | 1.15.2 | MIT OR Apache-2.0 | https://github.com/servo/rust-smallvec | [T2](#licence-text-2), [T279](#licence-text-279) |
 | socket2 | 0.6.4 | MIT OR Apache-2.0 | https://github.com/rust-lang/socket2 | [T2](#licence-text-2), [T56](#licence-text-56) |
-| softbuffer | 0.4.8 | MIT OR Apache-2.0 | https://github.com/rust-windowing/softbuffer | [T133](#licence-text-133), [T278](#licence-text-278) |
-| soup3-sys | 0.5.0 | MIT | https://gitlab.gnome.org/World/Rust/soup3-rs | [T161](#licence-text-161) |
-| soup3 | 0.5.0 | MIT | https://gitlab.gnome.org/World/Rust/soup3-rs | [T161](#licence-text-161) |
+| softbuffer | 0.4.8 | MIT OR Apache-2.0 | https://github.com/rust-windowing/softbuffer | [T133](#licence-text-133), [T280](#licence-text-280) |
+| soup3-sys | 0.5.0 | MIT | https://gitlab.gnome.org/World/Rust/soup3-rs | [T163](#licence-text-163) |
+| soup3 | 0.5.0 | MIT | https://gitlab.gnome.org/World/Rust/soup3-rs | [T163](#licence-text-163) |
 | spirv | 0.4.0+sdk-1.4.341.0 | Apache-2.0 | https://github.com/gfx-rs/rspirv | [T60](#licence-text-60) (vendored from upstream, commit 8afc3d0ac8e1 (crates.io VCS record)) |
-| stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 | https://github.com/storyyeller/stable_deref_trait | [T2](#licence-text-2), [T279](#licence-text-279) |
-| static_assertions | 1.1.0 | MIT OR Apache-2.0 | https://github.com/nvzqz/static-assertions-rs | [T60](#licence-text-60), [T280](#licence-text-280) |
+| sse-stream | 0.2.6 | MIT OR Apache-2.0 | https://github.com/4t145/sse-stream/ | [T60](#licence-text-60), [T281](#licence-text-281) |
+| stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 | https://github.com/storyyeller/stable_deref_trait | [T2](#licence-text-2), [T282](#licence-text-282) |
+| static_assertions | 1.1.0 | MIT OR Apache-2.0 | https://github.com/nvzqz/static-assertions-rs | [T60](#licence-text-60), [T283](#licence-text-283) |
 | strength_reduce | 0.2.4 | MIT OR Apache-2.0 | http://github.com/ejmahler/strength_reduce | [T17](#licence-text-17), [T101](#licence-text-101) |
-| string-interner | 0.20.0 | MIT/Apache-2.0 | https://github.com/robbepop/string-interner | [T281](#licence-text-281), [T282](#licence-text-282) |
+| string-interner | 0.20.0 | MIT/Apache-2.0 | https://github.com/robbepop/string-interner | [T284](#licence-text-284), [T285](#licence-text-285) |
 | string_cache | 0.9.0 | MIT OR Apache-2.0 | https://github.com/servo/string-cache | [T2](#licence-text-2), [T65](#licence-text-65) |
-| strsim | 0.11.1 | MIT | https://github.com/rapidfuzz/strsim-rs | [T283](#licence-text-283) |
-| subtle | 2.6.1 | BSD-3-Clause | https://github.com/dalek-cryptography/subtle | [T284](#licence-text-284) |
-| swift-rs | 1.0.7 | MIT OR Apache-2.0 | https://github.com/Brendonovich/swift-rs | [T285](#licence-text-285), [T286](#licence-text-286) |
+| strsim | 0.11.1 | MIT | https://github.com/rapidfuzz/strsim-rs | [T286](#licence-text-286) |
+| subtle | 2.6.1 | BSD-3-Clause | https://github.com/dalek-cryptography/subtle | [T287](#licence-text-287) |
+| swift-rs | 1.0.7 | MIT OR Apache-2.0 | https://github.com/Brendonovich/swift-rs | [T288](#licence-text-288), [T289](#licence-text-289) |
 | symphonia-codec-pcm | 0.5.5 | MPL-2.0 | https://github.com/pdeljanov/Symphonia | [T76](#licence-text-76) (vendored from upstream, tag v0.5.5) |
 | symphonia-core | 0.5.5 | MPL-2.0 | https://github.com/pdeljanov/Symphonia | [T76](#licence-text-76) (vendored from upstream, tag v0.5.5) |
 | symphonia-format-riff | 0.5.5 | MPL-2.0 | https://github.com/pdeljanov/Symphonia | [T76](#licence-text-76) (vendored from upstream, tag v0.5.5) |
@@ -542,38 +544,39 @@ The following entries have a licence that is not on Renderly's permitted list, o
 | syn | 2.0.118 | MIT OR Apache-2.0 | https://github.com/dtolnay/syn | [T12](#licence-text-12), [T6](#licence-text-6) |
 | syn | 3.0.8 | MIT OR Apache-2.0 | https://github.com/dtolnay/syn | [T12](#licence-text-12), [T6](#licence-text-6) |
 | sync_wrapper | 1.0.2 | Apache-2.0 | https://github.com/Actyx/sync_wrapper | [T1](#licence-text-1) |
-| synstructure | 0.13.2 | MIT | https://github.com/mystor/synstructure | [T287](#licence-text-287) |
-| tao-macros | 0.1.3 | MIT OR Apache-2.0 | https://github.com/tauri-apps/tao | [T17](#licence-text-17), [T288](#licence-text-288) (vendored from upstream, tag tao-macros-v0.1.3) |
-| tao | 0.35.3 | Apache-2.0 | https://github.com/tauri-apps/tao | [T17](#licence-text-17), [T288](#licence-text-288) |
-| tar | 0.4.46 | MIT OR Apache-2.0 | https://github.com/composefs/tar-rs | [T2](#licence-text-2), [T289](#licence-text-289) |
+| synstructure | 0.13.2 | MIT | https://github.com/mystor/synstructure | [T290](#licence-text-290) |
+| tao-macros | 0.1.3 | MIT OR Apache-2.0 | https://github.com/tauri-apps/tao | [T17](#licence-text-17), [T291](#licence-text-291) (vendored from upstream, tag tao-macros-v0.1.3) |
+| tao | 0.35.3 | Apache-2.0 | https://github.com/tauri-apps/tao | [T17](#licence-text-17), [T291](#licence-text-291) |
+| tar | 0.4.46 | MIT OR Apache-2.0 | https://github.com/composefs/tar-rs | [T2](#licence-text-2), [T292](#licence-text-292) |
 | target-lexicon | 0.13.5 | Apache-2.0 WITH LLVM-exception | https://github.com/bytecodealliance/target-lexicon | [T70](#licence-text-70) |
-| tauri-codegen | 2.6.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri | [T1](#licence-text-1), [T290](#licence-text-290) |
-| tauri-macros | 2.6.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri | [T1](#licence-text-1), [T290](#licence-text-290) |
-| tauri-plugin-dialog | 2.7.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace | [T291](#licence-text-291), [T1](#licence-text-1), [T290](#licence-text-290) |
-| tauri-plugin-fs | 2.5.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace | [T291](#licence-text-291), [T1](#licence-text-1), [T290](#licence-text-290) |
-| tauri-runtime-wry | 2.11.4 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri | [T1](#licence-text-1), [T290](#licence-text-290) |
-| tauri-runtime | 2.11.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri | [T1](#licence-text-1), [T290](#licence-text-290) |
-| tauri-utils | 2.9.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri | [T1](#licence-text-1), [T290](#licence-text-290) |
-| tauri | 2.11.5 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri | [T1](#licence-text-1), [T290](#licence-text-290) |
-| tendril | 0.5.1 | MIT OR Apache-2.0 | https://github.com/servo/html5ever | [T2](#licence-text-2), [T292](#licence-text-292) |
+| tauri-codegen | 2.6.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri | [T1](#licence-text-1), [T293](#licence-text-293) |
+| tauri-macros | 2.6.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri | [T1](#licence-text-1), [T293](#licence-text-293) |
+| tauri-plugin-dialog | 2.7.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace | [T294](#licence-text-294), [T1](#licence-text-1), [T293](#licence-text-293) |
+| tauri-plugin-fs | 2.5.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace | [T294](#licence-text-294), [T1](#licence-text-1), [T293](#licence-text-293) |
+| tauri-runtime-wry | 2.11.4 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri | [T1](#licence-text-1), [T293](#licence-text-293) |
+| tauri-runtime | 2.11.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri | [T1](#licence-text-1), [T293](#licence-text-293) |
+| tauri-utils | 2.9.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri | [T1](#licence-text-1), [T293](#licence-text-293) |
+| tauri | 2.11.5 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri | [T1](#licence-text-1), [T293](#licence-text-293) |
+| tendril | 0.5.1 | MIT OR Apache-2.0 | https://github.com/servo/html5ever | [T2](#licence-text-2), [T295](#licence-text-295) |
 | termcolor | 1.4.1 | Unlicense OR MIT | https://github.com/BurntSushi/termcolor | [T7](#licence-text-7), [T8](#licence-text-8) |
 | thiserror-impl | 1.0.69 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror | [T12](#licence-text-12), [T6](#licence-text-6) |
 | thiserror-impl | 2.0.18 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror | [T12](#licence-text-12), [T6](#licence-text-6) |
 | thiserror | 1.0.69 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror | [T12](#licence-text-12), [T6](#licence-text-6) |
 | thiserror | 2.0.18 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror | [T12](#licence-text-12), [T6](#licence-text-6) |
-| thread_local | 1.1.9 | MIT OR Apache-2.0 | https://github.com/Amanieu/thread_local-rs | [T2](#licence-text-2), [T177](#licence-text-177) |
-| tiff | 0.11.3 | MIT | https://github.com/image-rs/image-tiff | [T293](#licence-text-293) |
-| time-core | 0.1.9 | MIT OR Apache-2.0 | https://github.com/time-rs/time | [T1](#licence-text-1), [T294](#licence-text-294) |
-| time-macros | 0.2.31 | MIT OR Apache-2.0 | https://github.com/time-rs/time | [T1](#licence-text-1), [T294](#licence-text-294) |
-| time | 0.3.53 | MIT OR Apache-2.0 | https://github.com/time-rs/time | [T1](#licence-text-1), [T294](#licence-text-294) |
-| tinystr | 0.8.3 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T153](#licence-text-153) |
+| thread_local | 1.1.9 | MIT OR Apache-2.0 | https://github.com/Amanieu/thread_local-rs | [T2](#licence-text-2), [T179](#licence-text-179) |
+| tiff | 0.11.3 | MIT | https://github.com/image-rs/image-tiff | [T296](#licence-text-296) |
+| time-core | 0.1.9 | MIT OR Apache-2.0 | https://github.com/time-rs/time | [T1](#licence-text-1), [T297](#licence-text-297) |
+| time-macros | 0.2.31 | MIT OR Apache-2.0 | https://github.com/time-rs/time | [T1](#licence-text-1), [T297](#licence-text-297) |
+| time | 0.3.53 | MIT OR Apache-2.0 | https://github.com/time-rs/time | [T1](#licence-text-1), [T297](#licence-text-297) |
+| tinystr | 0.8.3 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T155](#licence-text-155) |
 | tinyvec | 1.11.0 | Zlib OR Apache-2.0 OR MIT | https://github.com/Lokathor/tinyvec | [T60](#licence-text-60), [T77](#licence-text-77), [T52](#licence-text-52) |
-| tinyvec_macros | 0.1.1 | MIT OR Apache-2.0 OR Zlib | https://github.com/Soveu/tinyvec_macros | [T295](#licence-text-295), [T296](#licence-text-296), [T297](#licence-text-297) |
-| tokio-macros | 2.7.0 | MIT | https://github.com/tokio-rs/tokio | [T299](#licence-text-299) |
-| tokio-rustls | 0.26.4 | MIT OR Apache-2.0 | https://github.com/rustls/tokio-rustls | [T300](#licence-text-300), [T301](#licence-text-301) |
-| tokio-tungstenite | 0.26.2 | MIT | https://github.com/snapview/tokio-tungstenite | [T302](#licence-text-302) |
-| tokio-util | 0.7.18 | MIT | https://github.com/tokio-rs/tokio | [T298](#licence-text-298) |
-| tokio | 1.52.3 | MIT | https://github.com/tokio-rs/tokio | [T298](#licence-text-298) |
+| tinyvec_macros | 0.1.1 | MIT OR Apache-2.0 OR Zlib | https://github.com/Soveu/tinyvec_macros | [T298](#licence-text-298), [T299](#licence-text-299), [T300](#licence-text-300) |
+| tokio-macros | 2.7.0 | MIT | https://github.com/tokio-rs/tokio | [T302](#licence-text-302) |
+| tokio-rustls | 0.26.4 | MIT OR Apache-2.0 | https://github.com/rustls/tokio-rustls | [T303](#licence-text-303), [T304](#licence-text-304) |
+| tokio-stream | 0.1.19 | MIT | https://github.com/tokio-rs/tokio | [T301](#licence-text-301) |
+| tokio-tungstenite | 0.26.2 | MIT | https://github.com/snapview/tokio-tungstenite | [T305](#licence-text-305) |
+| tokio-util | 0.7.18 | MIT | https://github.com/tokio-rs/tokio | [T301](#licence-text-301) |
+| tokio | 1.52.3 | MIT | https://github.com/tokio-rs/tokio | [T301](#licence-text-301) |
 | toml | 0.8.23 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml | [T17](#licence-text-17), [T18](#licence-text-18) |
 | toml | 1.1.2+spec-1.1.0 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml | [T17](#licence-text-17), [T18](#licence-text-18) |
 | toml_datetime | 0.6.11 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml | [T17](#licence-text-17), [T18](#licence-text-18) |
@@ -585,51 +588,51 @@ The following entries have a licence that is not on Renderly's permitted list, o
 | toml_parser | 1.1.2+spec-1.1.0 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml | [T17](#licence-text-17), [T18](#licence-text-18) |
 | toml_write | 0.1.2 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml | [T17](#licence-text-17), [T18](#licence-text-18) |
 | toml_writer | 1.1.1+spec-1.1.0 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml | [T17](#licence-text-17), [T18](#licence-text-18) |
-| tower-http | 0.6.11 | MIT | https://github.com/tower-rs/tower-http | [T304](#licence-text-304) |
-| tower-layer | 0.3.3 | MIT | https://github.com/tower-rs/tower | [T303](#licence-text-303) |
-| tower-service | 0.3.3 | MIT | https://github.com/tower-rs/tower | [T303](#licence-text-303) |
-| tower | 0.5.3 | MIT | https://github.com/tower-rs/tower | [T303](#licence-text-303) |
-| tracing-attributes | 0.1.31 | MIT | https://github.com/tokio-rs/tracing | [T305](#licence-text-305) |
-| tracing-core | 0.1.36 | MIT | https://github.com/tokio-rs/tracing | [T305](#licence-text-305) |
-| tracing-log | 0.2.0 | MIT | https://github.com/tokio-rs/tracing | [T305](#licence-text-305) |
-| tracing-subscriber | 0.3.23 | MIT | https://github.com/tokio-rs/tracing | [T305](#licence-text-305) |
-| tracing | 0.1.44 | MIT | https://github.com/tokio-rs/tracing | [T305](#licence-text-305) |
-| tract-core | 0.23.8 | MIT OR Apache-2.0 | https://github.com/sonos/tract | [T306](#licence-text-306), [T2](#licence-text-2), [T6](#licence-text-6) |
-| tract-data | 0.23.8 | MIT OR Apache-2.0 | https://github.com/sonos/tract | [T306](#licence-text-306), [T2](#licence-text-2), [T6](#licence-text-6) |
-| tract-extra | 0.23.8 | MIT OR Apache-2.0 | https://github.com/sonos/tract | [T306](#licence-text-306), [T2](#licence-text-2), [T6](#licence-text-6) (vendored from upstream, tag v0.23.8) |
-| tract-hir | 0.23.8 | MIT OR Apache-2.0 | https://github.com/sonos/tract | [T306](#licence-text-306), [T2](#licence-text-2), [T6](#licence-text-6) |
-| tract-linalg | 0.23.8 | MIT OR Apache-2.0 | https://github.com/sonos/tract | [T306](#licence-text-306), [T2](#licence-text-2), [T6](#licence-text-6) |
-| tract-nnef | 0.23.8 | MIT OR Apache-2.0 | https://github.com/sonos/tract | [T306](#licence-text-306), [T2](#licence-text-2), [T6](#licence-text-6) |
-| tract-onnx-opl | 0.23.8 | MIT OR Apache-2.0 | https://github.com/sonos/tract | [T306](#licence-text-306), [T2](#licence-text-2), [T6](#licence-text-6) |
-| tract-onnx | 0.23.8 | MIT OR Apache-2.0 | https://github.com/sonos/tract | [T306](#licence-text-306), [T2](#licence-text-2), [T6](#licence-text-6) |
-| tract-transformers | 0.23.8 | MIT OR Apache-2.0 | https://github.com/sonos/tract | [T306](#licence-text-306), [T2](#licence-text-2), [T6](#licence-text-6) (vendored from upstream, tag v0.23.8) |
-| transpose | 0.2.3 | MIT OR Apache-2.0 | https://github.com/ejmahler/transpose | [T307](#licence-text-307), [T308](#licence-text-308) |
-| tray-icon | 0.24.1 | MIT OR Apache-2.0 | https://github.com/tauri-apps/tray-icon | [T2](#licence-text-2), [T197](#licence-text-197), [T309](#licence-text-309) |
-| try-lock | 0.2.5 | MIT | https://github.com/seanmonstar/try-lock | [T310](#licence-text-310) |
-| ttf-parser | 0.25.1 | MIT OR Apache-2.0 | https://github.com/harfbuzz/ttf-parser | [T2](#licence-text-2), [T311](#licence-text-311) |
-| tungstenite | 0.26.2 | MIT OR Apache-2.0 | https://github.com/snapview/tungstenite-rs | [T2](#licence-text-2), [T312](#licence-text-312) |
+| tower-http | 0.6.11 | MIT | https://github.com/tower-rs/tower-http | [T307](#licence-text-307) |
+| tower-layer | 0.3.3 | MIT | https://github.com/tower-rs/tower | [T306](#licence-text-306) |
+| tower-service | 0.3.3 | MIT | https://github.com/tower-rs/tower | [T306](#licence-text-306) |
+| tower | 0.5.3 | MIT | https://github.com/tower-rs/tower | [T306](#licence-text-306) |
+| tracing-attributes | 0.1.31 | MIT | https://github.com/tokio-rs/tracing | [T308](#licence-text-308) |
+| tracing-core | 0.1.36 | MIT | https://github.com/tokio-rs/tracing | [T308](#licence-text-308) |
+| tracing-log | 0.2.0 | MIT | https://github.com/tokio-rs/tracing | [T308](#licence-text-308) |
+| tracing-subscriber | 0.3.23 | MIT | https://github.com/tokio-rs/tracing | [T308](#licence-text-308) |
+| tracing | 0.1.44 | MIT | https://github.com/tokio-rs/tracing | [T308](#licence-text-308) |
+| tract-core | 0.23.8 | MIT OR Apache-2.0 | https://github.com/sonos/tract | [T309](#licence-text-309), [T2](#licence-text-2), [T6](#licence-text-6) |
+| tract-data | 0.23.8 | MIT OR Apache-2.0 | https://github.com/sonos/tract | [T309](#licence-text-309), [T2](#licence-text-2), [T6](#licence-text-6) |
+| tract-extra | 0.23.8 | MIT OR Apache-2.0 | https://github.com/sonos/tract | [T309](#licence-text-309), [T2](#licence-text-2), [T6](#licence-text-6) (vendored from upstream, tag v0.23.8) |
+| tract-hir | 0.23.8 | MIT OR Apache-2.0 | https://github.com/sonos/tract | [T309](#licence-text-309), [T2](#licence-text-2), [T6](#licence-text-6) |
+| tract-linalg | 0.23.8 | MIT OR Apache-2.0 | https://github.com/sonos/tract | [T309](#licence-text-309), [T2](#licence-text-2), [T6](#licence-text-6) |
+| tract-nnef | 0.23.8 | MIT OR Apache-2.0 | https://github.com/sonos/tract | [T309](#licence-text-309), [T2](#licence-text-2), [T6](#licence-text-6) |
+| tract-onnx-opl | 0.23.8 | MIT OR Apache-2.0 | https://github.com/sonos/tract | [T309](#licence-text-309), [T2](#licence-text-2), [T6](#licence-text-6) |
+| tract-onnx | 0.23.8 | MIT OR Apache-2.0 | https://github.com/sonos/tract | [T309](#licence-text-309), [T2](#licence-text-2), [T6](#licence-text-6) |
+| tract-transformers | 0.23.8 | MIT OR Apache-2.0 | https://github.com/sonos/tract | [T309](#licence-text-309), [T2](#licence-text-2), [T6](#licence-text-6) (vendored from upstream, tag v0.23.8) |
+| transpose | 0.2.3 | MIT OR Apache-2.0 | https://github.com/ejmahler/transpose | [T310](#licence-text-310), [T311](#licence-text-311) |
+| tray-icon | 0.24.1 | MIT OR Apache-2.0 | https://github.com/tauri-apps/tray-icon | [T2](#licence-text-2), [T199](#licence-text-199), [T312](#licence-text-312) |
+| try-lock | 0.2.5 | MIT | https://github.com/seanmonstar/try-lock | [T313](#licence-text-313) |
+| ttf-parser | 0.25.1 | MIT OR Apache-2.0 | https://github.com/harfbuzz/ttf-parser | [T2](#licence-text-2), [T314](#licence-text-314) |
+| tungstenite | 0.26.2 | MIT OR Apache-2.0 | https://github.com/snapview/tungstenite-rs | [T2](#licence-text-2), [T315](#licence-text-315) |
 | typeid | 1.0.3 | MIT OR Apache-2.0 | https://github.com/dtolnay/typeid | [T12](#licence-text-12), [T6](#licence-text-6) |
-| typenum | 1.20.1 | MIT OR Apache-2.0 | https://github.com/paholg/typenum | [T313](#licence-text-313), [T314](#licence-text-314), [T315](#licence-text-315) |
+| typenum | 1.20.1 | MIT OR Apache-2.0 | https://github.com/paholg/typenum | [T316](#licence-text-316), [T317](#licence-text-317), [T318](#licence-text-318) |
 | unic-char-property | 0.9.0 | MIT/Apache-2.0 | https://github.com/open-i18n/rust-unic/ | [T2](#licence-text-2), [T6](#licence-text-6) (vendored from upstream, tag v0.9.0) |
 | unic-char-range | 0.9.0 | MIT/Apache-2.0 | https://github.com/open-i18n/rust-unic/ | [T2](#licence-text-2), [T6](#licence-text-6) (vendored from upstream, tag v0.9.0) |
 | unic-common | 0.9.0 | MIT/Apache-2.0 | https://github.com/open-i18n/rust-unic/ | [T2](#licence-text-2), [T6](#licence-text-6) (vendored from upstream, tag v0.9.0) |
 | unic-ucd-ident | 0.9.0 | MIT/Apache-2.0 | https://github.com/open-i18n/rust-unic/ | [T2](#licence-text-2), [T6](#licence-text-6) (vendored from upstream, tag v0.9.0) |
 | unic-ucd-version | 0.9.0 | MIT/Apache-2.0 | https://github.com/open-i18n/rust-unic/ | [T2](#licence-text-2), [T6](#licence-text-6) (vendored from upstream, tag v0.9.0) |
-| unicode-ident | 1.0.24 | (MIT OR Apache-2.0) AND Unicode-3.0 | https://github.com/dtolnay/unicode-ident | [T12](#licence-text-12), [T6](#licence-text-6), [T316](#licence-text-316) |
-| unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 | https://github.com/unicode-rs/unicode-segmentation | [T317](#licence-text-317), [T2](#licence-text-2), [T68](#licence-text-68) |
-| unicode-width | 0.2.2 | MIT OR Apache-2.0 | https://github.com/unicode-rs/unicode-width | [T317](#licence-text-317), [T2](#licence-text-2), [T68](#licence-text-68) |
-| unicode-xid | 0.2.6 | MIT OR Apache-2.0 | https://github.com/unicode-rs/unicode-xid | [T317](#licence-text-317), [T2](#licence-text-2), [T68](#licence-text-68) |
-| untrusted | 0.9.0 | ISC | https://github.com/briansmith/untrusted | [T318](#licence-text-318) |
-| url | 2.5.8 | MIT OR Apache-2.0 | https://github.com/servo/rust-url | [T2](#licence-text-2), [T154](#licence-text-154) |
-| urlpattern | 0.3.0 | MIT | https://github.com/denoland/rust-urlpattern | [T319](#licence-text-319) |
+| unicode-ident | 1.0.24 | (MIT OR Apache-2.0) AND Unicode-3.0 | https://github.com/dtolnay/unicode-ident | [T12](#licence-text-12), [T6](#licence-text-6), [T319](#licence-text-319) |
+| unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 | https://github.com/unicode-rs/unicode-segmentation | [T320](#licence-text-320), [T2](#licence-text-2), [T68](#licence-text-68) |
+| unicode-width | 0.2.2 | MIT OR Apache-2.0 | https://github.com/unicode-rs/unicode-width | [T320](#licence-text-320), [T2](#licence-text-2), [T68](#licence-text-68) |
+| unicode-xid | 0.2.6 | MIT OR Apache-2.0 | https://github.com/unicode-rs/unicode-xid | [T320](#licence-text-320), [T2](#licence-text-2), [T68](#licence-text-68) |
+| untrusted | 0.9.0 | ISC | https://github.com/briansmith/untrusted | [T321](#licence-text-321) |
+| url | 2.5.8 | MIT OR Apache-2.0 | https://github.com/servo/rust-url | [T2](#licence-text-2), [T156](#licence-text-156) |
+| urlpattern | 0.3.0 | MIT | https://github.com/denoland/rust-urlpattern | [T322](#licence-text-322) |
 | utf-8 | 0.7.6 | MIT OR Apache-2.0 | https://github.com/SimonSapin/rust-utf8 | [T12](#licence-text-12), [T6](#licence-text-6) |
-| utf8_iter | 1.0.4 | Apache-2.0 OR MIT | https://github.com/hsivonen/utf8_iter | [T320](#licence-text-320), [T60](#licence-text-60), [T106](#licence-text-106) |
-| utf8parse | 0.2.2 | Apache-2.0 OR MIT | https://github.com/alacritty/vte | [T12](#licence-text-12), [T321](#licence-text-321) |
-| uuid | 1.23.4 | Apache-2.0 OR MIT | https://github.com/uuid-rs/uuid | [T2](#licence-text-2), [T322](#licence-text-322) |
-| v_frame | 0.3.9 | BSD-2-Clause | https://github.com/rust-av/v_frame | [T323](#licence-text-323) |
-| valuable | 0.1.1 | MIT | https://github.com/tokio-rs/valuable | [T324](#licence-text-324) (vendored from upstream, tag v0.1.1) |
+| utf8_iter | 1.0.4 | Apache-2.0 OR MIT | https://github.com/hsivonen/utf8_iter | [T323](#licence-text-323), [T60](#licence-text-60), [T106](#licence-text-106) |
+| utf8parse | 0.2.2 | Apache-2.0 OR MIT | https://github.com/alacritty/vte | [T12](#licence-text-12), [T324](#licence-text-324) |
+| uuid | 1.23.4 | Apache-2.0 OR MIT | https://github.com/uuid-rs/uuid | [T2](#licence-text-2), [T325](#licence-text-325) |
+| v_frame | 0.3.9 | BSD-2-Clause | https://github.com/rust-av/v_frame | [T326](#licence-text-326) |
+| valuable | 0.1.1 | MIT | https://github.com/tokio-rs/valuable | [T327](#licence-text-327) (vendored from upstream, tag v0.1.1) |
 | walkdir | 2.5.0 | Unlicense/MIT | https://github.com/BurntSushi/walkdir | [T7](#licence-text-7), [T8](#licence-text-8) |
-| want | 0.3.1 | MIT | https://github.com/seanmonstar/want | [T325](#licence-text-325) |
+| want | 0.3.1 | MIT | https://github.com/seanmonstar/want | [T328](#licence-text-328) |
 | wasi | 0.11.1+wasi-snapshot-preview1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/bytecodealliance/wasi | [T2](#licence-text-2), [T70](#licence-text-70), [T6](#licence-text-6) |
 | wasip2 | 1.0.4+wasi-0.2.12 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/bytecodealliance/wasi-rs | [T2](#licence-text-2), [T70](#licence-text-70), [T6](#licence-text-6) |
 | wasm-bindgen-futures | 0.4.76 | MIT OR Apache-2.0 | https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures | [T2](#licence-text-2), [T56](#licence-text-56) |
@@ -661,128 +664,128 @@ The following entries have a licence that is not on Renderly's permitted list, o
 | wasmtime | 36.0.12 | Apache-2.0 WITH LLVM-exception | https://github.com/bytecodealliance/wasmtime | [T70](#licence-text-70) |
 | wast | 253.0.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wast | [T2](#licence-text-2), [T70](#licence-text-70), [T6](#licence-text-6) |
 | wat | 1.253.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wat | [T2](#licence-text-2), [T70](#licence-text-70), [T6](#licence-text-6) |
-| wayland-sys | 0.31.11 | MIT | https://github.com/smithay/wayland-rs | [T326](#licence-text-326) |
+| wayland-sys | 0.31.11 | MIT | https://github.com/smithay/wayland-rs | [T329](#licence-text-329) |
 | web-sys | 0.3.103 | MIT OR Apache-2.0 | https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys | [T2](#licence-text-2), [T56](#licence-text-56) |
-| web-time | 1.1.0 | MIT OR Apache-2.0 | https://github.com/daxpedda/web-time | [T327](#licence-text-327), [T328](#licence-text-328) |
+| web-time | 1.1.0 | MIT OR Apache-2.0 | https://github.com/daxpedda/web-time | [T330](#licence-text-330), [T331](#licence-text-331) |
 | web_atoms | 0.2.5 | MIT OR Apache-2.0 | https://github.com/servo/html5ever | [T2](#licence-text-2), [T139](#licence-text-139) |
-| webkit2gtk-sys | 2.0.2 | MIT | https://github.com/tauri-apps/webkit2gtk-rs | [T330](#licence-text-330) |
-| webkit2gtk | 2.0.2 | MIT | https://github.com/tauri-apps/webkit2gtk-rs | [T329](#licence-text-329) |
-| webpki-root-certs | 1.0.8 | CDLA-Permissive-2.0 | https://github.com/rustls/webpki-roots | [T331](#licence-text-331) |
-| webview2-com-macros | 0.8.1 | MIT | https://github.com/wravery/webview2-rs | [T332](#licence-text-332) (vendored from upstream, commit dffa41a8a46d (crates.io VCS record)) |
-| webview2-com-sys | 0.38.2 | MIT | https://github.com/wravery/webview2-rs | [T332](#licence-text-332) (vendored from upstream, commit b74dc5e2b394 (crates.io VCS record)) |
-| webview2-com | 0.38.2 | MIT | https://github.com/wravery/webview2-rs | [T332](#licence-text-332) (vendored from upstream, commit b74dc5e2b394 (crates.io VCS record)) |
-| weezl | 0.1.12 | MIT OR Apache-2.0 | https://github.com/image-rs/weezl | [T2](#licence-text-2), [T333](#licence-text-333) |
-| wgpu-core-deps-apple | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T199](#licence-text-199) |
-| wgpu-core-deps-emscripten | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T199](#licence-text-199) |
-| wgpu-core-deps-windows-linux-android | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T199](#licence-text-199) |
-| wgpu-core | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T199](#licence-text-199) |
-| wgpu-hal | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T199](#licence-text-199) |
-| wgpu-naga-bridge | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T199](#licence-text-199) |
-| wgpu-types | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T199](#licence-text-199) |
-| wgpu | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T199](#licence-text-199) |
-| winapi-i686-pc-windows-gnu | 0.4.0 | MIT/Apache-2.0 | https://github.com/retep998/winapi-rs | [T17](#licence-text-17), [T334](#licence-text-334) (vendored from upstream, default branch 0.3 (no matching tag or commit)) |
-| winapi-util | 0.1.11 | Unlicense OR MIT | https://github.com/BurntSushi/winapi-util | [T7](#licence-text-7), [T265](#licence-text-265) |
-| winapi-x86_64-pc-windows-gnu | 0.4.0 | MIT/Apache-2.0 | https://github.com/retep998/winapi-rs | [T17](#licence-text-17), [T334](#licence-text-334) (vendored from upstream, default branch 0.3 (no matching tag or commit)) |
-| winapi | 0.3.9 | MIT/Apache-2.0 | https://github.com/retep998/winapi-rs | [T17](#licence-text-17), [T334](#licence-text-334) |
+| webkit2gtk-sys | 2.0.2 | MIT | https://github.com/tauri-apps/webkit2gtk-rs | [T333](#licence-text-333) |
+| webkit2gtk | 2.0.2 | MIT | https://github.com/tauri-apps/webkit2gtk-rs | [T332](#licence-text-332) |
+| webpki-root-certs | 1.0.8 | CDLA-Permissive-2.0 | https://github.com/rustls/webpki-roots | [T334](#licence-text-334) |
+| webview2-com-macros | 0.8.1 | MIT | https://github.com/wravery/webview2-rs | [T335](#licence-text-335) (vendored from upstream, commit dffa41a8a46d (crates.io VCS record)) |
+| webview2-com-sys | 0.38.2 | MIT | https://github.com/wravery/webview2-rs | [T335](#licence-text-335) (vendored from upstream, commit b74dc5e2b394 (crates.io VCS record)) |
+| webview2-com | 0.38.2 | MIT | https://github.com/wravery/webview2-rs | [T335](#licence-text-335) (vendored from upstream, commit b74dc5e2b394 (crates.io VCS record)) |
+| weezl | 0.1.12 | MIT OR Apache-2.0 | https://github.com/image-rs/weezl | [T2](#licence-text-2), [T336](#licence-text-336) |
+| wgpu-core-deps-apple | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T201](#licence-text-201) |
+| wgpu-core-deps-emscripten | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T201](#licence-text-201) |
+| wgpu-core-deps-windows-linux-android | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T201](#licence-text-201) |
+| wgpu-core | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T201](#licence-text-201) |
+| wgpu-hal | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T201](#licence-text-201) |
+| wgpu-naga-bridge | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T201](#licence-text-201) |
+| wgpu-types | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T201](#licence-text-201) |
+| wgpu | 30.0.0 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu | [T1](#licence-text-1), [T201](#licence-text-201) |
+| winapi-i686-pc-windows-gnu | 0.4.0 | MIT/Apache-2.0 | https://github.com/retep998/winapi-rs | [T17](#licence-text-17), [T337](#licence-text-337) (vendored from upstream, default branch 0.3 (no matching tag or commit)) |
+| winapi-util | 0.1.11 | Unlicense OR MIT | https://github.com/BurntSushi/winapi-util | [T7](#licence-text-7), [T267](#licence-text-267) |
+| winapi-x86_64-pc-windows-gnu | 0.4.0 | MIT/Apache-2.0 | https://github.com/retep998/winapi-rs | [T17](#licence-text-17), [T337](#licence-text-337) (vendored from upstream, default branch 0.3 (no matching tag or commit)) |
+| winapi | 0.3.9 | MIT/Apache-2.0 | https://github.com/retep998/winapi-rs | [T17](#licence-text-17), [T337](#licence-text-337) |
 | winch-codegen | 36.0.12 | Apache-2.0 WITH LLVM-exception | https://github.com/bytecodealliance/wasmtime | [T70](#licence-text-70) |
-| window-vibrancy | 0.6.0 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri-plugin-vibrancy | [T2](#licence-text-2), [T335](#licence-text-335), [T336](#licence-text-336) |
-| windows-collections | 0.2.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-collections | 0.3.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-core | 0.54.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-core | 0.61.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-core | 0.62.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-future | 0.2.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-future | 0.3.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-implement | 0.60.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-interface | 0.59.3 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-link | 0.1.3 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-link | 0.2.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-numerics | 0.2.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-numerics | 0.3.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-result | 0.1.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-result | 0.3.4 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-result | 0.4.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-strings | 0.4.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-strings | 0.5.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-sys | 0.45.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-sys | 0.52.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-sys | 0.59.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-sys | 0.60.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-sys | 0.61.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-targets | 0.42.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-targets | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-targets | 0.53.5 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-threading | 0.1.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-threading | 0.2.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows-version | 0.1.7 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows | 0.54.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows | 0.61.3 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows | 0.62.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_aarch64_gnullvm | 0.42.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_aarch64_gnullvm | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_aarch64_gnullvm | 0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_aarch64_msvc | 0.42.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_aarch64_msvc | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_aarch64_msvc | 0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_i686_gnu | 0.42.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_i686_gnu | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_i686_gnu | 0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_i686_gnullvm | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_i686_gnullvm | 0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_i686_msvc | 0.42.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_i686_msvc | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_i686_msvc | 0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_x86_64_gnu | 0.42.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_x86_64_gnu | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_x86_64_gnu | 0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_x86_64_gnullvm | 0.42.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_x86_64_gnullvm | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_x86_64_gnullvm | 0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_x86_64_msvc | 0.42.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_x86_64_msvc | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| windows_x86_64_msvc | 0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T337](#licence-text-337), [T338](#licence-text-338) |
-| winnow | 0.5.40 | MIT | https://github.com/winnow-rs/winnow | [T339](#licence-text-339) |
-| winnow | 0.7.15 | MIT | https://github.com/winnow-rs/winnow | [T339](#licence-text-339) |
-| winnow | 1.0.3 | MIT | https://github.com/winnow-rs/winnow | [T339](#licence-text-339) |
+| window-vibrancy | 0.6.0 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri-plugin-vibrancy | [T2](#licence-text-2), [T338](#licence-text-338), [T339](#licence-text-339) |
+| windows-collections | 0.2.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-collections | 0.3.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-core | 0.54.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-core | 0.61.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-core | 0.62.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-future | 0.2.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-future | 0.3.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-implement | 0.60.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-interface | 0.59.3 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-link | 0.1.3 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-link | 0.2.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-numerics | 0.2.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-numerics | 0.3.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-result | 0.1.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-result | 0.3.4 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-result | 0.4.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-strings | 0.4.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-strings | 0.5.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-sys | 0.45.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-sys | 0.52.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-sys | 0.59.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-sys | 0.60.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-sys | 0.61.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-targets | 0.42.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-targets | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-targets | 0.53.5 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-threading | 0.1.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-threading | 0.2.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows-version | 0.1.7 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows | 0.54.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows | 0.61.3 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows | 0.62.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_aarch64_gnullvm | 0.42.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_aarch64_gnullvm | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_aarch64_gnullvm | 0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_aarch64_msvc | 0.42.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_aarch64_msvc | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_aarch64_msvc | 0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_i686_gnu | 0.42.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_i686_gnu | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_i686_gnu | 0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_i686_gnullvm | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_i686_gnullvm | 0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_i686_msvc | 0.42.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_i686_msvc | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_i686_msvc | 0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_x86_64_gnu | 0.42.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_x86_64_gnu | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_x86_64_gnu | 0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_x86_64_gnullvm | 0.42.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_x86_64_gnullvm | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_x86_64_gnullvm | 0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_x86_64_msvc | 0.42.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_x86_64_msvc | 0.52.6 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| windows_x86_64_msvc | 0.53.1 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs | [T340](#licence-text-340), [T341](#licence-text-341) |
+| winnow | 0.5.40 | MIT | https://github.com/winnow-rs/winnow | [T342](#licence-text-342) |
+| winnow | 0.7.15 | MIT | https://github.com/winnow-rs/winnow | [T342](#licence-text-342) |
+| winnow | 1.0.3 | MIT | https://github.com/winnow-rs/winnow | [T342](#licence-text-342) |
 | wit-bindgen | 0.57.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/bytecodealliance/wit-bindgen | [T2](#licence-text-2), [T70](#licence-text-70), [T6](#licence-text-6) |
 | wit-parser | 0.236.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wit-parser | [T2](#licence-text-2), [T70](#licence-text-70), [T6](#licence-text-6) (vendored from upstream, commit 9dd8df4fdc53 (crates.io VCS record)) |
-| writeable | 0.6.3 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T153](#licence-text-153) |
-| wry | 0.55.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/wry | [T2](#licence-text-2), [T340](#licence-text-340), [T341](#licence-text-341) |
+| writeable | 0.6.3 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T155](#licence-text-155) |
+| wry | 0.55.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/wry | [T2](#licence-text-2), [T343](#licence-text-343), [T344](#licence-text-344) |
 | x11-dl | 2.21.0 | MIT | https://github.com/AltF02/x11-rs | [T6](#licence-text-6) |
 | x11 | 2.21.0 | MIT | https://github.com/AltF02/x11-rs | [T6](#licence-text-6) |
-| xattr | 1.6.1 | MIT OR Apache-2.0 | https://github.com/Stebalien/xattr | [T2](#licence-text-2), [T342](#licence-text-342) |
-| y4m | 0.8.0 | MIT | https://github.com/image-rs/y4m | [T343](#licence-text-343) |
-| yoke-derive | 0.8.2 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T153](#licence-text-153) |
-| yoke | 0.8.3 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T153](#licence-text-153) |
-| zerocopy-derive | 0.8.53 | BSD-2-Clause OR Apache-2.0 OR MIT | https://github.com/google/zerocopy | [T344](#licence-text-344), [T345](#licence-text-345), [T346](#licence-text-346) |
-| zerocopy | 0.8.53 | BSD-2-Clause OR Apache-2.0 OR MIT | https://github.com/google/zerocopy | [T344](#licence-text-344), [T345](#licence-text-345), [T346](#licence-text-346) |
-| zerofrom-derive | 0.1.7 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T153](#licence-text-153) |
-| zerofrom | 0.1.8 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T153](#licence-text-153) |
-| zeroize | 1.9.0 | Apache-2.0 OR MIT | https://github.com/RustCrypto/utils | [T60](#licence-text-60), [T347](#licence-text-347) |
-| zerotrie | 0.2.4 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T153](#licence-text-153) |
-| zerovec-derive | 0.11.3 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T153](#licence-text-153) |
-| zerovec | 0.11.6 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T153](#licence-text-153) |
+| xattr | 1.6.1 | MIT OR Apache-2.0 | https://github.com/Stebalien/xattr | [T2](#licence-text-2), [T345](#licence-text-345) |
+| y4m | 0.8.0 | MIT | https://github.com/image-rs/y4m | [T346](#licence-text-346) |
+| yoke-derive | 0.8.2 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T155](#licence-text-155) |
+| yoke | 0.8.3 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T155](#licence-text-155) |
+| zerocopy-derive | 0.8.53 | BSD-2-Clause OR Apache-2.0 OR MIT | https://github.com/google/zerocopy | [T347](#licence-text-347), [T348](#licence-text-348), [T349](#licence-text-349) |
+| zerocopy | 0.8.53 | BSD-2-Clause OR Apache-2.0 OR MIT | https://github.com/google/zerocopy | [T347](#licence-text-347), [T348](#licence-text-348), [T349](#licence-text-349) |
+| zerofrom-derive | 0.1.7 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T155](#licence-text-155) |
+| zerofrom | 0.1.8 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T155](#licence-text-155) |
+| zeroize | 1.9.0 | Apache-2.0 OR MIT | https://github.com/RustCrypto/utils | [T60](#licence-text-60), [T350](#licence-text-350) |
+| zerotrie | 0.2.4 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T155](#licence-text-155) |
+| zerovec-derive | 0.11.3 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T155](#licence-text-155) |
+| zerovec | 0.11.6 | Unicode-3.0 | https://github.com/unicode-org/icu4x | [T155](#licence-text-155) |
 | zmij | 1.0.21 | MIT | https://github.com/dtolnay/zmij | [T6](#licence-text-6) |
-| zstd-safe | 7.2.4 | MIT OR Apache-2.0 | https://github.com/gyscos/zstd-rs | [T349](#licence-text-349), [T1](#licence-text-1), [T348](#licence-text-348) |
-| zstd-sys | 2.0.16+zstd.1.5.7 | MIT/Apache-2.0 | https://github.com/gyscos/zstd-rs | [T349](#licence-text-349), [T1](#licence-text-1), [T350](#licence-text-350), [T348](#licence-text-348) |
-| zstd | 0.13.3 | MIT | https://github.com/gyscos/zstd-rs | [T348](#licence-text-348) |
-| zune-core | 0.5.1 | MIT OR Apache-2.0 OR Zlib | https://github.com/etemesi254/zune-image | [T60](#licence-text-60), [T351](#licence-text-351), [T352](#licence-text-352) |
-| zune-inflate | 0.2.54 | MIT OR Apache-2.0 OR Zlib | https://github.com/etemesi254/zune-image/tree/main/zune-inflate | [T353](#licence-text-353), [T354](#licence-text-354) (vendored from upstream, commit 69502ce83fdf (crates.io VCS record)) |
-| zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib | https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg | [T60](#licence-text-60), [T351](#licence-text-351), [T352](#licence-text-352) |
+| zstd-safe | 7.2.4 | MIT OR Apache-2.0 | https://github.com/gyscos/zstd-rs | [T352](#licence-text-352), [T1](#licence-text-1), [T351](#licence-text-351) |
+| zstd-sys | 2.0.16+zstd.1.5.7 | MIT/Apache-2.0 | https://github.com/gyscos/zstd-rs | [T352](#licence-text-352), [T1](#licence-text-1), [T353](#licence-text-353), [T351](#licence-text-351) |
+| zstd | 0.13.3 | MIT | https://github.com/gyscos/zstd-rs | [T351](#licence-text-351) |
+| zune-core | 0.5.1 | MIT OR Apache-2.0 OR Zlib | https://github.com/etemesi254/zune-image | [T60](#licence-text-60), [T354](#licence-text-354), [T355](#licence-text-355) |
+| zune-inflate | 0.2.54 | MIT OR Apache-2.0 OR Zlib | https://github.com/etemesi254/zune-image/tree/main/zune-inflate | [T356](#licence-text-356), [T357](#licence-text-357) (vendored from upstream, commit 69502ce83fdf (crates.io VCS record)) |
+| zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib | https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg | [T60](#licence-text-60), [T354](#licence-text-354), [T355](#licence-text-355) |
 
 ## npm packages
 
 | Package | Version | Licence (SPDX) | Repository | Licence text |
 |---|---|---|---|---|
-| @fontsource/source-sans-3 | 5.2.9 | OFL-1.1 | https://github.com/fontsource/font-files | [T355](#licence-text-355) |
-| @tauri-apps/api | 2.11.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri | [T1](#licence-text-1), [T290](#licence-text-290) |
-| @tauri-apps/plugin-dialog | 2.7.1 | MIT OR Apache-2.0 | https://github.com/tauri-apps/plugins-workspace | [T291](#licence-text-291) |
-| fast-json-patch | 3.1.1 | MIT | git://github.com/Starcounter-Jack/JSON-Patch | [T356](#licence-text-356) |
-| lucide-react | 1.24.0 | ISC | https://github.com/lucide-icons/lucide | [T357](#licence-text-357) |
-| react | 19.2.7 | MIT | https://github.com/facebook/react | [T358](#licence-text-358) |
-| react-dom | 19.2.7 | MIT | https://github.com/facebook/react | [T358](#licence-text-358) |
-| scheduler | 0.27.0 | MIT | https://github.com/facebook/react | [T358](#licence-text-358) |
-| zustand | 5.0.14 | MIT | https://github.com/pmndrs/zustand | [T359](#licence-text-359) |
+| @fontsource/source-sans-3 | 5.2.9 | OFL-1.1 | https://github.com/fontsource/font-files | [T358](#licence-text-358) |
+| @tauri-apps/api | 2.11.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri | [T1](#licence-text-1), [T293](#licence-text-293) |
+| @tauri-apps/plugin-dialog | 2.7.1 | MIT OR Apache-2.0 | https://github.com/tauri-apps/plugins-workspace | [T294](#licence-text-294) |
+| fast-json-patch | 3.1.1 | MIT | git://github.com/Starcounter-Jack/JSON-Patch | [T359](#licence-text-359) |
+| lucide-react | 1.24.0 | ISC | https://github.com/lucide-icons/lucide | [T360](#licence-text-360) |
+| react | 19.2.7 | MIT | https://github.com/facebook/react | [T361](#licence-text-361) |
+| react-dom | 19.2.7 | MIT | https://github.com/facebook/react | [T361](#licence-text-361) |
+| scheduler | 0.27.0 | MIT | https://github.com/facebook/react | [T361](#licence-text-361) |
+| zustand | 5.0.14 | MIT | https://github.com/pmndrs/zustand | [T362](#licence-text-362) |
 
 ## Bundled model, font and FFmpeg
 
@@ -790,13 +793,13 @@ The following entries have a licence that is not on Renderly's permitted list, o
 
 - Licence: MIT
 - Bundled in renderly-core via `include_bytes!` (`renderly-core/src/ml/models.rs`). Model origin: https://github.com/ShiqiYu/libfacedetection.train; distributed copy from opencv/opencv_zoo (see `renderly-core/assets/models/README.md`).
-- Licence text: [T360](#licence-text-360)
+- Licence text: [T363](#licence-text-363)
 
 ### Roboto Bold font (Roboto-Bold.ttf)
 
 - Licence: Apache-2.0
 - Bundled in renderly-core via `include_bytes!` (`renderly-core/src/captions/mod.rs`), from `renderly-wasm/assets/Roboto-Bold.ttf`. Copyright notice, read from the font's name table (ID 0): Copyright 2015 Google Inc. All Rights Reserved. Licence description (ID 13): Licensed under the Apache License, Version 2.0.
-- Licence text: [T361](#licence-text-361)
+- Licence text: [T364](#licence-text-364)
 
 ### FFmpeg
 
@@ -5365,7 +5368,7 @@ SOFTWARE.
 
 ### T60
 
-Used by: codespan-reporting 0.13.1, cpal 0.16.0, embed_plist 1.2.2, encoding_rs 0.8.35, imgref 1.12.2, lru-slab 0.1.2, memfd 0.6.5, ndk 0.9.0, ndk-context 0.1.1, ndk-sys 0.6.0+11769913, quinn 0.11.11, quinn-proto 0.11.16, quinn-udp 0.5.15, raw-window-metal 1.1.0, rustls-platform-verifier 0.7.0, rustls-platform-verifier-android 0.1.1, serialize-to-javascript 0.1.2, serialize-to-javascript-impl 0.1.2, spirv 0.4.0+sdk-1.4.341.0, static_assertions 1.1.0, tinyvec 1.11.0, utf8_iter 1.0.4, zeroize 1.9.0, zune-core 0.5.1, zune-jpeg 0.5.15
+Used by: codespan-reporting 0.13.1, cpal 0.16.0, embed_plist 1.2.2, encoding_rs 0.8.35, imgref 1.12.2, lru-slab 0.1.2, memfd 0.6.5, ndk 0.9.0, ndk-context 0.1.1, ndk-sys 0.6.0+11769913, quinn 0.11.11, quinn-proto 0.11.16, quinn-udp 0.5.15, raw-window-metal 1.1.0, rustls-platform-verifier 0.7.0, rustls-platform-verifier-android 0.1.1, serialize-to-javascript 0.1.2, serialize-to-javascript-impl 0.1.2, spirv 0.4.0+sdk-1.4.341.0, sse-stream 0.2.6, static_assertions 1.1.0, tinyvec 1.11.0, utf8_iter 1.0.4, zeroize 1.9.0, zune-core 0.5.1, zune-jpeg 0.5.15
 
 ````text
 Apache License
@@ -11413,6 +11416,244 @@ THE SOFTWARE.
 
 ### T146
 
+Used by: httpdate 1.0.3
+
+````text
+Apache License
+Version 2.0, January 2004
+http://www.apache.org/licenses/
+
+TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+1. Definitions.
+
+"License" shall mean the terms and conditions for use, reproduction,
+and distribution as defined by Sections 1 through 9 of this document.
+
+"Licensor" shall mean the copyright owner or entity authorized by
+the copyright owner that is granting the License.
+
+"Legal Entity" shall mean the union of the acting entity and all
+other entities that control, are controlled by, or are under common
+control with that entity. For the purposes of this definition,
+"control" means (i) the power, direct or indirect, to cause the
+direction or management of such entity, whether by contract or
+otherwise, or (ii) ownership of fifty percent (50%) or more of the
+outstanding shares, or (iii) beneficial ownership of such entity.
+
+"You" (or "Your") shall mean an individual or Legal Entity
+exercising permissions granted by this License.
+
+"Source" form shall mean the preferred form for making modifications,
+including but not limited to software source code, documentation
+source, and configuration files.
+
+"Object" form shall mean any form resulting from mechanical
+transformation or translation of a Source form, including but
+not limited to compiled object code, generated documentation,
+and conversions to other media types.
+
+"Work" shall mean the work of authorship, whether in Source or
+Object form, made available under the License, as indicated by a
+copyright notice that is included in or attached to the work
+(an example is provided in the Appendix below).
+
+"Derivative Works" shall mean any work, whether in Source or Object
+form, that is based on (or derived from) the Work and for which the
+editorial revisions, annotations, elaborations, or other modifications
+represent, as a whole, an original work of authorship. For the purposes
+of this License, Derivative Works shall not include works that remain
+separable from, or merely link (or bind by name) to the interfaces of,
+the Work and Derivative Works thereof.
+
+"Contribution" shall mean any work of authorship, including
+the original version of the Work and any modifications or additions
+to that Work or Derivative Works thereof, that is intentionally
+submitted to Licensor for inclusion in the Work by the copyright owner
+or by an individual or Legal Entity authorized to submit on behalf of
+the copyright owner. For the purposes of this definition, "submitted"
+means any form of electronic, verbal, or written communication sent
+to the Licensor or its representatives, including but not limited to
+communication on electronic mailing lists, source code control systems,
+and issue tracking systems that are managed by, or on behalf of, the
+Licensor for the purpose of discussing and improving the Work, but
+excluding communication that is conspicuously marked or otherwise
+designated in writing by the copyright owner as "Not a Contribution."
+
+"Contributor" shall mean Licensor and any individual or Legal Entity
+on behalf of whom a Contribution has been received by Licensor and
+subsequently incorporated within the Work.
+
+2. Grant of Copyright License. Subject to the terms and conditions of
+this License, each Contributor hereby grants to You a perpetual,
+worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+copyright license to reproduce, prepare Derivative Works of,
+publicly display, publicly perform, sublicense, and distribute the
+Work and such Derivative Works in Source or Object form.
+
+3. Grant of Patent License. Subject to the terms and conditions of
+this License, each Contributor hereby grants to You a perpetual,
+worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+(except as stated in this section) patent license to make, have made,
+use, offer to sell, sell, import, and otherwise transfer the Work,
+where such license applies only to those patent claims licensable
+by such Contributor that are necessarily infringed by their
+Contribution(s) alone or by combination of their Contribution(s)
+with the Work to which such Contribution(s) was submitted. If You
+institute patent litigation against any entity (including a
+cross-claim or counterclaim in a lawsuit) alleging that the Work
+or a Contribution incorporated within the Work constitutes direct
+or contributory patent infringement, then any patent licenses
+granted to You under this License for that Work shall terminate
+as of the date such litigation is filed.
+
+4. Redistribution. You may reproduce and distribute copies of the
+Work or Derivative Works thereof in any medium, with or without
+modifications, and in Source or Object form, provided that You
+meet the following conditions:
+
+(a) You must give any other recipients of the Work or
+Derivative Works a copy of this License; and
+
+(b) You must cause any modified files to carry prominent notices
+stating that You changed the files; and
+
+(c) You must retain, in the Source form of any Derivative Works
+that You distribute, all copyright, patent, trademark, and
+attribution notices from the Source form of the Work,
+excluding those notices that do not pertain to any part of
+the Derivative Works; and
+
+(d) If the Work includes a "NOTICE" text file as part of its
+distribution, then any Derivative Works that You distribute must
+include a readable copy of the attribution notices contained
+within such NOTICE file, excluding those notices that do not
+pertain to any part of the Derivative Works, in at least one
+of the following places: within a NOTICE text file distributed
+as part of the Derivative Works; within the Source form or
+documentation, if provided along with the Derivative Works; or,
+within a display generated by the Derivative Works, if and
+wherever such third-party notices normally appear. The contents
+of the NOTICE file are for informational purposes only and
+do not modify the License. You may add Your own attribution
+notices within Derivative Works that You distribute, alongside
+or as an addendum to the NOTICE text from the Work, provided
+that such additional attribution notices cannot be construed
+as modifying the License.
+
+You may add Your own copyright statement to Your modifications and
+may provide additional or different license terms and conditions
+for use, reproduction, or distribution of Your modifications, or
+for any such Derivative Works as a whole, provided Your use,
+reproduction, and distribution of the Work otherwise complies with
+the conditions stated in this License.
+
+5. Submission of Contributions. Unless You explicitly state otherwise,
+any Contribution intentionally submitted for inclusion in the Work
+by You to the Licensor shall be under the terms and conditions of
+this License, without any additional terms or conditions.
+Notwithstanding the above, nothing herein shall supersede or modify
+the terms of any separate license agreement you may have executed
+with Licensor regarding such Contributions.
+
+6. Trademarks. This License does not grant permission to use the trade
+names, trademarks, service marks, or product names of the Licensor,
+except as required for reasonable and customary use in describing the
+origin of the Work and reproducing the content of the NOTICE file.
+
+7. Disclaimer of Warranty. Unless required by applicable law or
+agreed to in writing, Licensor provides the Work (and each
+Contributor provides its Contributions) on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+implied, including, without limitation, any warranties or conditions
+of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+PARTICULAR PURPOSE. You are solely responsible for determining the
+appropriateness of using or redistributing the Work and assume any
+risks associated with Your exercise of permissions under this License.
+
+8. Limitation of Liability. In no event and under no legal theory,
+whether in tort (including negligence), contract, or otherwise,
+unless required by applicable law (such as deliberate and grossly
+negligent acts) or agreed to in writing, shall any Contributor be
+liable to You for damages, including any direct, indirect, special,
+incidental, or consequential damages of any character arising as a
+result of this License or out of the use or inability to use the
+Work (including but not limited to damages for loss of goodwill,
+work stoppage, computer failure or malfunction, or any and all
+other commercial damages or losses), even if such Contributor
+has been advised of the possibility of such damages.
+
+9. Accepting Warranty or Additional Liability. While redistributing
+the Work or Derivative Works thereof, You may choose to offer,
+and charge a fee for, acceptance of support, warranty, indemnity,
+or other liability obligations and/or rights consistent with this
+License. However, in accepting such obligations, You may act only
+on Your own behalf and on Your sole responsibility, not on behalf
+of any other Contributor, and only if You agree to indemnify,
+defend, and hold each Contributor harmless for any liability
+incurred by, or claims asserted against, such Contributor by reason
+of your accepting any such warranty or additional liability.
+
+END OF TERMS AND CONDITIONS
+
+APPENDIX: How to apply the Apache License to your work.
+
+To apply the Apache License to your work, attach the following
+boilerplate notice, with the fields enclosed by brackets "[]"
+replaced with your own identifying information. (Don't include
+the brackets!)  The text should be enclosed in the appropriate
+comment syntax for the file format. We also recommend that a
+file or class name and description of purpose be included on the
+same "printed page" as the copyright notice for easier
+identification within third-party archives.
+
+Copyright [yyyy] [name of copyright owner]
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+````
+
+<a id="licence-text-147"></a>
+
+### T147
+
+Used by: httpdate 1.0.3
+
+````text
+Copyright (c) 2016 Pyfisch
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+````
+
+<a id="licence-text-148"></a>
+
+### T148
+
 Used by: hyper 1.10.1
 
 ````text
@@ -11437,9 +11678,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ````
 
-<a id="licence-text-147"></a>
+<a id="licence-text-149"></a>
 
-### T147
+### T149
 
 Used by: hyper-rustls 0.27.9, rustls 0.23.41, rustls-native-certs 0.8.4
 
@@ -11461,9 +11702,9 @@ ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 ````
 
-<a id="licence-text-148"></a>
+<a id="licence-text-150"></a>
 
-### T148
+### T150
 
 Used by: hyper-rustls 0.27.9, rustls 0.23.41, rustls-native-certs 0.8.4
 
@@ -11495,9 +11736,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-149"></a>
+<a id="licence-text-151"></a>
 
-### T149
+### T151
 
 Used by: hyper-util 0.1.20
 
@@ -11523,9 +11764,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ````
 
-<a id="licence-text-150"></a>
+<a id="licence-text-152"></a>
 
-### T150
+### T152
 
 Used by: iana-time-zone 0.1.65, iana-time-zone-haiku 0.1.2
 
@@ -11733,9 +11974,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ````
 
-<a id="licence-text-151"></a>
+<a id="licence-text-153"></a>
 
-### T151
+### T153
 
 Used by: iana-time-zone 0.1.65, iana-time-zone-haiku 0.1.2
 
@@ -11767,9 +12008,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-152"></a>
+<a id="licence-text-154"></a>
 
-### T152
+### T154
 
 Used by: ico 0.5.0
 
@@ -11797,9 +12038,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-153"></a>
+<a id="licence-text-155"></a>
 
-### T153
+### T155
 
 Used by: icu_collections 2.2.0, icu_locale_core 2.2.0, icu_normalizer 2.2.0, icu_normalizer_data 2.2.0, icu_properties 2.2.0, icu_properties_data 2.2.0, icu_provider 2.2.0, litemap 0.8.2, potential_utf 0.1.5, tinystr 0.8.3, writeable 0.6.3, yoke 0.8.3, yoke-derive 0.8.2, zerofrom 0.1.8, zerofrom-derive 0.1.7, zerotrie 0.2.4, zerovec 0.11.6, zerovec-derive 0.11.3
 
@@ -11852,9 +12093,9 @@ Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 ````
 
-<a id="licence-text-154"></a>
+<a id="licence-text-156"></a>
 
-### T154
+### T156
 
 Used by: idna 1.1.0, percent-encoding 2.3.2, url 2.5.8
 
@@ -11886,9 +12127,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-155"></a>
+<a id="licence-text-157"></a>
 
-### T155
+### T157
 
 Used by: idna_adapter 1.2.2
 
@@ -11920,9 +12161,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-156"></a>
+<a id="licence-text-158"></a>
 
-### T156
+### T158
 
 Used by: indexmap 1.9.3, indexmap 2.14.0
 
@@ -11954,9 +12195,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-157"></a>
+<a id="licence-text-159"></a>
 
-### T157
+### T159
 
 Used by: infer 0.19.0
 
@@ -11984,9 +12225,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-158"></a>
+<a id="licence-text-160"></a>
 
-### T158
+### T160
 
 Used by: ipnet 2.12.0
 
@@ -12194,9 +12435,9 @@ Apache License
    limitations under the License.
 ````
 
-<a id="licence-text-159"></a>
+<a id="licence-text-161"></a>
 
-### T159
+### T161
 
 Used by: ipnet 2.12.0
 
@@ -12210,9 +12451,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-160"></a>
+<a id="licence-text-162"></a>
 
-### T160
+### T162
 
 Used by: javascriptcore-rs 1.1.2
 
@@ -12241,9 +12482,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-161"></a>
+<a id="licence-text-163"></a>
 
-### T161
+### T163
 
 Used by: javascriptcore-rs-sys 1.1.1, soup3 0.5.0, soup3-sys 0.5.0
 
@@ -12271,9 +12512,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-162"></a>
+<a id="licence-text-164"></a>
 
-### T162
+### T164
 
 Used by: jni 0.21.1, jni 0.22.4, jni-macros 0.22.4
 
@@ -12301,9 +12542,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-163"></a>
+<a id="licence-text-165"></a>
 
-### T163
+### T165
 
 Used by: jni-sys 0.3.1, jni-sys 0.4.1, jni-sys-macros 0.4.1
 
@@ -12329,9 +12570,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-164"></a>
+<a id="licence-text-166"></a>
 
-### T164
+### T166
 
 Used by: json-patch 3.0.1, json-patch 4.2.0
 
@@ -12359,9 +12600,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-165"></a>
+<a id="licence-text-167"></a>
 
-### T165
+### T167
 
 Used by: jsonptr 0.6.3, jsonptr 0.7.1
 
@@ -12569,9 +12810,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ````
 
-<a id="licence-text-166"></a>
+<a id="licence-text-168"></a>
 
-### T166
+### T168
 
 Used by: jsonptr 0.6.3, jsonptr 0.7.1
 
@@ -12599,9 +12840,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-167"></a>
+<a id="licence-text-169"></a>
 
-### T167
+### T169
 
 Used by: keyboard-types 0.7.0
 
@@ -12627,9 +12868,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ````
 
-<a id="licence-text-168"></a>
+<a id="licence-text-170"></a>
 
-### T168
+### T170
 
 Used by: lazy_static 1.5.0, rayon 1.12.0, rayon-core 1.13.0
 
@@ -12661,9 +12902,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-169"></a>
+<a id="licence-text-171"></a>
 
-### T169
+### T171
 
 Used by: lebe 0.5.3
 
@@ -12696,9 +12937,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ````
 
-<a id="licence-text-170"></a>
+<a id="licence-text-172"></a>
 
-### T170
+### T172
 
 Used by: libappindicator 0.9.0, libappindicator-sys 0.9.0
 
@@ -12727,9 +12968,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-171"></a>
+<a id="licence-text-173"></a>
 
-### T171
+### T173
 
 Used by: libc 0.2.186
 
@@ -12761,9 +13002,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-172"></a>
+<a id="licence-text-174"></a>
 
-### T172
+### T174
 
 Used by: libloading 0.7.4, libloading 0.8.9
 
@@ -12782,9 +13023,9 @@ NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE US
 THIS SOFTWARE.
 ````
 
-<a id="licence-text-173"></a>
+<a id="licence-text-175"></a>
 
-### T173
+### T175
 
 Used by: libm 0.2.16
 
@@ -13049,9 +13290,9 @@ have been licensed under extremely permissive terms.
 Copyright notices are retained in src/* files where relevant.
 ````
 
-<a id="licence-text-174"></a>
+<a id="licence-text-176"></a>
 
-### T174
+### T176
 
 Used by: libredox 0.1.18
 
@@ -13079,9 +13320,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-175"></a>
+<a id="licence-text-177"></a>
 
-### T175
+### T177
 
 Used by: linux-raw-sys 0.12.1
 
@@ -13117,9 +13358,9 @@ is licensed under:
 at your option.
 ````
 
-<a id="licence-text-176"></a>
+<a id="licence-text-178"></a>
 
-### T176
+### T178
 
 Used by: litrs 1.0.0
 
@@ -13151,9 +13392,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-177"></a>
+<a id="licence-text-179"></a>
 
-### T177
+### T179
 
 Used by: lock_api 0.4.14, parking_lot 0.12.5, parking_lot_core 0.9.12, thread_local 1.1.9
 
@@ -13185,9 +13426,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-178"></a>
+<a id="licence-text-180"></a>
 
-### T178
+### T180
 
 Used by: loop9 0.1.5
 
@@ -13201,9 +13442,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-179"></a>
+<a id="licence-text-181"></a>
 
-### T179
+### T181
 
 Used by: lru-slab 0.1.2
 
@@ -13217,9 +13458,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-180"></a>
+<a id="licence-text-182"></a>
 
-### T180
+### T182
 
 Used by: lru-slab 0.1.2
 
@@ -13245,9 +13486,9 @@ the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ````
 
-<a id="licence-text-181"></a>
+<a id="licence-text-183"></a>
 
-### T181
+### T183
 
 Used by: mach2 0.4.3
 
@@ -13277,9 +13518,9 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ````
 
-<a id="licence-text-182"></a>
+<a id="licence-text-184"></a>
 
-### T182
+### T184
 
 Used by: mach2 0.4.3
 
@@ -13311,9 +13552,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-183"></a>
+<a id="licence-text-185"></a>
 
-### T183
+### T185
 
 Used by: matchers 0.2.0
 
@@ -13339,9 +13580,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-184"></a>
+<a id="licence-text-186"></a>
 
-### T184
+### T186
 
 Used by: matrixmultiply 0.3.11
 
@@ -13375,9 +13616,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-185"></a>
+<a id="licence-text-187"></a>
 
-### T185
+### T187
 
 Used by: maybe-rayon 0.1.1
 
@@ -13405,9 +13646,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-186"></a>
+<a id="licence-text-188"></a>
 
-### T186
+### T188
 
 Used by: memfd 0.6.5
 
@@ -13430,9 +13671,9 @@ DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
 OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-187"></a>
+<a id="licence-text-189"></a>
 
-### T187
+### T189
 
 Used by: memmap2 0.9.11
 
@@ -13640,9 +13881,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ````
 
-<a id="licence-text-188"></a>
+<a id="licence-text-190"></a>
 
-### T188
+### T190
 
 Used by: memmap2 0.9.11
 
@@ -13675,9 +13916,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-189"></a>
+<a id="licence-text-191"></a>
 
-### T189
+### T191
 
 Used by: memoffset 0.9.1
 
@@ -13703,9 +13944,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-190"></a>
+<a id="licence-text-192"></a>
 
-### T190
+### T192
 
 Used by: mime 0.3.17
 
@@ -13731,76 +13972,76 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ````
 
-<a id="licence-text-191"></a>
-
-### T191
-
-Used by: miniz_oxide 0.8.9
-
-````text
-MIT License
-
-Copyright 2013-2014 RAD Game Tools and Valve Software
-Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC
-Copyright (c) 2017 Frommi
-Copyright (c) 2017-2024 oyvindln
-
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-````
-
-<a id="licence-text-192"></a>
-
-### T192
-
-Used by: miniz_oxide 0.8.9
-
-````text
-MIT License
-
-Copyright 2013-2014 RAD Game Tools and Valve Software
-Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC
-Copyright (c) 2017 Frommi
-Copyright (c) 2017-2024 oyvindln
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-````
-
 <a id="licence-text-193"></a>
 
 ### T193
+
+Used by: miniz_oxide 0.8.9
+
+````text
+MIT License
+
+Copyright 2013-2014 RAD Game Tools and Valve Software
+Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC
+Copyright (c) 2017 Frommi
+Copyright (c) 2017-2024 oyvindln
+
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+````
+
+<a id="licence-text-194"></a>
+
+### T194
+
+Used by: miniz_oxide 0.8.9
+
+````text
+MIT License
+
+Copyright 2013-2014 RAD Game Tools and Valve Software
+Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC
+Copyright (c) 2017 Frommi
+Copyright (c) 2017-2024 oyvindln
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+````
+
+<a id="licence-text-195"></a>
+
+### T195
 
 Used by: miniz_oxide 0.8.9
 
@@ -13821,9 +14062,9 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ````
 
-<a id="licence-text-194"></a>
+<a id="licence-text-196"></a>
 
-### T194
+### T196
 
 Used by: mio 1.2.1
 
@@ -13849,9 +14090,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ````
 
-<a id="licence-text-195"></a>
+<a id="licence-text-197"></a>
 
-### T195
+### T197
 
 Used by: moxcms 0.8.1, pxfm 0.1.30
 
@@ -14059,9 +14300,9 @@ Apache License
    limitations under the License.
 ````
 
-<a id="licence-text-196"></a>
+<a id="licence-text-198"></a>
 
-### T196
+### T198
 
 Used by: moxcms 0.8.1, pxfm 0.1.30
 
@@ -14094,9 +14335,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ````
 
-<a id="licence-text-197"></a>
+<a id="licence-text-199"></a>
 
-### T197
+### T199
 
 Used by: muda 0.19.3, tray-icon 0.24.1
 
@@ -14124,9 +14365,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-198"></a>
+<a id="licence-text-200"></a>
 
-### T198
+### T200
 
 Used by: muda 0.19.3
 
@@ -14152,9 +14393,9 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/muda.git
 Creator: Person: Daniel Thompson-Yvetot
 ````
 
-<a id="licence-text-199"></a>
+<a id="licence-text-201"></a>
 
-### T199
+### T201
 
 Used by: naga 30.0.0, naga-types 30.0.0, wgpu 30.0.0, wgpu-core 30.0.0, wgpu-core-deps-apple 30.0.0, wgpu-core-deps-emscripten 30.0.0, wgpu-core-deps-windows-linux-android 30.0.0, wgpu-hal 30.0.0, wgpu-naga-bridge 30.0.0, wgpu-types 30.0.0
 
@@ -14182,9 +14423,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-200"></a>
+<a id="licence-text-202"></a>
 
-### T200
+### T202
 
 Used by: ndarray 0.17.2
 
@@ -14218,9 +14459,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-201"></a>
+<a id="licence-text-203"></a>
 
-### T201
+### T203
 
 Used by: new_debug_unreachable 1.0.6, ordered-float 5.3.0
 
@@ -14252,9 +14493,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-202"></a>
+<a id="licence-text-204"></a>
 
-### T202
+### T204
 
 Used by: nnnoiseless 0.5.2
 
@@ -14263,9 +14504,9 @@ Jean-Marc Valin <jmvalin@jmvalin.ca>
 Joe Neeman <joeneeman@gmail.com>
 ````
 
-<a id="licence-text-203"></a>
+<a id="licence-text-205"></a>
 
-### T203
+### T205
 
 Used by: nnnoiseless 0.5.2
 
@@ -14304,9 +14545,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ````
 
-<a id="licence-text-204"></a>
+<a id="licence-text-206"></a>
 
-### T204
+### T206
 
 Used by: no_std_io2 0.9.4
 
@@ -14332,9 +14573,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-205"></a>
+<a id="licence-text-207"></a>
 
-### T205
+### T207
 
 Used by: nom 8.0.0
 
@@ -14361,9 +14602,9 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-206"></a>
+<a id="licence-text-208"></a>
 
-### T206
+### T208
 
 Used by: nom-language 0.1.0
 
@@ -14371,9 +14612,9 @@ Used by: nom-language 0.1.0
 ../LICENSE
 ````
 
-<a id="licence-text-207"></a>
+<a id="licence-text-209"></a>
 
-### T207
+### T209
 
 Used by: noop_proc_macro 0.3.0, simd_helpers 0.1.0
 
@@ -14401,9 +14642,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-208"></a>
+<a id="licence-text-210"></a>
 
-### T208
+### T210
 
 Used by: nu-ansi-term 0.50.3
 
@@ -14432,9 +14673,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-209"></a>
+<a id="licence-text-211"></a>
 
-### T209
+### T211
 
 Used by: num-conv 0.2.2
 
@@ -14460,9 +14701,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-210"></a>
+<a id="licence-text-212"></a>
 
-### T210
+### T212
 
 Used by: num_enum 0.7.6, num_enum_derive 0.7.6
 
@@ -14496,9 +14737,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ````
 
-<a id="licence-text-211"></a>
+<a id="licence-text-213"></a>
 
-### T211
+### T213
 
 Used by: object 0.37.3
 
@@ -14530,9 +14771,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-212"></a>
+<a id="licence-text-214"></a>
 
-### T212
+### T214
 
 Used by: option-ext 0.2.0
 
@@ -14912,9 +15153,9 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   defined by the Mozilla Public License, v. 2.0.
 ````
 
-<a id="licence-text-213"></a>
+<a id="licence-text-215"></a>
 
-### T213
+### T215
 
 Used by: phf 0.13.1, phf_generator 0.13.1, phf_macros 0.13.1, phf_shared 0.13.1
 
@@ -14941,9 +15182,9 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-214"></a>
+<a id="licence-text-216"></a>
 
-### T214
+### T216
 
 Used by: plist 1.10.0
 
@@ -14969,9 +15210,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-215"></a>
+<a id="licence-text-217"></a>
 
-### T215
+### T217
 
 Used by: png 0.17.16, png 0.18.1
 
@@ -15003,9 +15244,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-216"></a>
+<a id="licence-text-218"></a>
 
-### T216
+### T218
 
 Used by: pollster 0.4.0
 
@@ -15037,9 +15278,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-217"></a>
+<a id="licence-text-219"></a>
 
-### T217
+### T219
 
 Used by: postcard 1.1.3
 
@@ -15071,9 +15312,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-218"></a>
+<a id="licence-text-220"></a>
 
-### T218
+### T220
 
 Used by: powerfmt 0.2.0
 
@@ -15281,9 +15522,9 @@ Apache License
    limitations under the License.
 ````
 
-<a id="licence-text-219"></a>
+<a id="licence-text-221"></a>
 
-### T219
+### T221
 
 Used by: powerfmt 0.2.0
 
@@ -15309,9 +15550,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-220"></a>
+<a id="licence-text-222"></a>
 
-### T220
+### T222
 
 Used by: ppv-lite86 0.2.21
 
@@ -15519,9 +15760,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ````
 
-<a id="licence-text-221"></a>
+<a id="licence-text-223"></a>
 
-### T221
+### T223
 
 Used by: ppv-lite86 0.2.21
 
@@ -15553,9 +15794,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-222"></a>
+<a id="licence-text-224"></a>
 
-### T222
+### T224
 
 Used by: precomputed-hash 0.1.1
 
@@ -15583,9 +15824,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-223"></a>
+<a id="licence-text-225"></a>
 
-### T223
+### T225
 
 Used by: presser 0.3.1
 
@@ -15617,9 +15858,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-224"></a>
+<a id="licence-text-226"></a>
 
-### T224
+### T226
 
 Used by: primal-check 0.3.4
 
@@ -15651,9 +15892,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-225"></a>
+<a id="licence-text-227"></a>
 
-### T225
+### T227
 
 Used by: proc-macro-error 1.0.4, proc-macro-error-attr 1.0.4
 
@@ -15861,9 +16102,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ````
 
-<a id="licence-text-226"></a>
+<a id="licence-text-228"></a>
 
-### T226
+### T228
 
 Used by: proc-macro-error 1.0.4, proc-macro-error-attr 1.0.4
 
@@ -15891,9 +16132,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-227"></a>
+<a id="licence-text-229"></a>
 
-### T227
+### T229
 
 Used by: profiling 1.0.18, profiling-procmacros 1.0.18
 
@@ -15921,9 +16162,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-228"></a>
+<a id="licence-text-230"></a>
 
-### T228
+### T230
 
 Used by: qoi 0.4.1
 
@@ -15955,9 +16196,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-229"></a>
+<a id="licence-text-231"></a>
 
-### T229
+### T231
 
 Used by: quick-error 2.0.1
 
@@ -15983,9 +16224,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-230"></a>
+<a id="licence-text-232"></a>
 
-### T230
+### T232
 
 Used by: quick-xml 0.41.0
 
@@ -16015,9 +16256,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ````
 
-<a id="licence-text-231"></a>
+<a id="licence-text-233"></a>
 
-### T231
+### T233
 
 Used by: quinn 0.11.11, quinn-proto 0.11.16, quinn-udp 0.5.15
 
@@ -16031,9 +16272,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-232"></a>
+<a id="licence-text-234"></a>
 
-### T232
+### T234
 
 Used by: r-efi 5.3.0
 
@@ -16114,9 +16355,9 @@ AUTHORS: (ordered alphabetically)
         Trevor Gross <tmgross@umich.edu>
 ````
 
-<a id="licence-text-233"></a>
+<a id="licence-text-235"></a>
 
-### T233
+### T235
 
 Used by: r-efi 6.0.0
 
@@ -16198,9 +16439,9 @@ AUTHORS: (ordered alphabetically)
         Trevor Gross <tmgross@umich.edu>
 ````
 
-<a id="licence-text-234"></a>
+<a id="licence-text-236"></a>
 
-### T234
+### T236
 
 Used by: rand 0.10.2, rand 0.8.7, rand 0.9.4, rand_chacha 0.3.1, rand_chacha 0.9.0, rand_core 0.6.4, rand_core 0.9.5, rand_distr 0.6.0, rand_pcg 0.10.2
 
@@ -16219,9 +16460,9 @@ The Rand project includes code from the Rust project
 published under these same licenses.
 ````
 
-<a id="licence-text-235"></a>
+<a id="licence-text-237"></a>
 
-### T235
+### T237
 
 Used by: rand 0.10.2, rand 0.8.7, rand 0.9.4, rand_chacha 0.9.0
 
@@ -16404,9 +16645,9 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 ````
 
-<a id="licence-text-236"></a>
+<a id="licence-text-238"></a>
 
-### T236
+### T238
 
 Used by: rand 0.10.2, rand 0.8.7, rand 0.9.4, rand_chacha 0.3.1, rand_chacha 0.9.0, rand_core 0.6.4, rand_core 0.9.5
 
@@ -16439,9 +16680,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-237"></a>
+<a id="licence-text-239"></a>
 
-### T237
+### T239
 
 Used by: rand_core 0.10.1
 
@@ -16457,9 +16698,9 @@ licensed under the Apache License, Version 2.0 <LICENSE-APACHE> or
 <LICENSE-MIT> or <http://opensource.org/licenses/MIT>, at your option.
 ````
 
-<a id="licence-text-238"></a>
+<a id="licence-text-240"></a>
 
-### T238
+### T240
 
 Used by: rand_core 0.10.1, rand_core 0.6.4, rand_core 0.9.5, rand_distr 0.6.0, rand_pcg 0.10.2
 
@@ -16653,9 +16894,9 @@ APPENDIX: How to apply the Apache License to your work.
    identification within third-party archives.
 ````
 
-<a id="licence-text-239"></a>
+<a id="licence-text-241"></a>
 
-### T239
+### T241
 
 Used by: rand_core 0.10.1
 
@@ -16687,9 +16928,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-240"></a>
+<a id="licence-text-242"></a>
 
-### T240
+### T242
 
 Used by: rand_distr 0.6.0
 
@@ -16721,9 +16962,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-241"></a>
+<a id="licence-text-243"></a>
 
-### T241
+### T243
 
 Used by: rand_pcg 0.10.2
 
@@ -16756,9 +16997,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-242"></a>
+<a id="licence-text-244"></a>
 
-### T242
+### T244
 
 Used by: range-alloc 0.1.5
 
@@ -16786,9 +17027,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-243"></a>
+<a id="licence-text-245"></a>
 
-### T243
+### T245
 
 Used by: rav1e 0.8.1
 
@@ -16820,9 +17061,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ````
 
-<a id="licence-text-244"></a>
+<a id="licence-text-246"></a>
 
-### T244
+### T246
 
 Used by: ravif 0.13.0
 
@@ -16858,9 +17099,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ````
 
-<a id="licence-text-245"></a>
+<a id="licence-text-247"></a>
 
-### T245
+### T247
 
 Used by: raw-window-handle 0.6.2
 
@@ -16888,9 +17129,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-246"></a>
+<a id="licence-text-248"></a>
 
-### T246
+### T248
 
 Used by: raw-window-handle 0.6.2
 
@@ -16908,9 +17149,9 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ````
 
-<a id="licence-text-247"></a>
+<a id="licence-text-249"></a>
 
-### T247
+### T249
 
 Used by: redox_syscall 0.5.18
 
@@ -16939,9 +17180,9 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-248"></a>
+<a id="licence-text-250"></a>
 
-### T248
+### T250
 
 Used by: redox_users 0.4.6, redox_users 0.5.2
 
@@ -16969,9 +17210,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-249"></a>
+<a id="licence-text-251"></a>
 
-### T249
+### T251
 
 Used by: renderdoc-sys 1.1.0
 
@@ -17003,9 +17244,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-250"></a>
+<a id="licence-text-252"></a>
 
-### T250
+### T252
 
 Used by: reqwest 0.13.4
 
@@ -17213,9 +17454,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ````
 
-<a id="licence-text-251"></a>
+<a id="licence-text-253"></a>
 
-### T251
+### T253
 
 Used by: reqwest 0.13.4
 
@@ -17241,9 +17482,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ````
 
-<a id="licence-text-252"></a>
+<a id="licence-text-254"></a>
 
-### T252
+### T254
 
 Used by: rfd 0.16.0
 
@@ -17271,9 +17512,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-253"></a>
+<a id="licence-text-255"></a>
 
-### T253
+### T255
 
 Used by: rgb 0.8.53
 
@@ -17301,9 +17542,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-254"></a>
+<a id="licence-text-256"></a>
 
-### T254
+### T256
 
 Used by: ring 0.17.14
 
@@ -17319,9 +17560,9 @@ See src/polyfill/once_cell/LICENSE-APACHE and src/polyfill/once_cell/LICENSE-MIT
 for the license to code that was sourced from the once_cell project.
 ````
 
-<a id="licence-text-255"></a>
+<a id="licence-text-257"></a>
 
-### T255
+### T257
 
 Used by: ring 0.17.14
 
@@ -17599,9 +17840,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ````
 
-<a id="licence-text-256"></a>
+<a id="licence-text-258"></a>
 
-### T256
+### T258
 
 Used by: ring 0.17.14
 
@@ -17621,9 +17862,9 @@ OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ````
 
-<a id="licence-text-257"></a>
+<a id="licence-text-259"></a>
 
-### T257
+### T259
 
 Used by: rmcp 2.1.0, rmcp-macros 2.1.0
 
@@ -17846,9 +18087,9 @@ CC-BY-4.0. See https://creativecommons.org/licenses/by/4.0/legalcode for
 the full license text.
 ````
 
-<a id="licence-text-258"></a>
+<a id="licence-text-260"></a>
 
-### T258
+### T260
 
 Used by: rodio 0.21.1
 
@@ -18056,9 +18297,9 @@ Apache License
    limitations under the License.
 ````
 
-<a id="licence-text-259"></a>
+<a id="licence-text-261"></a>
 
-### T259
+### T261
 
 Used by: rustix 1.1.4
 
@@ -18094,9 +18335,9 @@ is licensed under:
 at your option.
 ````
 
-<a id="licence-text-260"></a>
+<a id="licence-text-262"></a>
 
-### T260
+### T262
 
 Used by: rustls-native-certs 0.8.4
 
@@ -18112,9 +18353,9 @@ respectively.  You may use this software under the terms of any
 of these licenses, at your option.
 ````
 
-<a id="licence-text-261"></a>
+<a id="licence-text-263"></a>
 
-### T261
+### T263
 
 Used by: rustls-pki-types 1.15.0
 
@@ -18322,9 +18563,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ````
 
-<a id="licence-text-262"></a>
+<a id="licence-text-264"></a>
 
-### T262
+### T264
 
 Used by: rustls-pki-types 1.15.0
 
@@ -18356,9 +18597,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-263"></a>
+<a id="licence-text-265"></a>
 
-### T263
+### T265
 
 Used by: rustls-platform-verifier 0.7.0, rustls-platform-verifier-android 0.1.1
 
@@ -18386,9 +18627,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-264"></a>
+<a id="licence-text-266"></a>
 
-### T264
+### T266
 
 Used by: rustls-webpki 0.103.13
 
@@ -18414,9 +18655,9 @@ The files under third-party/chromium are licensed as described in
 third-party/chromium/LICENSE.
 ````
 
-<a id="licence-text-265"></a>
+<a id="licence-text-267"></a>
 
-### T265
+### T267
 
 Used by: same-file 1.0.6, winapi-util 0.1.11
 
@@ -18444,9 +18685,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ````
 
-<a id="licence-text-266"></a>
+<a id="licence-text-268"></a>
 
-### T266
+### T268
 
 Used by: schannel 0.1.29
 
@@ -18460,9 +18701,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-267"></a>
+<a id="licence-text-269"></a>
 
-### T267
+### T269
 
 Used by: schemars 0.8.22, schemars 0.9.0, schemars 1.2.1, schemars_derive 0.8.22, schemars_derive 1.2.1
 
@@ -18490,9 +18731,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-268"></a>
+<a id="licence-text-270"></a>
 
-### T268
+### T270
 
 Used by: scopeguard 1.2.0
 
@@ -18524,9 +18765,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-269"></a>
+<a id="licence-text-271"></a>
 
-### T269
+### T271
 
 Used by: security-framework 3.7.0, security-framework-sys 2.17.0
 
@@ -18553,9 +18794,9 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-270"></a>
+<a id="licence-text-272"></a>
 
-### T270
+### T272
 
 Used by: serialize-to-javascript 0.1.2, serialize-to-javascript-impl 0.1.2
 
@@ -18583,9 +18824,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-271"></a>
+<a id="licence-text-273"></a>
 
-### T271
+### T273
 
 Used by: sha1 0.10.7, sha2 0.10.9
 
@@ -18619,9 +18860,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-272"></a>
+<a id="licence-text-274"></a>
 
-### T272
+### T274
 
 Used by: sharded-slab 0.1.7
 
@@ -18647,9 +18888,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ````
 
-<a id="licence-text-273"></a>
+<a id="licence-text-275"></a>
 
-### T273
+### T275
 
 Used by: simd-adler32 0.3.9
 
@@ -18677,9 +18918,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-274"></a>
+<a id="licence-text-276"></a>
 
-### T274
+### T276
 
 Used by: siphasher 1.0.3
 
@@ -18693,9 +18934,9 @@ http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
 option.
 ````
 
-<a id="licence-text-275"></a>
+<a id="licence-text-277"></a>
 
-### T275
+### T277
 
 Used by: slab 0.4.12
 
@@ -18727,9 +18968,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-276"></a>
+<a id="licence-text-278"></a>
 
-### T276
+### T278
 
 Used by: slotmap 1.1.1
 
@@ -18755,9 +18996,9 @@ the following restrictions:
  3. This notice may not be removed or altered from any source distribution.
 ````
 
-<a id="licence-text-277"></a>
+<a id="licence-text-279"></a>
 
-### T277
+### T279
 
 Used by: smallvec 1.15.2
 
@@ -18789,9 +19030,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-278"></a>
+<a id="licence-text-280"></a>
 
-### T278
+### T280
 
 Used by: softbuffer 0.4.8
 
@@ -18817,9 +19058,39 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-279"></a>
+<a id="licence-text-281"></a>
 
-### T279
+### T281
+
+Used by: sse-stream 0.2.6
+
+````text
+MIT License
+
+Copyright (c) 2024 4t145
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+````
+
+<a id="licence-text-282"></a>
+
+### T282
 
 Used by: stable_deref_trait 1.2.1
 
@@ -18851,9 +19122,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-280"></a>
+<a id="licence-text-283"></a>
 
-### T280
+### T283
 
 Used by: static_assertions 1.1.0
 
@@ -18881,9 +19152,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-281"></a>
+<a id="licence-text-284"></a>
 
-### T281
+### T284
 
 Used by: string-interner 0.20.0
 
@@ -18905,9 +19176,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ````
 
-<a id="licence-text-282"></a>
+<a id="licence-text-285"></a>
 
-### T282
+### T285
 
 Used by: string-interner 0.20.0
 
@@ -18935,9 +19206,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-283"></a>
+<a id="licence-text-286"></a>
 
-### T283
+### T286
 
 Used by: strsim 0.11.1
 
@@ -18967,9 +19238,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-284"></a>
+<a id="licence-text-287"></a>
 
-### T284
+### T287
 
 Used by: subtle 2.6.1
 
@@ -19005,9 +19276,9 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ````
 
-<a id="licence-text-285"></a>
+<a id="licence-text-288"></a>
 
-### T285
+### T288
 
 Used by: swift-rs 1.0.7
 
@@ -19215,9 +19486,9 @@ Apache License
    limitations under the License.
 ````
 
-<a id="licence-text-286"></a>
+<a id="licence-text-289"></a>
 
-### T286
+### T289
 
 Used by: swift-rs 1.0.7
 
@@ -19243,9 +19514,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-287"></a>
+<a id="licence-text-290"></a>
 
-### T287
+### T290
 
 Used by: synstructure 0.13.2
 
@@ -19259,9 +19530,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-288"></a>
+<a id="licence-text-291"></a>
 
-### T288
+### T291
 
 Used by: tao 0.35.3, tao-macros 0.1.3
 
@@ -19286,9 +19557,9 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/tao.git
 Creator: Person: Daniel Thompson-Yvetot
 ````
 
-<a id="licence-text-289"></a>
+<a id="licence-text-292"></a>
 
-### T289
+### T292
 
 Used by: tar 0.4.46
 
@@ -19320,9 +19591,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-290"></a>
+<a id="licence-text-293"></a>
 
-### T290
+### T293
 
 Used by: @tauri-apps/api 2.11.1, tauri 2.11.5, tauri-codegen 2.6.3, tauri-macros 2.6.3, tauri-plugin-dialog 2.7.1, tauri-plugin-fs 2.5.1, tauri-runtime 2.11.3, tauri-runtime-wry 2.11.4, tauri-utils 2.9.3
 
@@ -19350,9 +19621,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-291"></a>
+<a id="licence-text-294"></a>
 
-### T291
+### T294
 
 Used by: @tauri-apps/plugin-dialog 2.7.1, tauri-plugin-dialog 2.7.1, tauri-plugin-fs 2.5.1
 
@@ -19379,9 +19650,9 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/tauri.git
 Creator: Person: Daniel Thompson-Yvetot
 ````
 
-<a id="licence-text-292"></a>
+<a id="licence-text-295"></a>
 
-### T292
+### T295
 
 Used by: tendril 0.5.1
 
@@ -19413,9 +19684,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-293"></a>
+<a id="licence-text-296"></a>
 
-### T293
+### T296
 
 Used by: tiff 0.11.3
 
@@ -19443,9 +19714,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-294"></a>
+<a id="licence-text-297"></a>
 
-### T294
+### T297
 
 Used by: time 0.3.53, time-core 0.1.9, time-macros 0.2.31
 
@@ -19471,9 +19742,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-295"></a>
+<a id="licence-text-298"></a>
 
-### T295
+### T298
 
 Used by: tinyvec_macros 0.1.1
 
@@ -19681,9 +19952,9 @@ Apache License
    limitations under the License.
 ````
 
-<a id="licence-text-296"></a>
+<a id="licence-text-299"></a>
 
-### T296
+### T299
 
 Used by: tinyvec_macros 0.1.1
 
@@ -19711,9 +19982,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-297"></a>
+<a id="licence-text-300"></a>
 
-### T297
+### T300
 
 Used by: tinyvec_macros 0.1.1
 
@@ -19739,11 +20010,11 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ````
 
-<a id="licence-text-298"></a>
+<a id="licence-text-301"></a>
 
-### T298
+### T301
 
-Used by: tokio 1.52.3, tokio-util 0.7.18
+Used by: tokio 1.52.3, tokio-stream 0.1.19, tokio-util 0.7.18
 
 ````text
 MIT License
@@ -19769,9 +20040,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-299"></a>
+<a id="licence-text-302"></a>
 
-### T299
+### T302
 
 Used by: tokio-macros 2.7.0
 
@@ -19800,9 +20071,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-300"></a>
+<a id="licence-text-303"></a>
 
-### T300
+### T303
 
 Used by: tokio-rustls 0.26.4
 
@@ -20010,9 +20281,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ````
 
-<a id="licence-text-301"></a>
+<a id="licence-text-304"></a>
 
-### T301
+### T304
 
 Used by: tokio-rustls 0.26.4
 
@@ -20044,9 +20315,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-302"></a>
+<a id="licence-text-305"></a>
 
-### T302
+### T305
 
 Used by: tokio-tungstenite 0.26.2
 
@@ -20073,9 +20344,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ````
 
-<a id="licence-text-303"></a>
+<a id="licence-text-306"></a>
 
-### T303
+### T306
 
 Used by: tower 0.5.3, tower-layer 0.3.3, tower-service 0.3.3
 
@@ -20107,9 +20378,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-304"></a>
+<a id="licence-text-307"></a>
 
-### T304
+### T307
 
 Used by: tower-http 0.6.11
 
@@ -20141,9 +20412,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-305"></a>
+<a id="licence-text-308"></a>
 
-### T305
+### T308
 
 Used by: tracing 0.1.44, tracing-attributes 0.1.31, tracing-core 0.1.36, tracing-log 0.2.0, tracing-subscriber 0.3.23
 
@@ -20175,9 +20446,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-306"></a>
+<a id="licence-text-309"></a>
 
-### T306
+### T309
 
 Used by: tract-core 0.23.8, tract-data 0.23.8, tract-extra 0.23.8, tract-hir 0.23.8, tract-linalg 0.23.8, tract-nnef 0.23.8, tract-onnx 0.23.8, tract-onnx-opl 0.23.8, tract-transformers 0.23.8
 
@@ -20196,9 +20467,9 @@ for inclusion in the work by you, as defined in the Apache-2.0 license, shall
 be dual licensed as above, without any additional terms or conditions.
 ````
 
-<a id="licence-text-307"></a>
+<a id="licence-text-310"></a>
 
-### T307
+### T310
 
 Used by: transpose 0.2.3
 
@@ -20406,9 +20677,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ````
 
-<a id="licence-text-308"></a>
+<a id="licence-text-311"></a>
 
-### T308
+### T311
 
 Used by: transpose 0.2.3
 
@@ -20440,9 +20711,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-309"></a>
+<a id="licence-text-312"></a>
 
-### T309
+### T312
 
 Used by: tray-icon 0.24.1
 
@@ -20468,9 +20739,9 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/tray-icon.git
 Creator: Person: Daniel Thompson-Yvetot
 ````
 
-<a id="licence-text-310"></a>
+<a id="licence-text-313"></a>
 
-### T310
+### T313
 
 Used by: try-lock 0.2.5
 
@@ -20497,9 +20768,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ````
 
-<a id="licence-text-311"></a>
+<a id="licence-text-314"></a>
 
-### T311
+### T314
 
 Used by: ttf-parser 0.25.1
 
@@ -20525,9 +20796,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ````
 
-<a id="licence-text-312"></a>
+<a id="licence-text-315"></a>
 
-### T312
+### T315
 
 Used by: tungstenite 0.26.2
 
@@ -20554,9 +20825,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ````
 
-<a id="licence-text-313"></a>
+<a id="licence-text-316"></a>
 
-### T313
+### T316
 
 Used by: typenum 1.20.1
 
@@ -20564,9 +20835,9 @@ Used by: typenum 1.20.1
 MIT OR Apache-2.0
 ````
 
-<a id="licence-text-314"></a>
+<a id="licence-text-317"></a>
 
-### T314
+### T317
 
 Used by: typenum 1.20.1
 
@@ -20774,9 +21045,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ````
 
-<a id="licence-text-315"></a>
+<a id="licence-text-318"></a>
 
-### T315
+### T318
 
 Used by: typenum 1.20.1
 
@@ -20804,9 +21075,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-316"></a>
+<a id="licence-text-319"></a>
 
-### T316
+### T319
 
 Used by: unicode-ident 1.0.24
 
@@ -20852,9 +21123,9 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 ````
 
-<a id="licence-text-317"></a>
+<a id="licence-text-320"></a>
 
-### T317
+### T320
 
 Used by: unicode-segmentation 1.13.3, unicode-width 0.2.2, unicode-xid 0.2.6
 
@@ -20868,9 +21139,9 @@ notice may not be copied, modified, or distributed except
 according to those terms.
 ````
 
-<a id="licence-text-318"></a>
+<a id="licence-text-321"></a>
 
-### T318
+### T321
 
 Used by: untrusted 0.9.0
 
@@ -20890,9 +21161,9 @@ Used by: untrusted 0.9.0
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ````
 
-<a id="licence-text-319"></a>
+<a id="licence-text-322"></a>
 
-### T319
+### T322
 
 Used by: urlpattern 0.3.0
 
@@ -20920,9 +21191,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-320"></a>
+<a id="licence-text-323"></a>
 
-### T320
+### T323
 
 Used by: utf8_iter 1.0.4
 
@@ -20971,9 +21242,9 @@ licensed under the Apache License, Version 2.0 <LICENSE-APACHE> or
 <LICENSE-MIT> or <http://opensource.org/licenses/MIT>, at your option.
 ````
 
-<a id="licence-text-321"></a>
+<a id="licence-text-324"></a>
 
-### T321
+### T324
 
 Used by: utf8parse 0.2.2
 
@@ -21005,9 +21276,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-322"></a>
+<a id="licence-text-325"></a>
 
-### T322
+### T325
 
 Used by: uuid 1.23.4
 
@@ -21040,9 +21311,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-323"></a>
+<a id="licence-text-326"></a>
 
-### T323
+### T326
 
 Used by: v_frame 0.3.9
 
@@ -21074,9 +21345,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ````
 
-<a id="licence-text-324"></a>
+<a id="licence-text-327"></a>
 
-### T324
+### T327
 
 Used by: valuable 0.1.1
 
@@ -21108,9 +21379,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-325"></a>
+<a id="licence-text-328"></a>
 
-### T325
+### T328
 
 Used by: want 0.3.1
 
@@ -21136,9 +21407,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ````
 
-<a id="licence-text-326"></a>
+<a id="licence-text-329"></a>
 
-### T326
+### T329
 
 Used by: wayland-sys 0.31.11
 
@@ -21164,9 +21435,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ````
 
-<a id="licence-text-327"></a>
+<a id="licence-text-330"></a>
 
-### T327
+### T330
 
 Used by: web-time 1.1.0
 
@@ -21374,9 +21645,9 @@ Apache License
    limitations under the License.
 ````
 
-<a id="licence-text-328"></a>
+<a id="licence-text-331"></a>
 
-### T328
+### T331
 
 Used by: web-time 1.1.0
 
@@ -21404,9 +21675,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-329"></a>
+<a id="licence-text-332"></a>
 
-### T329
+### T332
 
 Used by: webkit2gtk 2.0.2
 
@@ -21433,9 +21704,9 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-330"></a>
+<a id="licence-text-333"></a>
 
-### T330
+### T333
 
 Used by: webkit2gtk-sys 2.0.2
 
@@ -21460,9 +21731,9 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-331"></a>
+<a id="licence-text-334"></a>
 
-### T331
+### T334
 
 Used by: webpki-root-certs 1.0.8
 
@@ -21530,9 +21801,9 @@ of Data, including for example machine learning models and models'
 insights.
 ````
 
-<a id="licence-text-332"></a>
+<a id="licence-text-335"></a>
 
-### T332
+### T335
 
 Used by: webview2-com 0.38.2, webview2-com-macros 0.8.1, webview2-com-sys 0.38.2
 
@@ -21560,9 +21831,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-333"></a>
+<a id="licence-text-336"></a>
 
-### T333
+### T336
 
 Used by: weezl 0.1.12
 
@@ -21590,9 +21861,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-334"></a>
+<a id="licence-text-337"></a>
 
-### T334
+### T337
 
 Used by: winapi 0.3.9, winapi-i686-pc-windows-gnu 0.4.0, winapi-x86_64-pc-windows-gnu 0.4.0
 
@@ -21618,9 +21889,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-335"></a>
+<a id="licence-text-338"></a>
 
-### T335
+### T338
 
 Used by: window-vibrancy 0.6.0
 
@@ -21648,9 +21919,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-336"></a>
+<a id="licence-text-339"></a>
 
-### T336
+### T339
 
 Used by: window-vibrancy 0.6.0
 
@@ -21676,9 +21947,9 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/window-vibrancy.git
 Creator: Person: Daniel Thompson-Yvetot
 ````
 
-<a id="licence-text-337"></a>
+<a id="licence-text-340"></a>
 
-### T337
+### T340
 
 Used by: windows 0.54.0, windows 0.61.3, windows 0.62.2, windows-collections 0.2.0, windows-collections 0.3.2, windows-core 0.54.0, windows-core 0.61.2, windows-core 0.62.2, windows-future 0.2.1, windows-future 0.3.2, windows-implement 0.60.2, windows-interface 0.59.3, windows-link 0.1.3, windows-link 0.2.1, windows-numerics 0.2.0, windows-numerics 0.3.1, windows-result 0.1.2, windows-result 0.3.4, windows-result 0.4.1, windows-strings 0.4.2, windows-strings 0.5.1, windows-sys 0.45.0, windows-sys 0.52.0, windows-sys 0.59.0, windows-sys 0.60.2, windows-sys 0.61.2, windows-targets 0.42.2, windows-targets 0.52.6, windows-targets 0.53.5, windows-threading 0.1.0, windows-threading 0.2.1, windows-version 0.1.7, windows_aarch64_gnullvm 0.42.2, windows_aarch64_gnullvm 0.52.6, windows_aarch64_gnullvm 0.53.1, windows_aarch64_msvc 0.42.2, windows_aarch64_msvc 0.52.6, windows_aarch64_msvc 0.53.1, windows_i686_gnu 0.42.2, windows_i686_gnu 0.52.6, windows_i686_gnu 0.53.1, windows_i686_gnullvm 0.52.6, windows_i686_gnullvm 0.53.1, windows_i686_msvc 0.42.2, windows_i686_msvc 0.52.6, windows_i686_msvc 0.53.1, windows_x86_64_gnu 0.42.2, windows_x86_64_gnu 0.52.6, windows_x86_64_gnu 0.53.1, windows_x86_64_gnullvm 0.42.2, windows_x86_64_gnullvm 0.52.6, windows_x86_64_gnullvm 0.53.1, windows_x86_64_msvc 0.42.2, windows_x86_64_msvc 0.52.6, windows_x86_64_msvc 0.53.1
 
@@ -21886,9 +22157,9 @@ Apache License
    limitations under the License.
 ````
 
-<a id="licence-text-338"></a>
+<a id="licence-text-341"></a>
 
-### T338
+### T341
 
 Used by: windows 0.54.0, windows 0.61.3, windows 0.62.2, windows-collections 0.2.0, windows-collections 0.3.2, windows-core 0.54.0, windows-core 0.61.2, windows-core 0.62.2, windows-future 0.2.1, windows-future 0.3.2, windows-implement 0.60.2, windows-interface 0.59.3, windows-link 0.1.3, windows-link 0.2.1, windows-numerics 0.2.0, windows-numerics 0.3.1, windows-result 0.1.2, windows-result 0.3.4, windows-result 0.4.1, windows-strings 0.4.2, windows-strings 0.5.1, windows-sys 0.45.0, windows-sys 0.52.0, windows-sys 0.59.0, windows-sys 0.60.2, windows-sys 0.61.2, windows-targets 0.42.2, windows-targets 0.52.6, windows-targets 0.53.5, windows-threading 0.1.0, windows-threading 0.2.1, windows-version 0.1.7, windows_aarch64_gnullvm 0.42.2, windows_aarch64_gnullvm 0.52.6, windows_aarch64_gnullvm 0.53.1, windows_aarch64_msvc 0.42.2, windows_aarch64_msvc 0.52.6, windows_aarch64_msvc 0.53.1, windows_i686_gnu 0.42.2, windows_i686_gnu 0.52.6, windows_i686_gnu 0.53.1, windows_i686_gnullvm 0.52.6, windows_i686_gnullvm 0.53.1, windows_i686_msvc 0.42.2, windows_i686_msvc 0.52.6, windows_i686_msvc 0.53.1, windows_x86_64_gnu 0.42.2, windows_x86_64_gnu 0.52.6, windows_x86_64_gnu 0.53.1, windows_x86_64_gnullvm 0.42.2, windows_x86_64_gnullvm 0.52.6, windows_x86_64_gnullvm 0.53.1, windows_x86_64_msvc 0.42.2, windows_x86_64_msvc 0.52.6, windows_x86_64_msvc 0.53.1
 
@@ -21916,9 +22187,9 @@ MIT License
     SOFTWARE
 ````
 
-<a id="licence-text-339"></a>
+<a id="licence-text-342"></a>
 
-### T339
+### T342
 
 Used by: winnow 0.5.40, winnow 0.7.15, winnow 1.0.3
 
@@ -21943,9 +22214,9 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-340"></a>
+<a id="licence-text-343"></a>
 
-### T340
+### T343
 
 Used by: wry 0.55.1
 
@@ -21973,9 +22244,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-341"></a>
+<a id="licence-text-344"></a>
 
-### T341
+### T344
 
 Used by: wry 0.55.1
 
@@ -22002,9 +22273,9 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/wry.git
 Creator: Person: Daniel Thompson-Yvetot
 ````
 
-<a id="licence-text-342"></a>
+<a id="licence-text-345"></a>
 
-### T342
+### T345
 
 Used by: xattr 1.6.1
 
@@ -22036,9 +22307,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-343"></a>
+<a id="licence-text-346"></a>
 
-### T343
+### T346
 
 Used by: y4m 0.8.0
 
@@ -22067,9 +22338,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-344"></a>
+<a id="licence-text-347"></a>
 
-### T344
+### T347
 
 Used by: zerocopy 0.8.53, zerocopy-derive 0.8.53
 
@@ -22277,9 +22548,9 @@ Apache License
    limitations under the License.
 ````
 
-<a id="licence-text-345"></a>
+<a id="licence-text-348"></a>
 
-### T345
+### T348
 
 Used by: zerocopy 0.8.53, zerocopy-derive 0.8.53
 
@@ -22310,9 +22581,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ````
 
-<a id="licence-text-346"></a>
+<a id="licence-text-349"></a>
 
-### T346
+### T349
 
 Used by: zerocopy 0.8.53, zerocopy-derive 0.8.53
 
@@ -22344,9 +22615,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-347"></a>
+<a id="licence-text-350"></a>
 
-### T347
+### T350
 
 Used by: zeroize 1.9.0
 
@@ -22378,9 +22649,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-348"></a>
+<a id="licence-text-351"></a>
 
-### T348
+### T351
 
 Used by: zstd 0.13.3, zstd-safe 7.2.4, zstd-sys 2.0.16+zstd.1.5.7
 
@@ -22395,9 +22666,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-349"></a>
+<a id="licence-text-352"></a>
 
-### T349
+### T352
 
 Used by: zstd-safe 7.2.4, zstd-sys 2.0.16+zstd.1.5.7
 
@@ -22405,9 +22676,9 @@ Used by: zstd-safe 7.2.4, zstd-sys 2.0.16+zstd.1.5.7
 MIT or Apache-2.0
 ````
 
-<a id="licence-text-350"></a>
+<a id="licence-text-353"></a>
 
-### T350
+### T353
 
 Used by: zstd-sys 2.0.16+zstd.1.5.7
 
@@ -22446,9 +22717,9 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ````
 
-<a id="licence-text-351"></a>
+<a id="licence-text-354"></a>
 
-### T351
+### T354
 
 Used by: zune-core 0.5.1, zune-jpeg 0.5.15
 
@@ -22476,9 +22747,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-352"></a>
+<a id="licence-text-355"></a>
 
-### T352
+### T355
 
 Used by: zune-core 0.5.1, zune-jpeg 0.5.15
 
@@ -22504,9 +22775,9 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ````
 
-<a id="licence-text-353"></a>
+<a id="licence-text-356"></a>
 
-### T353
+### T356
 
 Used by: zune-inflate 0.2.54
 
@@ -22528,9 +22799,9 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ````
 
-<a id="licence-text-354"></a>
+<a id="licence-text-357"></a>
 
-### T354
+### T357
 
 Used by: zune-inflate 0.2.54
 
@@ -22545,9 +22816,9 @@ Used by: zune-inflate 0.2.54
 // according to those terms
 ````
 
-<a id="licence-text-355"></a>
+<a id="licence-text-358"></a>
 
-### T355
+### T358
 
 Used by: @fontsource/source-sans-3 5.2.9
 
@@ -22647,9 +22918,9 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ````
 
-<a id="licence-text-356"></a>
+<a id="licence-text-359"></a>
 
-### T356
+### T359
 
 Used by: fast-json-patch 3.1.1
 
@@ -22678,9 +22949,9 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ````
 
-<a id="licence-text-357"></a>
+<a id="licence-text-360"></a>
 
-### T357
+### T360
 
 Used by: lucide-react 1.24.0
 
@@ -22730,9 +23001,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-358"></a>
+<a id="licence-text-361"></a>
 
-### T358
+### T361
 
 Used by: react 19.2.7, react-dom 19.2.7, scheduler 0.27.0
 
@@ -22760,9 +23031,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-359"></a>
+<a id="licence-text-362"></a>
 
-### T359
+### T362
 
 Used by: zustand 5.0.14
 
@@ -22790,9 +23061,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-360"></a>
+<a id="licence-text-363"></a>
 
-### T360
+### T363
 
 Used by: YuNet face detection model (face_detection_yunet_2026may.onnx)
 
@@ -22820,9 +23091,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ````
 
-<a id="licence-text-361"></a>
+<a id="licence-text-364"></a>
 
-### T361
+### T364
 
 Used by: Roboto Bold font (Roboto-Bold.ttf)
 
