@@ -813,26 +813,68 @@ fn command_reference() -> String {
         .find("pub enum Command {")
         .and_then(|start| {
             DOC[start..]
-                .find(
-                    "
-}",
-                )
+                .find("\n}")
                 .map(|end| &DOC[start..start + end + 2])
         })
         .unwrap_or("(command reference unavailable: docs/command-api.md changed shape)");
-    format!(
-        "JSON form of a Command: an object whose \"command\" field is the variant name, plus          that variant's fields under the same snake_case names. `Id` is a UUID string from          get_project. `Option<T>` fields may be omitted. Times are seconds (f64). Enum values          are lowercase / snake_case strings (TrackKind: \"video\" | \"audio\" | \"caption\").          Caption style ids: \"tiktok-bold-yellow\", \"tiktok-box\", \"youtube-lower-thirds\"          (and any from loaded packs).
 
-         Examples:
-         {{\"command\":\"AddTrack\",\"kind\":\"video\",\"name\":\"V2\"}}
-         {{\"command\":\"AddCaption\",\"track_id\":\"<uuid>\",\"text\":\"Hi\",\"position_secs\":0.0,\"duration_secs\":2.0,\"style_id\":\"tiktok-box\"}}
-         {{\"command\":\"TrimClip\",\"track_id\":\"<uuid>\",\"clip_id\":\"<uuid>\",\"new_source_out_secs\":5.0}}
+    let effects: Vec<String> = renderly_core::compose::BUILTIN_EFFECT_IDS
+        .iter()
+        .map(|id| {
+            let params = renderly_core::compose::default_params(id);
+            let params = serde_json::to_string(&params).unwrap_or_default();
+            format!("- {id} (params and defaults: {params})")
+        })
+        .collect();
+    let transitions: Vec<&str> = renderly_core::project::TransitionKind::ALL
+        .iter()
+        .map(|k| k.as_str())
+        .collect();
+    let styles = renderly_core::captions::BUILTIN_STYLES.join(", ");
 
-         Variants (Rust syntax, from docs/command-api.md):
-
-{block}
-"
-    )
+    let mut out = String::new();
+    out.push_str(
+        "JSON form of a Command: an object whose \"command\" field is the variant name, plus \
+         that variant's fields under the same snake_case names. `Id` is a UUID string from \
+         get_project. `Option<T>` fields may be omitted. Times are seconds (f64). Enum values \
+         are lowercase / snake_case strings (TrackKind: \"video\" | \"audio\" | \"caption\").\n\n",
+    );
+    out.push_str("Examples:\n");
+    out.push_str("{\"command\":\"AddTrack\",\"kind\":\"video\",\"name\":\"V2\"}\n");
+    out.push_str(
+        "{\"command\":\"AddCaption\",\"track_id\":\"<uuid>\",\"text\":\"Hi\",\"position_secs\":0.0,\
+         \"duration_secs\":2.0,\"style_id\":\"tiktok-box\"}\n",
+    );
+    out.push_str(
+        "{\"command\":\"TrimClip\",\"track_id\":\"<uuid>\",\"clip_id\":\"<uuid>\",\
+         \"new_source_out_secs\":5.0}\n",
+    );
+    out.push_str(
+        "{\"command\":\"SetClipEffects\",\"track_id\":\"<uuid>\",\"clip_id\":\"<uuid>\",\
+         \"effects\":[{\"id\":\"<new uuid>\",\"effect_id\":\"builtin:color_adjust\",\
+         \"enabled\":true,\"params\":{\"saturation\":0.0}}]}\n",
+    );
+    out.push_str(
+        "{\"command\":\"SetClipTransition\",\"track_id\":\"<uuid>\",\"clip_id\":\"<uuid>\",\
+         \"transition\":{\"kind\":\"crossfade\",\"duration_secs\":0.5}}\n\n",
+    );
+    out.push_str(
+        "SetClipEffects replaces the clip's whole effect list: read the current list from \
+         get_project and send it back with your change. Params left out use their defaults. \
+         Pack effects (LUTs) are \"pack:<pack_id>:lut:<lut_id>\" for packs the project has \
+         loaded.\n\n",
+    );
+    out.push_str("Built-in effects:\n");
+    out.push_str(&effects.join("\n"));
+    out.push_str("\n\nTransition kinds: ");
+    out.push_str(&transitions.join(", "));
+    out.push_str("\nCaption style ids: ");
+    out.push_str(&styles);
+    out.push_str(" (and any from loaded packs)\n\n");
+    out.push_str("Variants (Rust syntax, from docs/command-api.md):\n\n");
+    out.push_str(block);
+    out.push('\n');
+    out
 }
 
 fn media_path(project: &Project, media_id: uuid::Uuid) -> Result<std::path::PathBuf, String> {
@@ -911,6 +953,13 @@ mod tests {
             "block must run to the end of the enum"
         );
         assert!(!text.contains("unavailable"));
+        // Effect ids and their parameters, so agents do not search the disk for them.
+        assert!(
+            text.contains("builtin:color_adjust") && text.contains("saturation"),
+            "{text}"
+        );
+        assert!(text.contains("crossfade"), "{text}");
+        assert!(text.contains("tiktok-box"), "{text}");
     }
 
     fn temp_path(tag: &str) -> String {
