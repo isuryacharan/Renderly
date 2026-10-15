@@ -9,9 +9,13 @@ description = "Headless engine for Renderly: project model, command API, media I
 # Off by default. Links FFmpeg's libraries in-process for media probing (see
 # docs/linked-ffmpeg.md). Needs FFmpeg dev libraries and libclang at build time.
 linked-ffmpeg = ["dep:ffmpeg-the-third"]
+# Off by default. Derives `schemars::JsonSchema` on the command API types so the app can publish
+# the real `Command` schema to agents (renderly-app enables it). Not part of the wasm build.
+schema = ["dep:schemars"]
 
 [dependencies]
 ab_glyph = "0.2.32"
+schemars = { version = "1.2.1", optional = true, features = ["uuid1"] }
 bytemuck = { version = "1.25.0", features = ["derive"] }
 serde.workspace = true
 serde_json.workspace = true

@@ -12,15 +12,25 @@
 //! - `--input-format stream-json`: user turns are read from stdin, one JSON object per line.
 //! - `--output-format stream-json --verbose`: events are written as NDJSON to stdout.
 //! - `--include-partial-messages`: assistant text arrives as `stream_event` deltas.
-//! - `--mcp-config <file>` + `--strict-mcp-config`: `renderly` is the only MCP server. The
-//!   config is written to a file (not passed inline) so Windows `.cmd` shims get no quoting.
-//! - `--permission-prompt-tool mcp__renderly__permission_prompt`: Claude Code calls this MCP
-//!   tool (served by `renderly-mcp`) for every tool call that is not pre-allowed. The reply
-//!   text is JSON `{"behavior":"allow","updatedInput":…}` or `{"behavior":"deny","message":…}`.
-//!   This is the documented mechanism; the reply shape follows the documented `canUseTool`
-//!   contract, and it has not been checked against the real binary.
-//! - `--allowedTools <csv>`: read-only Renderly perception tools run without a prompt.
-//! - `--append-system-prompt-file <path>`: Renderly's system prompt, appended to the default.
+//! - `--mcp-config <file>` + `--strict-mcp-config`: `renderly` is the only MCP server, an
+//!   in-process Streamable HTTP endpoint on 127.0.0.1 with a bearer token (see `mcp_http.rs`).
+//!   The config is written to a file (not passed inline) so Windows shims get no quoting.
+//! - `--setting-sources ""`, `--disable-slash-commands`, and a scratch working directory: no
+//!   user, project or local settings, hooks, plugins, skills or project CLAUDE.md. Auth and
+//!   the model still come from the user's own login. (`--safe-mode` also disables the MCP
+//!   config, so it is not used. Whether a user-level `~/.claude/CLAUDE.md` still loads is not
+//!   verified; see docs/agent-chat-design.md.)
+//! - `--system-prompt-file <path>`: Renderly's brief REPLACES Claude Code's coding prompt.
+//!   (The flag is present in the installed binary; `--system-prompt-file` is listed in the
+//!   binary's option table, verified with `Select-String` on `claude.exe`.)
+//! - `--tools Read,Grep,Glob` by default (read-only built-ins). With "Let the agent use its own
+//!   tools" on, `--tools default` (all built-ins), and each still asks via the permission tool.
+//! - `--model <alias>` and `--effort <level>`: chosen in the panel, validated before use.
+//! - `--permission-prompt-tool mcp__renderly__permission_prompt`: Claude Code asks this tool
+//!   for built-in tool calls that are not pre-allowed. Renderly's own tools are pre-allowed
+//!   and never prompt. The reply is JSON `{"behavior":"allow","updatedInput":…}` or
+//!   `{"behavior":"deny","message":…}`.
+//! - `--allowedTools <csv>`: Renderly's tools and the read-only built-ins run without a prompt.
 //! - `--session-id <uuid>` on the first launch, `--resume <uuid>` after a cancel or crash.
 //!
 //! Output messages (`type` field):
@@ -38,8 +48,8 @@
 //! with `--resume`, which keeps the conversation.
 
 use super::driver::{
-    json_line, mcp_server_command, project_dir, write_system_prompt, AgentDriver, AgentId,
-    AgentSession, SessionConfig,
+    json_line, write_system_prompt, AgentDriver, AgentId, AgentSession, LaunchOptions,
+    McpEndpointInfo, SessionConfig,
 };
 use super::events::{summarize, AgentEnvelope, AgentEvent, EventSink};
 use super::process::{self, StderrTail};
@@ -54,20 +64,11 @@ use std::sync::Arc;
 /// (`mcp__<server>__<tool>`).
 pub const PERMISSION_PROMPT_TOOL: &str = "mcp__renderly__permission_prompt";
 
-/// Renderly's read-only perception tools: pre-allowed so they never prompt.
-pub const PRE_ALLOWED_TOOLS: &[&str] = &[
-    "describe_commands",
-    "get_project",
-    "get_editor_status",
-    "render_frame",
-    "get_transcript",
-    "detect_silence",
-    "detect_scenes",
-    "get_audio_peaks",
-    "probe_media",
-    "list_models",
-    "get_background_matte_status",
-];
+/// Renderly's tools: pre-allowed, so they never prompt. They run in-process in the app.
+pub const PRE_ALLOWED_TOOLS: &[&str] = &["edit", "timeline", "look", "find_media", "assets"];
+
+/// Claude Code's read-only built-ins. Always available and never prompt.
+pub const READ_ONLY_BUILTINS: &[&str] = &["Read", "Grep", "Glob"];
 
 pub struct ClaudeDriver;
 
@@ -82,6 +83,7 @@ impl AgentDriver for ClaudeDriver {
             None => super::process::resolve_program(AgentId::ClaudeCode.program_name())
                 .ok_or("Claude Code (claude) is not installed or not on PATH")?,
         };
+        let options = cfg.options.clone().validated()?;
         let mcp_config = write_mcp_config(cfg)?;
         let system_prompt_file = write_system_prompt(cfg)?;
         let mut session = ClaudeSession {
@@ -89,6 +91,7 @@ impl AgentDriver for ClaudeDriver {
             program,
             mcp_config,
             system_prompt_file,
+            options,
             launched_once: false,
             child: None,
             stdin: None,
@@ -101,39 +104,53 @@ impl AgentDriver for ClaudeDriver {
     }
 }
 
-/// `claude` MCP config (JSON file): `renderly` is the only server, started with `--project`.
-pub fn mcp_config_json(mcp_binary: &str, project_args: &[String]) -> Value {
+/// `claude` MCP config (JSON file): `renderly` is the only server, the in-process HTTP endpoint,
+/// called with the session's bearer token.
+pub fn mcp_config_json(endpoint: &McpEndpointInfo) -> Value {
     json!({
         "mcpServers": {
             "renderly": {
-                "type": "stdio",
-                "command": mcp_binary,
-                "args": project_args,
+                "type": "http",
+                "url": endpoint.url,
+                "headers": { "Authorization": format!("Bearer {}", endpoint.token) },
             }
         }
     })
 }
 
 fn write_mcp_config(cfg: &SessionConfig) -> Result<PathBuf, String> {
+    let endpoint = cfg
+        .mcp_endpoint
+        .as_ref()
+        .ok_or("the Renderly tool server is not running for this session")?;
     std::fs::create_dir_all(&cfg.scratch_dir).map_err(|e| format!("scratch dir: {e}"))?;
-    let (command, args) = mcp_server_command(cfg);
     let path = cfg.scratch_dir.join(format!("{}-mcp.json", cfg.session_id));
-    let body = mcp_config_json(&command, &args);
+    let body = mcp_config_json(endpoint);
     std::fs::write(&path, body.to_string()).map_err(|e| format!("write MCP config: {e}"))?;
     Ok(path)
 }
 
+/// Inputs for one `claude` launch. Borrowed so the argv builder stays a pure function.
+pub struct ClaudeLaunch<'a> {
+    pub session_id: &'a str,
+    pub mcp_config: &'a Path,
+    pub system_prompt_file: &'a Path,
+    pub resume: bool,
+    pub options: &'a LaunchOptions,
+}
+
 /// Build the argv for one `claude` launch. Pure, so the flag set is unit-tested.
-pub fn claude_args(
-    session_id: &str,
-    mcp_config: &Path,
-    system_prompt_file: &Path,
-    resume: bool,
-) -> Vec<String> {
+pub fn claude_args(launch: &ClaudeLaunch) -> Vec<String> {
     let allowed: Vec<String> = PRE_ALLOWED_TOOLS
         .iter()
         .map(|t| format!("mcp__renderly__{t}"))
+        .chain(READ_ONLY_BUILTINS.iter().map(|t| t.to_string()))
         .collect();
+    let builtin_tools = if launch.options.native_tools {
+        "default".to_string()
+    } else {
+        READ_ONLY_BUILTINS.join(",")
+    };
     let mut args: Vec<String> = vec![
         "-p".into(),
         "--input-format".into(),
@@ -143,19 +160,29 @@ pub fn claude_args(
         "--verbose".into(),
         "--include-partial-messages".into(),
         "--mcp-config".into(),
-        mcp_config.to_string_lossy().into_owned(),
+        launch.mcp_config.to_string_lossy().into_owned(),
         "--strict-mcp-config".into(),
+        // No user, project or local settings; no hooks, plugins or skills; no project CLAUDE.md.
+        "--setting-sources".into(),
+        String::new(),
+        "--disable-slash-commands".into(),
+        "--tools".into(),
+        builtin_tools,
         "--permission-prompt-tool".into(),
         PERMISSION_PROMPT_TOOL.into(),
-        "--append-system-prompt-file".into(),
-        system_prompt_file.to_string_lossy().into_owned(),
+        "--system-prompt-file".into(),
+        launch.system_prompt_file.to_string_lossy().into_owned(),
+        "--model".into(),
+        launch.options.model.clone(),
+        "--effort".into(),
+        launch.options.effort.clone(),
     ];
-    if resume {
+    if launch.resume {
         args.push("--resume".into());
-        args.push(session_id.into());
+        args.push(launch.session_id.into());
     } else {
         args.push("--session-id".into());
-        args.push(session_id.into());
+        args.push(launch.session_id.into());
     }
     // Last, because `--allowedTools` takes a list.
     args.push("--allowedTools".into());
@@ -175,7 +202,12 @@ pub fn user_message(text: &str) -> String {
 #[derive(Default)]
 pub struct StreamState {
     seen_tool_ids: HashSet<String>,
+    /// Tool name by tool_use id, so a result can be read according to its tool.
+    tool_names: std::collections::HashMap<String, String>,
 }
+
+/// The Renderly edit tool as Claude Code names it.
+pub const EDIT_TOOL: &str = "mcp__renderly__edit";
 
 /// Parse one stdout line of `claude --output-format stream-json` into zero or more events.
 /// Unknown or malformed lines produce nothing.
@@ -208,13 +240,15 @@ pub fn parse_line(line: &str, state: &mut StreamState) -> Vec<AgentEvent> {
                 if !state.seen_tool_ids.insert(id.clone()) {
                     return None;
                 }
+                let name = b
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool")
+                    .to_string();
+                state.tool_names.insert(id.clone(), name.clone());
                 Some(AgentEvent::ToolStarted {
                     id,
-                    name: b
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or("tool")
-                        .to_string(),
+                    name,
                     input: b.get("input").cloned().unwrap_or(Value::Null),
                 })
             })
@@ -224,9 +258,15 @@ pub fn parse_line(line: &str, state: &mut StreamState) -> Vec<AgentEvent> {
             .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
             .filter_map(|b| {
                 let id = b.get("tool_use_id").and_then(Value::as_str)?.to_string();
+                // The edit tool's result lists one line per command; keep all of it.
+                let limit = if state.tool_names.get(&id).map(String::as_str) == Some(EDIT_TOOL) {
+                    4000
+                } else {
+                    400
+                };
                 Some(AgentEvent::ToolFinished {
                     id,
-                    output_summary: summarize(&tool_result_text(b), 400),
+                    output_summary: summarize(&tool_result_text(b), limit),
                     is_error: b.get("is_error").and_then(Value::as_bool).unwrap_or(false),
                 })
             })
@@ -281,6 +321,7 @@ struct ClaudeSession {
     program: PathBuf,
     mcp_config: PathBuf,
     system_prompt_file: PathBuf,
+    options: LaunchOptions,
     launched_once: bool,
     child: Option<Child>,
     stdin: Option<ChildStdin>,
@@ -293,13 +334,17 @@ struct ClaudeSession {
 impl ClaudeSession {
     fn spawn(&mut self) -> Result<(), String> {
         let resume = self.launched_once;
-        let args = claude_args(
-            &self.cfg.session_id,
-            &self.mcp_config,
-            &self.system_prompt_file,
+        let args = claude_args(&ClaudeLaunch {
+            session_id: &self.cfg.session_id,
+            mcp_config: &self.mcp_config,
+            system_prompt_file: &self.system_prompt_file,
             resume,
-        );
-        let mut child = process::spawn(&self.program, &args, &project_dir(&self.cfg.project_path))
+            options: &self.options,
+        });
+        // The scratch folder, not the project folder: a project's own CLAUDE.md is never read.
+        let cwd = self.cfg.scratch_dir.clone();
+        std::fs::create_dir_all(&cwd).map_err(|e| format!("scratch dir: {e}"))?;
+        let mut child = process::spawn(&self.program, &args, &cwd)
             .map_err(|e| format!("could not start claude: {e}"))?;
         let stdin = child.stdin.take().ok_or("claude stdin unavailable")?;
         let stdout = child.stdout.take().ok_or("claude stdout unavailable")?;
@@ -425,14 +470,27 @@ impl Drop for ClaudeSession {
 mod tests {
     use super::*;
 
+    fn launch(options: &LaunchOptions, resume: bool) -> Vec<String> {
+        claude_args(&ClaudeLaunch {
+            session_id: "11111111-2222-3333-4444-555555555555",
+            mcp_config: Path::new("/tmp/mcp.json"),
+            system_prompt_file: Path::new("/tmp/sys.txt"),
+            resume,
+            options,
+        })
+    }
+
+    fn value_after<'a>(args: &'a [String], flag: &str) -> &'a str {
+        let pos = args
+            .iter()
+            .position(|a| a == flag)
+            .unwrap_or_else(|| panic!("missing {flag}"));
+        &args[pos + 1]
+    }
+
     #[test]
-    fn launch_flags_match_the_documented_contract() {
-        let args = claude_args(
-            "11111111-2222-3333-4444-555555555555",
-            Path::new("/tmp/mcp.json"),
-            Path::new("/tmp/sys.txt"),
-            false,
-        );
+    fn default_launch_is_renderly_only_with_read_only_builtins() {
+        let args = launch(&LaunchOptions::default(), false);
         for flag in [
             "-p",
             "--input-format",
@@ -440,42 +498,112 @@ mod tests {
             "--verbose",
             "--include-partial-messages",
             "--strict-mcp-config",
+            "--disable-slash-commands",
             "--permission-prompt-tool",
-            "--append-system-prompt-file",
+            "--system-prompt-file",
             "--session-id",
             "--allowedTools",
         ] {
             assert!(args.iter().any(|a| a == flag), "missing {flag}");
         }
-        let pos = args
-            .iter()
-            .position(|a| a == "--permission-prompt-tool")
-            .unwrap();
-        assert_eq!(args[pos + 1], PERMISSION_PROMPT_TOOL);
-        let allowed = args.last().unwrap();
-        assert!(allowed.contains("mcp__renderly__get_project"));
-        assert!(
-            !allowed.contains("apply_command"),
-            "edits must go through the gate"
+        assert!(!args.iter().any(|a| a == "--append-system-prompt-file"));
+        // Settings are off: an empty setting-sources value, not a missing flag.
+        assert_eq!(value_after(&args, "--setting-sources"), "");
+        assert_eq!(value_after(&args, "--tools"), "Read,Grep,Glob");
+        assert_eq!(
+            value_after(&args, "--permission-prompt-tool"),
+            PERMISSION_PROMPT_TOOL
         );
+        assert_eq!(value_after(&args, "--model"), "sonnet");
+        assert_eq!(value_after(&args, "--effort"), "low");
+        assert_eq!(value_after(&args, "--system-prompt-file"), "/tmp/sys.txt");
+        let allowed = args.last().unwrap();
+        assert!(allowed.contains("mcp__renderly__edit"));
+        assert!(allowed.contains("mcp__renderly__timeline"));
+        assert!(allowed.contains("Read"));
+        assert!(
+            !allowed.contains("Bash"),
+            "shell tools are never pre-allowed"
+        );
+        assert!(!allowed.contains("Write") && !allowed.contains("Edit"));
+    }
+
+    #[test]
+    fn native_tools_switch_enables_all_builtins_but_keeps_the_prompt_tool() {
+        let options = LaunchOptions {
+            native_tools: true,
+            ..LaunchOptions::default()
+        };
+        let args = launch(&options, false);
+        assert_eq!(value_after(&args, "--tools"), "default");
+        assert_eq!(
+            value_after(&args, "--permission-prompt-tool"),
+            PERMISSION_PROMPT_TOOL
+        );
+        // Built-in writes and shell still ask: they are not in the pre-allowed list.
+        let allowed = args.last().unwrap();
+        assert!(!allowed.contains("Bash"));
+    }
+
+    #[test]
+    fn model_and_effort_are_passed_through() {
+        let options = LaunchOptions {
+            model: "opus".into(),
+            effort: "high".into(),
+            native_tools: false,
+        };
+        let args = launch(&options, false);
+        assert_eq!(value_after(&args, "--model"), "opus");
+        assert_eq!(value_after(&args, "--effort"), "high");
+    }
+
+    #[test]
+    fn invalid_model_or_effort_is_rejected_before_launch() {
+        let bad_model = LaunchOptions {
+            model: "sonnet --dangerously-skip".into(),
+            ..LaunchOptions::default()
+        };
+        assert!(bad_model.validated().is_err());
+        let bad_effort = LaunchOptions {
+            effort: "ultra".into(),
+            ..LaunchOptions::default()
+        };
+        assert!(bad_effort.validated().is_err());
+        assert!(LaunchOptions::default().validated().is_ok());
     }
 
     #[test]
     fn resume_uses_resume_not_session_id() {
-        let args = claude_args("abc", Path::new("m"), Path::new("s"), true);
+        let args = launch(&LaunchOptions::default(), true);
         assert!(args.iter().any(|a| a == "--resume"));
         assert!(!args.iter().any(|a| a == "--session-id"));
     }
 
     #[test]
-    fn mcp_config_registers_only_renderly_with_project() {
-        let v = mcp_config_json(
-            "C:/app/renderly-mcp.exe",
-            &["--project".into(), "C:/p/a.renderly.json".into()],
-        );
+    fn allowed_tools_stays_the_last_argument() {
+        for native in [false, true] {
+            let options = LaunchOptions {
+                native_tools: native,
+                ..LaunchOptions::default()
+            };
+            let args = launch(&options, false);
+            assert_eq!(args[args.len() - 2], "--allowedTools");
+        }
+    }
+
+    #[test]
+    fn mcp_config_is_an_http_entry_with_bearer_auth() {
+        let endpoint = McpEndpointInfo {
+            url: "http://127.0.0.1:50123/mcp".into(),
+            token: "tok123".into(),
+        };
+        let v = mcp_config_json(&endpoint);
         let servers = v["mcpServers"].as_object().unwrap();
         assert_eq!(servers.len(), 1);
-        assert_eq!(servers["renderly"]["args"][1], "C:/p/a.renderly.json");
+        let r = &servers["renderly"];
+        assert_eq!(r["type"], "http");
+        assert_eq!(r["url"], "http://127.0.0.1:50123/mcp");
+        assert_eq!(r["headers"]["Authorization"], "Bearer tok123");
     }
 
     #[test]

@@ -30,7 +30,8 @@ path = "tests/fake_agent/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-renderly-core.workspace = true
+# `schema` derives JsonSchema on the Command API so the in-app `edit` tool publishes the real shape.
+renderly-core = { workspace = true, features = ["schema"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -45,3 +46,17 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 rand = "0.8"
 json-patch = "4"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# In-process MCP server for the agent chat (Streamable HTTP on 127.0.0.1, bearer token).
+# All MIT or Apache-2.0; hyper/http/tower are already in the tree through Tauri.
+rmcp = { version = "2.1.0", default-features = false, features = ["server", "macros", "schemars", "transport-streamable-http-server"] }
+schemars = "1.2.1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+tokio-util = "0.7"
+tower-service = "0.3"
+base64 = "0.22"
+
+[dev-dependencies]
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }

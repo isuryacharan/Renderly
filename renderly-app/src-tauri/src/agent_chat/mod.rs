@@ -10,14 +10,18 @@ pub mod codex;
 pub mod detect;
 pub mod driver;
 pub mod events;
+pub mod mcp_http;
+pub mod outline;
 pub mod permission;
 pub mod process;
+pub mod tools;
 
 use crate::AppState;
 use detect::AgentInfo;
-use driver::{driver_for, AgentId, AgentSession, SessionConfig};
+use driver::{driver_for, AgentId, AgentSession, LaunchOptions, McpEndpointInfo, SessionConfig};
 use events::{AgentEnvelope, AgentEvent, EventSink};
 use permission::{Decision, PermissionBroker};
+use renderly_core::project::{Id, Project};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -36,6 +40,8 @@ struct ActiveSession {
     id: String,
     broker: Arc<PermissionBroker>,
     session: Box<dyn AgentSession>,
+    /// The in-process tool server for this session (Claude). Dropping it stops the server.
+    endpoint: Option<mcp_http::McpEndpoint>,
 }
 
 impl AgentChatHub {
@@ -52,42 +58,27 @@ impl Default for AgentChatHub {
     }
 }
 
-/// Context chips the user attached to a prompt. Each one is optional.
+/// What the panel knows that the app does not: the clips the user has selected.
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatContext {
     #[serde(default)]
-    pub playhead_secs: Option<f64>,
-    #[serde(default)]
     pub selected_clip_ids: Vec<String>,
-    #[serde(default)]
-    pub sequence_id: Option<String>,
 }
 
-/// Prepend a short, structured preamble to the user's text. Empty context adds nothing.
-pub fn build_prompt(text: &str, ctx: Option<&ChatContext>) -> String {
-    let Some(ctx) = ctx else {
-        return text.to_string();
-    };
-    let mut lines = Vec::new();
-    if let Some(t) = ctx.playhead_secs {
-        lines.push(format!("playhead: {t:.2} s"));
-    }
-    if !ctx.selected_clip_ids.is_empty() {
-        lines.push(format!(
-            "selected clips: {}",
-            ctx.selected_clip_ids.join(", ")
-        ));
-    }
-    if let Some(seq) = &ctx.sequence_id {
-        lines.push(format!("open sequence: {seq}"));
-    }
-    if lines.is_empty() {
-        return text.to_string();
-    }
+/// The text sent to the CLI for one user turn: the live context block (outline, playhead,
+/// selection, open sequence) generated from the project, then the user's message.
+pub fn compose_turn(
+    project: &Project,
+    playhead_secs: f64,
+    sequence: Option<Id>,
+    text: &str,
+    ctx: Option<&ChatContext>,
+) -> String {
+    let selected: &[String] = ctx.map(|c| c.selected_clip_ids.as_slice()).unwrap_or(&[]);
     format!(
-        "[Renderly context]\n{}\n[end context]\n\n{text}",
-        lines.join("\n")
+        "{}{text}",
+        outline::context_block(project, playhead_secs, selected, sequence)
     )
 }
 
@@ -128,6 +119,10 @@ fn scratch_dir() -> PathBuf {
 fn sink_for(app: &AppHandle) -> EventSink {
     let app = app.clone();
     Arc::new(move |env: AgentEnvelope| {
+        // A finished turn closes its undo group, so the user's own edits are separate steps.
+        if matches!(env.event, AgentEvent::TurnFinished { .. }) {
+            app.state::<AppState>().end_agent_group();
+        }
         let _ = app.emit(EVENT_NAME, env);
     })
 }
@@ -140,6 +135,9 @@ pub fn stop_active(app: &AppHandle, reason: &str) {
     if let Some(mut active) = taken {
         active.broker.cancel_all();
         active.session.shutdown();
+        if let Some(endpoint) = &active.endpoint {
+            endpoint.stop();
+        }
         let _ = app.emit(
             EVENT_NAME,
             AgentEnvelope {
@@ -195,18 +193,33 @@ pub async fn agent_start(
     state: State<'_, AppState>,
     hub: State<'_, AgentChatHub>,
     agent_id: AgentId,
+    options: Option<LaunchOptions>,
 ) -> Result<String, String> {
     if hub.active.lock().map_err(|e| e.to_string())?.is_some() {
         return Err("an agent session is already running; stop it first".into());
     }
+    let options = options.unwrap_or_default().validated()?;
     let project_path = state.with_session(|s| Ok(s.path.clone()))?;
     let session_id = Uuid::new_v4().to_string();
     // Edits are auto-allowed by default (§4.3); the panel shows the toggle.
     let broker = PermissionBroker::new(session_id.clone(), sink_for(&app), true);
-    let mcp_binary = mcp_binary_path()?;
+    // Claude gets the in-process tool server; Codex still uses renderly-mcp (see design doc).
+    let (endpoint, mcp_endpoint, mcp_binary) = match agent_id {
+        AgentId::ClaudeCode => {
+            let endpoint = mcp_http::start(app.clone(), Arc::clone(&broker)).await?;
+            let info = McpEndpointInfo {
+                url: endpoint.url.clone(),
+                token: endpoint.token.clone(),
+            };
+            (Some(endpoint), Some(info), PathBuf::new())
+        }
+        AgentId::Codex => (None, None, mcp_binary_path()?),
+    };
     let cfg = SessionConfig {
         session_id: session_id.clone(),
         project_path,
+        mcp_endpoint,
+        options,
         mcp_binary,
         program: None,
         scratch_dir: scratch_dir(),
@@ -227,6 +240,7 @@ pub async fn agent_start(
         id: session_id.clone(),
         broker,
         session,
+        endpoint,
     });
     Ok(session_id)
 }
@@ -245,6 +259,7 @@ fn with_active<T>(
 
 #[tauri::command]
 pub async fn agent_send(
+    state: State<'_, AppState>,
     hub: State<'_, AgentChatHub>,
     session_id: String,
     text: String,
@@ -254,8 +269,21 @@ pub async fn agent_send(
     if text.is_empty() {
         return Err("message is empty".into());
     }
-    let prompt = build_prompt(text, context.as_ref());
-    with_active(&hub, &session_id, |a| a.session.send_turn(&prompt))
+    let project = state.with_session(|s| Ok(Arc::clone(&s.project)))?;
+    let prompt = compose_turn(
+        &project,
+        state.playhead_secs(),
+        *state.active_sequence.lock(),
+        text,
+        context.as_ref(),
+    );
+    // Every edit this turn makes becomes one undo step; the group closes on TurnFinished.
+    state.begin_agent_group();
+    let sent = with_active(&hub, &session_id, |a| a.session.send_turn(&prompt));
+    if sent.is_err() {
+        state.end_agent_group();
+    }
+    sent
 }
 
 #[tauri::command]
@@ -306,6 +334,9 @@ pub async fn agent_stop(
     if let Some(mut active) = taken {
         active.broker.cancel_all();
         active.session.shutdown();
+        if let Some(endpoint) = &active.endpoint {
+            endpoint.stop();
+        }
         let _ = app.emit(
             EVENT_NAME,
             AgentEnvelope {
@@ -323,26 +354,34 @@ pub async fn agent_stop(
 mod tests {
     use super::*;
 
-    #[test]
-    fn prompt_without_context_is_unchanged() {
-        assert_eq!(build_prompt("trim it", None), "trim it");
-        assert_eq!(
-            build_prompt("trim it", Some(&ChatContext::default())),
-            "trim it"
-        );
+    fn project_with_one_track() -> Project {
+        let mut p = Project::new("Demo", renderly_core::project::Settings::default());
+        p.tracks.push(renderly_core::project::Track::new(
+            renderly_core::project::TrackKind::Video,
+            "V1",
+        ));
+        p
     }
 
     #[test]
-    fn prompt_gets_a_structured_preamble_from_the_chips() {
+    fn each_turn_starts_with_the_live_context_block_then_the_message() {
+        let p = project_with_one_track();
         let ctx = ChatContext {
-            playhead_secs: Some(3.5),
             selected_clip_ids: vec!["c1".into(), "c2".into()],
-            sequence_id: Some("seq-9".into()),
         };
-        let p = build_prompt("trim the first clip", Some(&ctx));
-        assert!(p.starts_with("[Renderly context]\nplayhead: 3.50 s\n"));
-        assert!(p.contains("selected clips: c1, c2"));
-        assert!(p.contains("open sequence: seq-9"));
-        assert!(p.ends_with("[end context]\n\ntrim the first clip"));
+        let out = compose_turn(&p, 3.5, None, "trim the first clip", Some(&ctx));
+        assert!(out.starts_with("[Renderly context: live project state"));
+        assert!(out.contains("playhead 0:03.5"));
+        assert!(out.contains("selected clips: c1, c2"));
+        assert!(out.contains("track 0 video 'V1'"));
+        assert!(out.ends_with("[end context]\n\ntrim the first clip"));
+    }
+
+    #[test]
+    fn turn_without_selection_has_no_selection_line() {
+        let p = project_with_one_track();
+        let out = compose_turn(&p, 0.0, None, "hi", None);
+        assert!(!out.contains("selected clips"));
+        assert!(out.ends_with("hi"));
     }
 }

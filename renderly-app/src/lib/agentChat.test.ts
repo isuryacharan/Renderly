@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   EMPTY_AGENT_CHAT,
   type AgentEvent,
+  activityLabel,
+  clipIdsTouchedByEdit,
   describeEdit,
   humanizeCommand,
   lastSuccessfulEditId,
   reduceAgentEvent,
   reducePermissionAnswered,
   reduceUserSent,
+  undoableTurnActionsId,
   type AgentChatState,
   type AgentEnvelope,
   type TranscriptItem,
@@ -135,10 +138,97 @@ describe("reduceUserSent", () => {
     const s = reduceUserSent(
       { ...EMPTY_AGENT_CHAT, sessionId: SID, status: "ready" },
       "trim it",
-      { playheadSecs: 2.5 },
+      { selectedClipIds: ["c1"] },
     );
     expect(s.status).toBe("running");
-    expect(s.items[0]).toMatchObject({ kind: "user", text: "trim it", context: { playheadSecs: 2.5 } });
+    expect(s.items[0]).toMatchObject({ kind: "user", text: "trim it", context: { selectedClipIds: ["c1"] } });
+  });
+});
+
+describe("edit results as action lines", () => {
+  const SID = "s1";
+  const started = (id: string, input: unknown) =>
+    reduceAgentEvent(
+      { ...EMPTY_AGENT_CHAT, sessionId: SID, status: "running" },
+      { session_id: SID, type: "tool_started", id, name: "mcp__renderly__edit", input },
+    );
+
+  it("turns a successful edit result into one action line per command, plus created ids", () => {
+    const s0 = started("t1", { commands: [{ command: "TrimClip" }] });
+    const s = reduceAgentEvent(s0, {
+      session_id: SID,
+      type: "tool_finished",
+      id: "t1",
+      is_error: false,
+      output_summary:
+        "Applied 2 command(s) as one undo step:\n- Trimmed 'Gameplay 1' to 0:00.0-0:05.0\n- Added caption 'Hi' at 0:02.0\nCreated: clip 1a2b3c4d; track 9f8e7d6c",
+    });
+    const actions = s.items.find((i) => i.kind === "actions");
+    expect(actions).toMatchObject({
+      kind: "actions",
+      lines: ["Trimmed 'Gameplay 1' to 0:00.0-0:05.0", "Added caption 'Hi' at 0:02.0"],
+      created: ["clip 1a2b3c4d", "track 9f8e7d6c"],
+    });
+  });
+
+  it("adds no action lines for a failed edit", () => {
+    const s0 = started("t2", { commands: [] });
+    const s = reduceAgentEvent(s0, {
+      session_id: SID,
+      type: "tool_finished",
+      id: "t2",
+      is_error: true,
+      output_summary: "invalid command",
+    });
+    expect(s.items.some((i) => i.kind === "actions")).toBe(false);
+  });
+
+  it("keeps perception calls out of the transcript but in the tool list", () => {
+    const s0 = reduceAgentEvent(
+      { ...EMPTY_AGENT_CHAT, sessionId: SID, status: "running" },
+      { session_id: SID, type: "tool_started", id: "p1", name: "mcp__renderly__timeline", input: {} },
+    );
+    const s = reduceAgentEvent(s0, {
+      session_id: SID,
+      type: "tool_finished",
+      id: "p1",
+      is_error: false,
+      output_summary: "outline",
+    });
+    expect(s.items.some((i) => i.kind === "actions")).toBe(false);
+    expect(s.items.some((i) => i.kind === "tool" && i.name === "mcp__renderly__timeline")).toBe(true);
+  });
+
+  it("offers the turn's Undo only on the latest turn's action list", () => {
+    const first: TranscriptItem[] = [
+      { kind: "user", id: "u1", text: "a", context: null },
+      { kind: "actions", id: "a1", toolId: "t", lines: ["x"], created: [] },
+      { kind: "user", id: "u2", text: "b", context: null },
+    ];
+    expect(undoableTurnActionsId(first)).toBeNull();
+    const latest: TranscriptItem[] = [
+      ...first.slice(0, 2),
+      { kind: "user", id: "u2", text: "b", context: null },
+      { kind: "actions", id: "a2", toolId: "t2", lines: ["y"], created: [] },
+    ];
+    expect(undoableTurnActionsId(latest)).toBe("a2");
+  });
+
+  it("names what the agent is doing while a tool runs", () => {
+    const running = reduceAgentEvent(
+      { ...EMPTY_AGENT_CHAT, sessionId: SID, status: "running" },
+      { session_id: SID, type: "tool_started", id: "p2", name: "mcp__renderly__look", input: {} },
+    );
+    expect(activityLabel(running.items)).toBe("Looking at the frame…");
+    expect(activityLabel([])).toBeNull();
+  });
+
+  it("finds the clips an edit touched from short ids in its inputs", () => {
+    const known = ["1a2b3c4d-0000-4000-8000-000000000001", "ffffffff-0000-4000-8000-000000000002"];
+    expect(clipIdsTouchedByEdit({ commands: [{ command: "TrimClip", clip_id: "1a2b3c4d" }] }, known)).toEqual([
+      known[0],
+    ]);
+    expect(clipIdsTouchedByEdit({ commands: [{ command: "TrimClip", clip_id: "00000000" }] }, known)).toEqual([]);
   });
 });
 

@@ -5,7 +5,11 @@
 import { create } from "zustand";
 import * as ipc from "../lib/ipc";
 import {
+  DEFAULT_LAUNCH_OPTIONS,
   EMPTY_AGENT_CHAT,
+  clipIdsTouchedByEdit,
+  isEditTool,
+  parseEditOutput,
   reduceAgentEvent,
   reducePermissionAnswered,
   reduceUserSent,
@@ -14,12 +18,39 @@ import {
   type AgentId,
   type AgentInfo,
   type ChatContext,
+  type LaunchOptions,
 } from "../lib/agentChat";
 import { useEditorStore } from "./editorStore";
 
 export type RightTab = "inspector" | "agent";
 /** Context chips the user can remove before sending. */
-export type ChipKey = "playhead" | "selection" | "sequence";
+export type ChipKey = "selection";
+
+/** How long timeline clips stay highlighted after an agent edit touches them. */
+export const HIGHLIGHT_MS = 2400;
+const LAUNCH_KEY = "renderly.agent.launch";
+
+/** Launch options remembered per user (a viewer preference, so localStorage is enough). */
+export function loadLaunchOptions(): LaunchOptions {
+  try {
+    const raw = globalThis.localStorage?.getItem(LAUNCH_KEY);
+    if (!raw) return DEFAULT_LAUNCH_OPTIONS;
+    const parsed = JSON.parse(raw) as Partial<LaunchOptions>;
+    return { ...DEFAULT_LAUNCH_OPTIONS, ...parsed };
+  } catch {
+    return DEFAULT_LAUNCH_OPTIONS;
+  }
+}
+
+function saveLaunchOptions(options: LaunchOptions): void {
+  try {
+    globalThis.localStorage?.setItem(LAUNCH_KEY, JSON.stringify(options));
+  } catch {
+    // Storage can be blocked; the choice then lasts for this run only.
+  }
+}
+
+let highlightTimer: ReturnType<typeof setTimeout> | null = null;
 
 interface AgentChatStore {
   rightTab: RightTab;
@@ -28,8 +59,10 @@ interface AgentChatStore {
   agents: AgentInfo[] | null;
   agentsError: string | null;
   chat: AgentChatState;
-  /** Edits apply without a prompt while on (design §4.3, the default). */
-  autoEdits: boolean;
+  /** Model, effort and the built-in tools switch for the next session. */
+  launch: LaunchOptions;
+  /** Full clip ids the last agent edit touched; the timeline highlights them briefly. */
+  highlightClipIds: string[];
   removedChips: ChipKey[];
   draft: string;
   /** Sessions the user stopped: late events for them are dropped. */
@@ -44,7 +77,7 @@ interface AgentChatStore {
   sendPrompt(): Promise<void>;
   cancelTurn(): Promise<void>;
   answerPermission(requestId: string, optionId: string): Promise<void>;
-  setAutoEdits(enabled: boolean): Promise<void>;
+  setLaunch(patch: Partial<LaunchOptions>): void;
   toggleChip(key: ChipKey): void;
   setDraft(text: string): void;
   onEvent(env: AgentEnvelope): void;
@@ -52,16 +85,20 @@ interface AgentChatStore {
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** Context chips for the next prompt, from the editor state and the chips still enabled. */
+/** Context for the next prompt: the user's selection, unless its chip was removed. */
 export function chipContext(removed: ChipKey[]): ChatContext | null {
   const s = useEditorStore.getState();
-  const ctx: ChatContext = {};
-  if (!removed.includes("playhead")) ctx.playheadSecs = s.playhead;
-  if (!removed.includes("selection") && s.selections.length > 0) {
-    ctx.selectedClipIds = s.selections.map((sel) => sel.clipId);
-  }
-  if (!removed.includes("sequence") && s.activeSequenceId) ctx.sequenceId = s.activeSequenceId;
-  return Object.keys(ctx).length > 0 ? ctx : null;
+  if (removed.includes("selection") || s.selections.length === 0) return null;
+  return { selectedClipIds: s.selections.map((sel) => sel.clipId) };
+}
+
+/** Every clip id on the root timeline and in sequences, for resolving short ids. */
+function knownClipIds(): string[] {
+  const ids: string[] = [];
+  const project = useEditorStore.getState().project;
+  const tracks = [...(project?.tracks ?? []), ...(project?.sequences ?? []).flatMap((s) => s.tracks)];
+  for (const t of tracks) for (const c of t.clips) ids.push(c.id);
+  return ids;
 }
 
 export const useAgentChatStore = create<AgentChatStore>((set, get) => ({
@@ -70,7 +107,8 @@ export const useAgentChatStore = create<AgentChatStore>((set, get) => ({
   agents: null,
   agentsError: null,
   chat: EMPTY_AGENT_CHAT,
-  autoEdits: true,
+  launch: loadLaunchOptions(),
+  highlightClipIds: [],
   removedChips: [],
   draft: "",
   lastStoppedSessionId: null,
@@ -104,7 +142,7 @@ export const useAgentChatStore = create<AgentChatStore>((set, get) => ({
       lastStoppedSessionId: null,
     });
     try {
-      const sessionId = await ipc.agentStart(agentId);
+      const sessionId = await ipc.agentStart(agentId, get().launch);
       const cur = get().chat;
       // Events that arrived during start may already have adopted this id.
       set({ chat: { ...cur, sessionId: cur.sessionId ?? sessionId } });
@@ -182,15 +220,10 @@ export const useAgentChatStore = create<AgentChatStore>((set, get) => ({
     }
   },
 
-  async setAutoEdits(enabled) {
-    set({ autoEdits: enabled });
-    const sid = get().chat.sessionId;
-    if (!sid) return;
-    try {
-      await ipc.agentSetAutoEdits(sid, enabled);
-    } catch (e) {
-      set((st) => ({ chat: { ...st.chat, error: errorText(e) } }));
-    }
+  setLaunch(patch) {
+    const next = { ...get().launch, ...patch };
+    saveLaunchOptions(next);
+    set({ launch: next });
   },
 
   toggleChip(key) {
@@ -207,9 +240,36 @@ export const useAgentChatStore = create<AgentChatStore>((set, get) => ({
 
   onEvent(env) {
     if (env.session_id === get().lastStoppedSessionId) return;
+    const before = get().chat;
     set((st) => ({ chat: reduceAgentEvent(st.chat, env) }));
+    if (env.type === "tool_finished" && !env.is_error) {
+      const call = before.items.find((item) => item.kind === "tool" && item.id === env.id);
+      if (call && call.kind === "tool" && isEditTool(call.name)) {
+        highlightEdit(call.input, env.output_summary);
+      }
+    }
   },
 }));
+
+/**
+ * Briefly highlight the clips an edit touched (from its inputs) and created (from its result's
+ * "Created: clip <short id>" line), then clear. The newest edit wins.
+ */
+function highlightEdit(input: unknown, output: string): void {
+  const known = knownClipIds();
+  const created = parseEditOutput(output).created.flatMap((c) => {
+    const short = c.startsWith("clip ") ? c.slice("clip ".length).trim() : "";
+    const full = short ? known.find((id) => id.startsWith(short)) : undefined;
+    return full ? [full] : [];
+  });
+  const ids = [...new Set([...clipIdsTouchedByEdit(input, known), ...created])];
+  if (highlightTimer) clearTimeout(highlightTimer);
+  useAgentChatStore.setState({ highlightClipIds: ids });
+  highlightTimer = setTimeout(() => {
+    highlightTimer = null;
+    useAgentChatStore.setState({ highlightClipIds: [] });
+  }, HIGHLIGHT_MS);
+}
 
 /** Subscribe the chat store to backend `agent:event`s. Call once from App. */
 export function connectAgentChatEvents(): () => void {

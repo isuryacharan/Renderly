@@ -698,7 +698,7 @@ function startMockPlayback(fromSecs: number): void {
 // ---- Scripted fake agent (agent chat, docs/agent-chat-design.md). Stands in for the Rust
 // agent_chat backend so the Agent tab can be exercised in the browser harness. Prompts with
 // "export" script a permission prompt; any other prompt trims the first video clip for real
-// through the mock's apply_command (so the edit card's Undo works against the mock's stack).
+// through the mock's apply_commands (so the turn's Undo works against the mock's undo stack).
 // Nothing here talks to a model or a vendor CLI.
 const mockAgent = {
   sessionId: null as string | null,
@@ -793,6 +793,13 @@ async function runMockTurn(prompt: string): Promise<void> {
     agentEmit({ type: "turn_finished", stop_reason: "end_turn" });
     return;
   }
+  // The real agent reads the outline first (hidden in the transcript, kept under Details).
+  const outlineId = `mock-outline-${turn}`;
+  agentEmit({ type: "tool_started", id: outlineId, name: "mcp__renderly__timeline", input: {} });
+  await pause(250);
+  if (!live()) return;
+  agentEmit({ type: "tool_finished", id: outlineId, output_summary: "track 0 video 'V1' ...", is_error: false });
+
   const command = {
     command: "TrimClip",
     track_id: target.trackId,
@@ -801,17 +808,26 @@ async function runMockTurn(prompt: string): Promise<void> {
   };
   await pause(300);
   if (!live()) return;
+  // One `edit` call is one undo step, the same path the GUI uses (apply_commands).
   const toolId = `mock-tu-${turn}`;
-  agentEmit({ type: "tool_started", id: toolId, name: "mcp__renderly__apply_command", input: { command } });
+  const input = { commands: [command] };
+  agentEmit({ type: "tool_started", id: toolId, name: "mcp__renderly__edit", input });
   try {
-    const result = (await invoke<{ revision: number }>("apply_command", { command })) as { revision: number };
+    await invoke("apply_commands", { commands: [command] });
     await pause(250);
-    agentEmit({ type: "tool_finished", id: toolId, output_summary: `revision ${result.revision}`, is_error: false });
+    const clip = currentProject.tracks.flatMap((t) => t.clips).find((c) => c.id === target.clipId);
+    const media = clip && clip.type === "video" ? currentProject.media.find((m) => m.id === clip.media_id) : undefined;
+    const name = media ? media.path.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? "clip" : "clip";
+    const summary = [
+      "Applied 1 command(s) as one undo step:",
+      `- Trimmed '${name}' to 0:00.0-0:0${Math.min(5, target.sourceOut) | 0}.0`,
+    ].join("\n");
+    agentEmit({ type: "tool_finished", id: toolId, output_summary: summary, is_error: false });
   } catch (e) {
     agentEmit({ type: "tool_finished", id: toolId, output_summary: String(e), is_error: true });
   }
   if (!live()) return;
-  await say("Done. The edit card has an Undo button.");
+  await say("Trimmed it to five seconds.");
   agentEmit({ type: "turn_finished", stop_reason: "end_turn" });
 }
 

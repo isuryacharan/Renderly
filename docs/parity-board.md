@@ -58,7 +58,7 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 | P4-6b | Text-to-sticker | 🟡 | `GenerateSticker`; locally generated PNG, not an image model |
 | P4-6 | Templates | ✅ | Pack `templates[]` + `ApplyTemplate` |
 | P4-7 | Multicam groups + angle switch | ✅ | `CreateMulticamGroup`, `SetMulticamAngle` |
-| — | In-app agent chat | 🟡 | Phase 1: "Agent" tab beside the inspector (`Ctrl+L`) driving the user's installed, signed-in Claude Code or Codex CLI — no login or API key handled by Renderly. Edits go through `renderly-mcp --project` with shared undo. Confirmed working in the desktop app with Claude Code (2026-10-16); the Codex driver is not yet run against a real `codex` binary. [agent-chat-design.md](agent-chat-design.md) |
+| — | In-app agent chat | 🟡 | "Agent" tab beside the inspector (`Ctrl+L`) driving the user's installed, signed-in Claude Code (Codex: older path) as Renderly's editing assistant: Renderly's own brief replaces the coding-agent prompt, tools are served in-process by the app (`edit`, `timeline`, `look`, `find_media`, `assets`), context is sent with each message, one undo per turn. No login or API key handled by Renderly. [agent-chat-design.md](agent-chat-design.md) |
 
 ## Platform & distribution
 

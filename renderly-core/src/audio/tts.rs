@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 use thiserror::Error;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "provider", rename_all = "snake_case")]
 pub enum VoiceoverProvider {
     /// Local Piper ONNX model via `piper` CLI. Set `RENDERLY_PIPER_MODEL`.

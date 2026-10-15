@@ -7,7 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type { Project } from "./types";
-import type { AgentEnvelope, AgentId, AgentInfo, ChatContext } from "./agentChat";
+import type { AgentEnvelope, AgentId, AgentInfo, ChatContext, LaunchOptions } from "./agentChat";
 
 export interface HistoryStatus {
   can_undo: boolean;
@@ -423,8 +423,8 @@ export function agentList() {
   return invoke<AgentInfo[]>("agent_list");
 }
 
-export function agentStart(agentId: AgentId) {
-  return invoke<string>("agent_start", { agentId });
+export function agentStart(agentId: AgentId, options: LaunchOptions) {
+  return invoke<string>("agent_start", { agentId, options });
 }
 
 export function agentSend(sessionId: string, text: string, context: ChatContext | null) {

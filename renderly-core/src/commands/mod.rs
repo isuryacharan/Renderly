@@ -24,6 +24,7 @@ pub use sequences::ClipRef;
 /// Normalised rectangle (0..1, origin top-left, y down) in the clip's video frame, before any
 /// cover-fit crop. Used to pick the area `TrackMotion` follows.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TrackRegion {
     pub x: f64,
     pub y: f64,
@@ -32,6 +33,7 @@ pub struct TrackRegion {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "command", rename_all = "PascalCase")]
 pub enum Command {
     ImportMedia {
@@ -375,6 +377,7 @@ pub enum Command {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ExportPreset {
     TikTok9x16,

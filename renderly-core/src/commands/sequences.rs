@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 /// Names one clip: its track and its id (the pair every clip command takes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ClipRef {
     pub track_id: Id,
     pub clip_id: Id,

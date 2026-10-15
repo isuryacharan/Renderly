@@ -1,15 +1,16 @@
-// Agent tab of the right column (docs/agent-chat-design.md §4). The transcript and tool
-// cards come from lib/agentChat.ts; this component renders them and sends user intent back
-// through agentChatStore. Agent text is rendered as plain text (no HTML, no Markdown engine).
+// Agent tab of the right column (docs/agent-chat-design.md §4). The transcript comes from
+// lib/agentChat.ts. An edit shows as plain action lines with one Undo for the whole turn; the
+// raw tool calls sit under a per-turn "Details" disclosure. Agent text is plain text (no HTML).
 
-import { useEffect, useRef, type KeyboardEvent } from "react";
-import { Bot, Check, MessageSquare, RefreshCw, Send, Square, TriangleAlert, Undo2, X } from "lucide-react";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { Bot, Check, MessageSquare, RefreshCw, Send, Settings2, Square, TriangleAlert, Undo2, X } from "lucide-react";
 import { useAgentChatStore, type ChipKey } from "../../store/agentChatStore";
 import { useEditorStore } from "../../store/editorStore";
 import {
-  describeEdit,
-  isRenderlyEdit,
-  lastSuccessfulEditId,
+  EFFORT_CHOICES,
+  MODEL_CHOICES,
+  activityLabel,
+  undoableTurnActionsId,
   type AgentInfo,
   type TranscriptItem,
 } from "../../lib/agentChat";
@@ -19,6 +20,45 @@ const VENDOR_NOTICE: Record<string, string> = {
   "claude-code": "Messages and project data are sent to Anthropic under your Claude Code account.",
   codex: "Messages and project data are sent to OpenAI under your Codex account.",
 };
+
+/** Model, effort and the built-in tools switch. Applies to the next session started. */
+function LaunchFields({ note }: { note: string | null }) {
+  const launch = useAgentChatStore((s) => s.launch);
+  const setLaunch = useAgentChatStore((s) => s.setLaunch);
+  return (
+    <div className="agent-launch">
+      <label className="agent-launch-field">
+        <span>Model</span>
+        <select value={launch.model} onChange={(e) => setLaunch({ model: e.target.value })}>
+          {MODEL_CHOICES.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="agent-launch-field">
+        <span>Effort</span>
+        <select value={launch.effort} onChange={(e) => setLaunch({ effort: e.target.value })}>
+          {EFFORT_CHOICES.map((level) => (
+            <option key={level} value={level}>
+              {level}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="agent-toggle">
+        <input
+          type="checkbox"
+          checked={launch.nativeTools}
+          onChange={(e) => setLaunch({ nativeTools: e.target.checked })}
+        />
+        Let the agent use its own tools (asks first)
+      </label>
+      {note ? <p className="agent-muted">{note}</p> : null}
+    </div>
+  );
+}
 
 function AgentPicker({ agents, error }: { agents: AgentInfo[] | null; error: string | null }) {
   const startSession = useAgentChatStore((s) => s.startSession);
@@ -69,6 +109,7 @@ function AgentPicker({ agents, error }: { agents: AgentInfo[] | null; error: str
           </div>
         );
       })}
+      <LaunchFields note={null} />
       <button type="button" className="btn btn-ghost btn-sm" onClick={() => void loadAgents()}>
         <RefreshCw size={14} strokeWidth={1.75} /> Check again
       </button>
@@ -76,35 +117,50 @@ function AgentPicker({ agents, error }: { agents: AgentInfo[] | null; error: str
   );
 }
 
-function ToolCard({
+/** The turn's edits as plain lines, with the turn's single Undo when it is the latest turn. */
+function ActionsView({
   item,
-  undoId,
   onUndo,
+  undoable,
 }: {
-  item: Extract<TranscriptItem, { kind: "tool" }>;
-  undoId: string | null;
+  item: Extract<TranscriptItem, { kind: "actions" }>;
   onUndo: () => void;
+  undoable: boolean;
 }) {
-  const edit = isRenderlyEdit(item.name);
-  const title = edit ? describeEdit(item.name, item.input).title : item.name;
-  const statusLabel = item.status === "running" ? "running" : item.status === "done" ? "done" : "failed";
   return (
-    <div className={`agent-tool agent-tool-${item.status}${edit ? " agent-tool-edit" : ""}`}>
-      <div className="agent-tool-head">
-        <span className="agent-tool-title">{title}</span>
-        <span className="agent-tool-status">{statusLabel}</span>
-      </div>
-      {item.output ? <div className="agent-tool-output">{item.output}</div> : null}
-      {edit && undoId === item.id ? (
-        <button type="button" className="btn btn-sm agent-undo" onClick={onUndo} title="Undo the latest change (Ctrl+Z)">
-          <Undo2 size={14} strokeWidth={1.75} /> Undo
+    <div className="agent-actions">
+      <ul className="agent-action-lines">
+        {item.lines.map((line, i) => (
+          <li key={`${item.id}-${i}`}>{line}</li>
+        ))}
+      </ul>
+      {undoable ? (
+        <button type="button" className="btn btn-sm agent-undo" onClick={onUndo} title="Undo everything the agent changed this turn">
+          <Undo2 size={14} strokeWidth={1.75} /> Undo this turn
         </button>
       ) : null}
-      <details className="agent-tool-details">
-        <summary>Details</summary>
-        <pre>{JSON.stringify(item.input, null, 2)}</pre>
-      </details>
     </div>
+  );
+}
+
+/** Raw tool calls for one turn: hidden unless the user opens Details. */
+function ToolDetails({ tools }: { tools: Extract<TranscriptItem, { kind: "tool" }>[] }) {
+  return (
+    <details className="agent-details">
+      <summary>Details ({tools.length} {tools.length === 1 ? "call" : "calls"})</summary>
+      {tools.map((t) => (
+        <div key={t.id} className={`agent-tool agent-tool-${t.status}`}>
+          <div className="agent-tool-head">
+            <span className="agent-tool-title">{t.name.replace(/^mcp__renderly__/, "renderly ")}</span>
+            <span className="agent-tool-status">
+              {t.status === "running" ? "running" : t.status === "done" ? "done" : "failed"}
+            </span>
+          </div>
+          <pre>{JSON.stringify(t.input, null, 2)}</pre>
+          {t.output ? <div className="agent-tool-output">{t.output}</div> : null}
+        </div>
+      ))}
+    </details>
   );
 }
 
@@ -164,11 +220,9 @@ function TranscriptItemView({
       return (
         <div className="agent-msg agent-msg-user">
           <div className="agent-bubble">{item.text}</div>
-          {item.context ? (
+          {item.context?.selectedClipIds?.length ? (
             <div className="agent-msg-context">
-              {item.context.playheadSecs !== undefined ? `at ${item.context.playheadSecs.toFixed(2)} s` : null}
-              {item.context.selectedClipIds?.length ? ` · ${item.context.selectedClipIds.length} selected` : null}
-              {item.context.sequenceId ? " · sequence open" : null}
+              {item.context.selectedClipIds.length} selected
             </div>
           ) : null}
         </div>
@@ -182,8 +236,11 @@ function TranscriptItemView({
           </div>
         </div>
       );
+    case "actions":
+      return <ActionsView item={item} undoable={undoId === item.id} onUndo={onUndo} />;
     case "tool":
-      return <ToolCard item={item} undoId={undoId} onUndo={onUndo} />;
+      // Tool calls render only under the turn's Details (see renderTranscript).
+      return null;
     case "permission":
       return <PermissionCard item={item} onAnswer={(opt) => onAnswer(item.id, opt)} />;
     case "notice":
@@ -198,45 +255,86 @@ function TranscriptItemView({
   }
 }
 
+/** The transcript with each turn's tool calls gathered into one Details block. */
+function renderTranscript(
+  items: TranscriptItem[],
+  undoId: string | null,
+  onUndo: () => void,
+  onAnswer: (requestId: string, optionId: string) => void,
+) {
+  const out: ReactNode[] = [];
+  let tools: Extract<TranscriptItem, { kind: "tool" }>[] = [];
+  const flush = (key: string) => {
+    if (tools.length > 0) {
+      out.push(<ToolDetails key={`details-${key}`} tools={tools} />);
+      tools = [];
+    }
+  };
+  for (const item of items) {
+    if (item.kind === "tool") {
+      tools.push(item);
+      continue;
+    }
+    if (item.kind === "user") flush(item.id);
+    out.push(
+      <TranscriptItemView
+        key={`${item.kind}-${item.id}`}
+        item={item}
+        undoId={undoId}
+        onUndo={onUndo}
+        onAnswer={onAnswer}
+      />,
+    );
+  }
+  flush("end");
+  return out;
+}
+
 const CHIP_LABEL: Record<ChipKey, string> = {
-  playhead: "Playhead",
   selection: "Selection",
-  sequence: "Open sequence",
 };
 
+/** The user's selection, the one piece of context the app does not send automatically. */
 function ContextChips() {
   const removed = useAgentChatStore((s) => s.removedChips);
   const toggle = useAgentChatStore((s) => s.toggleChip);
-  const playhead = useEditorStore((s) => s.playhead);
   const selected = useEditorStore((s) => s.selections.length);
-  const sequence = useEditorStore((s) => s.activeSequenceId);
-  const chips: { key: ChipKey; text: string; present: boolean }[] = [
-    { key: "playhead", text: `${playhead.toFixed(2)} s`, present: true },
-    { key: "selection", text: selected === 1 ? "1 clip" : `${selected} clips`, present: selected > 0 },
-    { key: "sequence", text: "sequence", present: !!sequence },
-  ];
+  if (selected === 0) return null;
+  const off = removed.includes("selection");
   return (
     <div className="agent-chips" aria-label="Context sent with the next message">
-      {chips
-        .filter((c) => c.present)
-        .map((c) => {
-          const off = removed.includes(c.key);
-          return (
-            <button
-              key={c.key}
-              type="button"
-              className={`agent-chip${off ? " is-off" : ""}`}
-              onClick={() => toggle(c.key)}
-              aria-pressed={!off}
-              title={off ? `Include ${CHIP_LABEL[c.key].toLowerCase()} in the next message` : `Remove ${CHIP_LABEL[c.key].toLowerCase()} from the next message`}
-            >
-              <span>
-                {CHIP_LABEL[c.key]}: {c.text}
-              </span>
-              {off ? <Check size={12} strokeWidth={1.75} /> : <X size={12} strokeWidth={1.75} />}
-            </button>
-          );
-        })}
+      <button
+        type="button"
+        className={`agent-chip${off ? " is-off" : ""}`}
+        onClick={() => toggle("selection")}
+        aria-pressed={!off}
+        title={off ? "Include the selection in the next message" : "Remove the selection from the next message"}
+      >
+        <span>
+          {CHIP_LABEL.selection}: {selected === 1 ? "1 clip" : `${selected} clips`}
+        </span>
+        {off ? <Check size={12} strokeWidth={1.75} /> : <X size={12} strokeWidth={1.75} />}
+      </button>
+    </div>
+  );
+}
+
+function SettingsPopover({ active }: { active: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="agent-settings">
+      <IconButton
+        iconOnly
+        icon={Settings2}
+        aria-label="Agent settings"
+        tooltip="Model, effort and tools"
+        onClick={() => setOpen((o) => !o)}
+      />
+      {open ? (
+        <div className="agent-settings-pop" role="dialog" aria-label="Agent settings">
+          <LaunchFields note={active ? "Changes apply to the next session." : null} />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -252,8 +350,6 @@ export function AgentPanel() {
   const cancelTurn = useAgentChatStore((s) => s.cancelTurn);
   const stopSession = useAgentChatStore((s) => s.stopSession);
   const answerPermission = useAgentChatStore((s) => s.answerPermission);
-  const autoEdits = useAgentChatStore((s) => s.autoEdits);
-  const setAutoEdits = useAgentChatStore((s) => s.setAutoEdits);
   const focusTick = useAgentChatStore((s) => s.focusTick);
   const canUndo = useEditorStore((s) => s.canUndo);
   const undo = useEditorStore((s) => s.undo);
@@ -277,7 +373,8 @@ export function AgentPanel() {
 
   const active = chat.sessionId !== null && (chat.status === "ready" || chat.status === "running");
   const running = chat.status === "running";
-  const undoId = lastSuccessfulEditId(chat.items);
+  const undoId = canUndo ? undoableTurnActionsId(chat.items) : null;
+  const activity = running ? activityLabel(chat.items) : null;
   const vendor = chat.agentId ? VENDOR_NOTICE[chat.agentId] : null;
   const agentName = agents?.find((a) => a.id === chat.agentId)?.name ?? chat.agentId ?? "";
   const statusText =
@@ -315,6 +412,7 @@ export function AgentPanel() {
           {statusText ? <span className="agent-status">{statusText}</span> : null}
         </div>
         <div className="agent-header-actions">
+          <SettingsPopover active={active} />
           {chat.status === "ended" || chat.status === "idle" ? null : (
             <IconButton
               iconOnly
@@ -336,31 +434,15 @@ export function AgentPanel() {
         </div>
       ) : null}
 
-      <label className="agent-toggle">
-        <input
-          type="checkbox"
-          checked={autoEdits}
-          onChange={(e) => void setAutoEdits(e.target.checked)}
-        />
-        Apply edits without asking (undoable)
-      </label>
-
       <div className="agent-transcript" ref={transcriptRef} aria-live="polite">
         {chat.items.length === 0 ? (
           <p className="agent-muted">
-            Ask for an edit, for example “trim the first clip to 5 seconds”. Edits appear in the
-            timeline as they happen.
+            Ask for an edit, for example “trim the first clip to 5 seconds”. The agent sees your
+            timeline, so you can refer to clips by name or position.
           </p>
         ) : null}
-        {chat.items.map((item) => (
-          <TranscriptItemView
-            key={`${item.kind}-${item.id}`}
-            item={item}
-            undoId={canUndo ? undoId : null}
-            onUndo={() => void undo()}
-            onAnswer={(rid, opt) => void answerPermission(rid, opt)}
-          />
-        ))}
+        {renderTranscript(chat.items, undoId, () => void undo(), (rid, opt) => void answerPermission(rid, opt))}
+        {activity ? <div className="agent-activity">{activity}</div> : null}
       </div>
 
       {chat.error ? <div className="agent-error">{chat.error}</div> : null}

@@ -40,12 +40,32 @@ export type AgentEvent =
 /** The `agent:event` payload: the event plus the session it belongs to. */
 export type AgentEnvelope = { session_id: string } & AgentEvent;
 
-/** Context chips sent with a prompt (Rust `ChatContext`, camelCase). */
+/**
+ * What the panel sends with a prompt beyond the message (Rust `ChatContext`, camelCase). The
+ * playhead, timeline outline and open sequence go to the agent automatically in the backend's
+ * context block, so only the user's selection is sent here.
+ */
 export interface ChatContext {
-  playheadSecs?: number;
   selectedClipIds?: string[];
-  sequenceId?: string;
 }
+
+/** Launch options chosen in the panel's settings (Rust `LaunchOptions`, camelCase). */
+export interface LaunchOptions {
+  model: string;
+  effort: string;
+  /** Let the agent use Claude Code's own built-in tools (each still asks first). */
+  nativeTools: boolean;
+}
+
+export const DEFAULT_LAUNCH_OPTIONS: LaunchOptions = {
+  model: "sonnet",
+  effort: "low",
+  nativeTools: false,
+};
+
+/** Must match the backend's allowed lists (agent_chat/driver.rs). */
+export const MODEL_CHOICES = ["sonnet", "opus", "fable"] as const;
+export const EFFORT_CHOICES = ["low", "medium", "high", "xhigh", "max"] as const;
 
 export type TranscriptItem =
   | { kind: "user"; id: string; text: string; context: ChatContext | null }
@@ -57,6 +77,16 @@ export type TranscriptItem =
       input: unknown;
       status: "running" | "done" | "error";
       output: string;
+    }
+  | {
+      /** What an `edit` call changed, as plain lines, shown as the turn's action list. */
+      kind: "actions";
+      id: string;
+      toolId: string;
+      /** One line per command, e.g. "Trimmed 'Gameplay 1' to 0:00.0-0:05.0". */
+      lines: string[];
+      /** Short ids of anything the edit created. */
+      created: string[];
     }
   | {
       kind: "permission";
@@ -168,19 +198,29 @@ export function reduceAgentEvent(s: AgentChatState, env: AgentEnvelope): AgentCh
         ],
       };
 
-    case "tool_finished":
-      return {
-        ...base,
-        items: base.items.map((item) =>
-          item.kind === "tool" && item.id === env.id
-            ? {
-                ...item,
-                status: env.is_error ? "error" : "done",
-                output: env.output_summary,
-              }
-            : item,
-        ),
-      };
+    case "tool_finished": {
+      const finished = base.items.find((item) => item.kind === "tool" && item.id === env.id);
+      const items = base.items.map((item) =>
+        item.kind === "tool" && item.id === env.id
+          ? {
+              ...item,
+              status: env.is_error ? ("error" as const) : ("done" as const),
+              output: env.output_summary,
+            }
+          : item,
+      );
+      // A successful edit becomes plain action lines in the transcript; the raw call stays
+      // available under the turn's details.
+      if (finished && finished.kind === "tool" && isEditTool(finished.name) && !env.is_error) {
+        const { lines, created } = parseEditOutput(env.output_summary);
+        const [id, next] = nextId({ ...base, items }, "act");
+        return {
+          ...next,
+          items: [...next.items, { kind: "actions", id, toolId: env.id, lines, created }],
+        };
+      }
+      return { ...base, items };
+    }
 
     case "permission_request": {
       const [, next] = nextId(base, "perm");
@@ -244,9 +284,91 @@ export function reduceAgentEvent(s: AgentChatState, env: AgentEnvelope): AgentCh
   }
 }
 
-/** Whether a tool name is a Renderly edit that changed the project (shows an edit card). */
+/** The Renderly tools as Claude Code names them (`mcp__<server>__<tool>`, server `renderly`). */
+export const EDIT_TOOL = "mcp__renderly__edit";
+const PERCEPTION_TOOLS = new Set([
+  "mcp__renderly__timeline",
+  "mcp__renderly__look",
+  "mcp__renderly__assets",
+  "mcp__renderly__find_media",
+]);
+
+/** The `edit` tool: applies commands to the project as one undo step. */
+export function isEditTool(name: string): boolean {
+  return name === EDIT_TOOL;
+}
+
+/** Read-only tools the agent uses to look (outline, frame, catalog, media search). */
+export function isPerceptionTool(name: string): boolean {
+  return PERCEPTION_TOOLS.has(name);
+}
+
+/**
+ * Whether a tool name is a Renderly edit that changed the project. Kept for the older tool
+ * names as well, so transcripts from before the `edit` tool still read correctly.
+ */
 export function isRenderlyEdit(name: string): boolean {
-  return name === "mcp__renderly__apply_command" || name === "mcp__renderly__apply_commands";
+  return (
+    isEditTool(name) ||
+    name === "mcp__renderly__apply_command" ||
+    name === "mcp__renderly__apply_commands"
+  );
+}
+
+/**
+ * Splits an `edit` result into action lines ("- ...") and the "Created: ..." short ids. Anything
+ * else in the text is ignored.
+ */
+export function parseEditOutput(output: string): { lines: string[]; created: string[] } {
+  const lines: string[] = [];
+  const created: string[] = [];
+  for (const raw of output.split("\n")) {
+    const line = raw.trim();
+    if (line.startsWith("- ")) lines.push(line.slice(2));
+    else if (line.startsWith("Created: ")) {
+      for (const part of line.slice("Created: ".length).split(";")) {
+        const text = part.trim();
+        if (text) created.push(text);
+      }
+    }
+  }
+  return { lines, created };
+}
+
+/**
+ * Short ids of the clips an edit touched, from its command inputs. `knownClipIds` are full
+ * ids; a short id matches the full id it prefixes.
+ */
+export function clipIdsTouchedByEdit(input: unknown, knownClipIds: string[]): string[] {
+  const obj = (input ?? {}) as Record<string, unknown>;
+  const commands = Array.isArray(obj.commands) ? obj.commands : [];
+  const out = new Set<string>();
+  for (const c of commands) {
+    if (!c || typeof c !== "object") continue;
+    const clip = (c as Record<string, unknown>).clip_id;
+    if (typeof clip !== "string" || clip.length < 8) continue;
+    const full = knownClipIds.find((id) => id.toLowerCase().startsWith(clip.toLowerCase()));
+    if (full) out.add(full);
+  }
+  return [...out];
+}
+
+/** What the agent is doing right now, for the working indicator. Null when idle. */
+export function activityLabel(items: TranscriptItem[]): string | null {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i]!;
+    if (item.kind === "tool" && item.status === "running") {
+      if (isEditTool(item.name)) return "Applying the edit…";
+      if (item.name === "mcp__renderly__timeline") return "Reading the timeline…";
+      if (item.name === "mcp__renderly__look") return "Looking at the frame…";
+      if (item.name === "mcp__renderly__find_media") return "Searching for media…";
+      if (item.name === "mcp__renderly__assets") return "Checking effects and styles…";
+      return "Using a tool…";
+    }
+    if (item.kind === "agent" && item.streaming) return null;
+    if (item.kind === "user") return "Working…";
+  }
+  return null;
 }
 
 /** Human-readable label for a command name: "SetClipOpacity" -> "Set clip opacity". */
@@ -263,7 +385,7 @@ export function humanizeCommand(name: string): string {
 export function describeEdit(name: string, input: unknown): { title: string; count: number } {
   const obj = (input ?? {}) as Record<string, unknown>;
   const commands: Record<string, unknown>[] = [];
-  if (name.endsWith("apply_commands") && Array.isArray(obj.commands)) {
+  if (Array.isArray(obj.commands)) {
     for (const c of obj.commands) if (c && typeof c === "object") commands.push(c as Record<string, unknown>);
   } else if (obj.command && typeof obj.command === "object") {
     commands.push(obj.command as Record<string, unknown>);
@@ -276,8 +398,20 @@ export function describeEdit(name: string, input: unknown): { title: string; cou
   return { title: `${kind}${clip}${more}`, count: commands.length };
 }
 
-/** The most recent successful edit card: the only one whose Undo is offered, because Undo
- * reverts the latest project change, not an arbitrary one. */
+/**
+ * The action list of the current turn, when it is the most recent turn with edits. Undo is
+ * offered only there: the whole turn is one undo step, and only the latest step is reachable.
+ */
+export function undoableTurnActionsId(items: TranscriptItem[]): string | null {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i]!;
+    if (item.kind === "user") return null;
+    if (item.kind === "actions") return item.id;
+  }
+  return null;
+}
+
+/** The most recent successful edit card (legacy tool-card form; kept for older transcripts). */
 export function lastSuccessfulEditId(items: TranscriptItem[]): string | null {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]!;

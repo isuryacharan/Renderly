@@ -3,7 +3,9 @@
 
 use renderly_app_lib::agent_chat::claude::ClaudeDriver;
 use renderly_app_lib::agent_chat::codex::CodexDriver;
-use renderly_app_lib::agent_chat::driver::{AgentDriver, SessionConfig};
+use renderly_app_lib::agent_chat::driver::{
+    AgentDriver, LaunchOptions, McpEndpointInfo, SessionConfig,
+};
 use renderly_app_lib::agent_chat::events::{AgentEnvelope, AgentEvent, EventSink};
 use renderly_app_lib::agent_chat::permission::PermissionBroker;
 use std::path::{Path, PathBuf};
@@ -33,9 +35,17 @@ impl Harness {
         let sink: EventSink = Arc::new(move |env| s2.lock().unwrap().push(env));
         let session_id = uuid::Uuid::new_v4().to_string();
         let broker = PermissionBroker::new(session_id.clone(), Arc::clone(&sink), false);
+        // Claude is pointed at an in-process HTTP endpoint with a bearer token (the real
+        // server needs a running app; its transport is covered by mcp_http unit tests). The
+        // fake agent only checks that the config is written and the turn runs.
         let cfg = SessionConfig {
             session_id,
             project_path: project,
+            mcp_endpoint: Some(McpEndpointInfo {
+                url: "http://127.0.0.1:9/mcp".into(),
+                token: "test-token".into(),
+            }),
+            options: LaunchOptions::default(),
             mcp_binary: PathBuf::from("renderly-mcp-not-used-by-the-fake"),
             program: Some(fake_agent_path()),
             scratch_dir: dir.join("scratch"),

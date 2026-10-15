@@ -442,6 +442,7 @@ pub struct MediaItem {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum TrackKind {
     Video,
@@ -473,6 +474,7 @@ pub struct Track {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum TrackAudioRole {
     Voiceover,
@@ -634,6 +636,7 @@ impl AdjustmentClip {
 /// Static spatial + opacity transform for a media clip (Phase 3.1).
 /// Keyframes override these when present for a given property.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ClipTransform {
     /// NDC offset from canvas center (−1 ≈ left/bottom edge, +1 ≈ right/top).
     #[serde(default)]
@@ -742,6 +745,7 @@ pub fn cover_window(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum AnimProperty {
     PosX,
@@ -760,6 +764,7 @@ pub enum AnimProperty {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Easing {
     #[default]
@@ -771,6 +776,7 @@ pub enum Easing {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Keyframe {
     /// Time relative to the clip's timeline start (`position_secs`).
     pub time_secs: f64,
@@ -786,12 +792,14 @@ pub struct Keyframe {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct KeyframeTrack {
     pub property: AnimProperty,
     pub keys: Vec<Keyframe>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EffectInstance {
     pub id: Id,
     /// Builtin id (Phase 3.4): `builtin:color_adjust`, `builtin:blur`,
@@ -809,12 +817,14 @@ fn default_effect_enabled() -> bool {
 
 /// Outgoing transition at the end of a media clip (Phase 3.5). Video tracks only for now.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ClipTransition {
     pub kind: TransitionKind,
     pub duration_secs: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum TransitionKind {
     Crossfade,
@@ -924,6 +934,7 @@ fn default_speed() -> f64 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ClipMask {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -940,6 +951,7 @@ fn default_true() -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClipMaskKind {
     None,
@@ -972,6 +984,7 @@ pub enum ClipMaskKind {
 
 /// Convenience alias used by mask application helpers.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum MaskShape {
     Rect {
         x: f64,
@@ -1013,6 +1026,7 @@ impl ClipMaskKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BackgroundRemoval {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -1040,6 +1054,7 @@ pub struct BackgroundRemoval {
 /// *source* time `start_secs + i / fps`, so a matte is valid for every clip that shows that part
 /// of the source regardless of speed or timeline position.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MatteFrames {
     /// Source time (seconds) of matte frame 0.
     pub start_secs: f64,
@@ -1079,6 +1094,7 @@ fn default_bg_threshold() -> f64 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AudioDenoise {
     #[serde(default = "default_true")]
     pub enabled: bool,

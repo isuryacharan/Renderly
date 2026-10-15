@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useEditorStore } from "../../store/editorStore";
+import { useAgentChatStore } from "../../store/agentChatStore";
 import { selectActiveView, sequenceOfMedia, trackAcceptsMedia } from "../../lib/container";
 import { renderTimeline, renderTimelineOverlay } from "../../timeline/renderer";
 import { useTimelineInteractions } from "../../timeline/interactions";
@@ -23,6 +24,7 @@ function currentRenderState() {
     transitionDropTarget: s.transitionDropTarget,
     snapGuideSecs: s.snapGuideSecs,
     mediaAssets: s.mediaAssets,
+    highlightClipIds: useAgentChatStore.getState().highlightClipIds,
   };
 }
 
@@ -62,6 +64,8 @@ export function TimelineCanvas() {
   const dropMediaOnTimeline = useEditorStore((s) => s.dropMediaOnTimeline);
   const openContextMenu = useEditorStore((s) => s.openContextMenu);
   const openSequence = useEditorStore((s) => s.openSequence);
+  // Clips the agent just touched, drawn with a short-lived outline (agentChatStore).
+  const highlightClipIds = useAgentChatStore((s) => s.highlightClipIds);
 
   useTimelineInteractions(canvasRef);
 
@@ -84,8 +88,9 @@ export function TimelineCanvas() {
       transitionDropTarget,
       snapGuideSecs,
       mediaAssets,
+      highlightClipIds,
     });
-  }, [project, selection, selections, pxPerSec, scrollX, scrollY, dragGhost, transitionDropTarget, mediaAssets, themeEpoch]);
+  }, [project, selection, selections, pxPerSec, scrollX, scrollY, dragGhost, transitionDropTarget, mediaAssets, themeEpoch, highlightClipIds]);
 
   // Transient overlay repaint: playhead + snap guide only.
   useEffect(() => {

@@ -2373,6 +2373,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
 name = "hyper"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2385,6 +2391,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -4581,13 +4588,21 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 name = "renderly-app"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "bytes",
  "chrono",
  "futures-util",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "json-patch 4.2.0",
  "parking_lot",
  "rand 0.8.7",
  "renderly-core",
+ "reqwest",
+ "rmcp",
  "rodio",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tauri",
@@ -4596,6 +4611,8 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite",
+ "tokio-util",
+ "tower-service",
  "uuid",
 ]
 
@@ -4623,6 +4640,7 @@ dependencies = [
  "nnnoiseless",
  "pollster",
  "reqwest",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "sha2",
@@ -4760,18 +4778,27 @@ checksum = "f00a32c3b81b7b254076a65abd5ab2551209146713ba38f73818657e865e9433"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "bytes",
  "chrono",
  "futures",
+ "http",
+ "http-body",
+ "http-body-util",
  "pastey 0.2.3",
  "pin-project-lite",
+ "rand 0.10.2",
  "rmcp-macros",
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "sse-stream",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-stream",
  "tokio-util",
+ "tower-service",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -4991,6 +5018,7 @@ dependencies = [
  "schemars_derive 1.2.1",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -5402,6 +5430,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9571ea910ebd84c86af4b3ed27f9dbdc6ad06f17c5f96146b2b671e2976744f"
 dependencies = [
  "bitflags 2.13.0",
+]
+
+[[package]]
+name = "sse-stream"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c25ac7aff0abd1dbc474536e40416e1102c7dd9bfba0b9861c6d357f835dcfb4"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "http-body",
+ "http-body-util",
+ "pin-project-lite",
 ]
 
 [[package]]
@@ -6119,6 +6160,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
  "rustls",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-stream"
+version = "0.1.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
  "tokio",
 ]
 

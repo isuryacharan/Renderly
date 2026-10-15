@@ -39,6 +39,8 @@ export interface TimelineRenderState {
   transitionDropTarget?: { trackId: string; clipId: string; valid: boolean } | null;
   snapGuideSecs?: number | null;
   mediaAssets?: Record<string, MediaAssetEntry>;
+  /** Full clip ids an agent edit just touched; drawn with a short dashed outline. */
+  highlightClipIds?: string[];
 }
 
 /// Tiles the strip image across the clip's rectangle, sampling the tile nearest each
@@ -641,6 +643,17 @@ export function renderTimeline(canvas: HTMLCanvasElement, state: TimelineRenderS
         ctx.stroke();
         ctx.restore();
         if (cw > 30) drawTrimGrips(ctx, x, cy, cw, ch);
+      }
+
+      if (state.highlightClipIds?.includes(clip.id)) {
+        // Agent edit highlight: a dashed accent outline the store clears after a moment.
+        ctx.save();
+        ctx.strokeStyle = theme.clipBorderSelected;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 3]);
+        roundRect(ctx, x - 3, cy - 3, cw + 6, ch + 6, CLIP_RADIUS + 3);
+        ctx.stroke();
+        ctx.restore();
       }
     }
 

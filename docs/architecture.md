@@ -104,6 +104,28 @@ MCP server (stdio, HTTP later) wrapping the same `renderly-core` API as the CLI,
 perception tools exposed as MCP tools. Built in Phase 1 — do not build ahead of the CLI
 proving the command API is sufficient.
 
+## In-app agent tools (2026-10-16)
+
+The desktop app hosts the agent's tools itself, for the Claude Code session. Full design:
+[agent-chat-design.md](agent-chat-design.md) §0.
+
+```
+renderly-app (Tauri)                               Claude Code (user's login)
+  AppState ──apply_commands_inner──┐                 --mcp-config: http, bearer token
+  History (undo groups)            │                         │
+  agent_chat/mcp_http.rs ◄─────────┼── Streamable HTTP ──────┘  127.0.0.1:<random>
+    rmcp server: RenderlyTools     │
+      edit · timeline · look       │   same command dispatch as the GUI
+      find_media · assets          │   (AGENTS.md §0.1); project:changed emitted
+      permission_prompt ───────────┘
+```
+
+- `renderly-core` has a non-default `schema` feature. It derives `schemars::JsonSchema` on
+  `Command` and the types it reaches, so the `edit` tool's schema is the real enum. The default and
+  wasm builds do not include it.
+- Each session has its own endpoint and token, which stop with the session.
+- `renderly-mcp` is unchanged. It still serves external agents and the Codex driver.
+
 ## `renderly-app`
 
 Tauri 2 desktop app. Rust backend commands call into `renderly-core` exactly like the CLI

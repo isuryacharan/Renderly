@@ -66,6 +66,10 @@ struct Session {
 struct History {
     undo: Vec<Arc<Project>>,
     redo: Vec<Arc<Project>>,
+    /// An agent turn is in progress: its edits share one undo entry (see `begin_group`).
+    group_active: bool,
+    /// Index in `undo` of the snapshot that opened the current group, once an edit has run.
+    group_base: Option<usize>,
 }
 
 const HISTORY_CAP: usize = 100;
@@ -75,7 +79,21 @@ impl History {
         Self {
             undo: Vec::new(),
             redo: Vec::new(),
+            group_active: false,
+            group_base: None,
         }
+    }
+
+    /// Open an undo group: every edit until `end_group` is one undo step. The first edit pushes
+    /// the pre-turn snapshot; later edits in the group add nothing, so one undo reverts them all.
+    fn begin_group(&mut self) {
+        self.group_active = true;
+        self.group_base = None;
+    }
+
+    fn end_group(&mut self) {
+        self.group_active = false;
+        self.group_base = None;
     }
 
     /// Push onto the bounded undo stack, evicting the oldest entry past `HISTORY_CAP`.
@@ -83,19 +101,35 @@ impl History {
         self.undo.push(project);
         if self.undo.len() > HISTORY_CAP {
             self.undo.remove(0);
+            // The group's base snapshot moved down one slot; if it was evicted the group no
+            // longer owns an entry, so its next edit opens a fresh one.
+            self.group_base = match self.group_base {
+                Some(0) | None => None,
+                Some(i) => Some(i - 1),
+            };
         }
     }
 
     /// Push a pre-mutation snapshot and drop the (now-stale) redo branch — call this for
     /// a genuinely new edit, not for `redo()`'s own bookkeeping (see `push_undo_bounded`).
     fn push_undo(&mut self, project: Arc<Project>) {
-        self.push_undo_bounded(project);
         self.redo.clear();
+        if self.group_active {
+            if self.group_base.is_some_and(|i| i < self.undo.len()) {
+                // Already inside this turn's group: its base snapshot covers this edit.
+                return;
+            }
+            self.push_undo_bounded(project);
+            self.group_base = Some(self.undo.len() - 1);
+            return;
+        }
+        self.push_undo_bounded(project);
     }
 
     fn clear(&mut self) {
         self.undo.clear();
         self.redo.clear();
+        self.end_group();
     }
 
     fn status(&self) -> HistoryStatus {
@@ -128,6 +162,9 @@ pub(crate) struct CommandsResult {
     pub revision: u64,
     pub patch: json_patch::Patch,
     pub outcomes: Vec<String>,
+    /// Typed outcomes for in-app callers (agent edit summaries). Not sent to the webview.
+    #[serde(skip)]
+    pub typed_outcomes: Vec<CommandOutcome>,
 }
 
 /// Undo/redo response — same history flags as before, plus revision + patch (B3).
@@ -235,6 +272,16 @@ impl AppState {
 
     pub(crate) fn revision_value(&self) -> u64 {
         self.revision.load(Ordering::SeqCst)
+    }
+
+    /// Start an agent turn's undo group (all its edits become one undo step).
+    pub(crate) fn begin_agent_group(&self) {
+        self.history.lock().begin_group();
+    }
+
+    /// End the agent turn's undo group. Edits after this are separate undo steps again.
+    pub(crate) fn end_agent_group(&self) {
+        self.history.lock().end_group();
     }
 
     /// E3: render a PNG of the live session project via its own `FrameRenderer` (headless,
@@ -405,7 +452,8 @@ impl AppState {
         Ok(CommandsResult {
             revision,
             patch,
-            outcomes: outcomes.into_iter().map(|o| format!("{o:?}")).collect(),
+            outcomes: outcomes.iter().map(|o| format!("{o:?}")).collect(),
+            typed_outcomes: outcomes,
         })
     }
 
@@ -1715,6 +1763,66 @@ mod history_tests {
         // 21st push (edits 0..19 evicted), not edit-0.
         assert_eq!(history.undo.first().unwrap().name, "edit-20");
         assert_eq!(history.undo.last().unwrap().name, "edit-119");
+    }
+
+    #[test]
+    fn an_agent_turn_is_one_undo_step() {
+        let mut h = History::new();
+        h.begin_group();
+        h.push_undo(dummy_project("before-turn"));
+        h.push_undo(dummy_project("after-edit-1"));
+        h.push_undo(dummy_project("after-edit-2"));
+        assert_eq!(h.undo.len(), 1, "all three edits share one entry");
+        assert_eq!(
+            h.undo[0].name, "before-turn",
+            "the entry is the pre-turn state"
+        );
+        h.end_group();
+        // A manual edit after the turn is its own step.
+        h.push_undo(dummy_project("manual"));
+        assert_eq!(h.undo.len(), 2);
+    }
+
+    #[test]
+    fn each_agent_turn_opens_its_own_group() {
+        let mut h = History::new();
+        h.begin_group();
+        h.push_undo(dummy_project("turn-1-start"));
+        h.push_undo(dummy_project("turn-1-edit"));
+        h.end_group();
+        h.begin_group();
+        h.push_undo(dummy_project("turn-2-start"));
+        h.push_undo(dummy_project("turn-2-edit"));
+        h.end_group();
+        assert_eq!(h.undo.len(), 2);
+        assert_eq!(h.undo[1].name, "turn-2-start");
+    }
+
+    #[test]
+    fn a_group_edit_still_clears_redo() {
+        let mut h = History::new();
+        h.redo.push(dummy_project("redo"));
+        h.begin_group();
+        h.push_undo(dummy_project("start"));
+        assert!(h.redo.is_empty());
+        h.push_undo(dummy_project("edit"));
+        assert!(h.redo.is_empty());
+    }
+
+    #[test]
+    fn group_base_evicted_by_the_cap_opens_a_fresh_entry() {
+        let mut h = History::new();
+        for i in 0..HISTORY_CAP {
+            h.push_undo(dummy_project(&format!("old-{i}")));
+        }
+        h.begin_group();
+        // The turn's first edit pushes past the cap, evicting the oldest entry; the group
+        // base is still the newest entry, so the turn's next edit must coalesce into it.
+        h.push_undo(dummy_project("turn-start"));
+        assert_eq!(h.undo.len(), HISTORY_CAP);
+        h.push_undo(dummy_project("turn-edit"));
+        assert_eq!(h.undo.len(), HISTORY_CAP, "still one entry for the turn");
+        assert_eq!(h.undo.last().map(|p| p.name.as_str()), Some("turn-start"));
     }
 
     #[test]
