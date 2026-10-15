@@ -165,8 +165,12 @@ pub fn audio_peaks(path: &Path, buckets: u32) -> Result<AudioPeaks, AnalysisErro
     let duration = media_duration(path).max(0.1);
     let bucket_secs = duration / buckets as f64;
 
-    // ~6 PCM samples per UI bucket is enough for a max-abs envelope. Cap the rate so
-    // short clips still get enough resolution and long clips stay cheap to decode.
+    // ~6 PCM samples per UI bucket is enough for an envelope. Cap the rate so short clips
+    // still get enough resolution and long clips stay cheap to decode. The signal is
+    // rectified (`abs`) BEFORE resampling: the resampler low-passes everything above half the
+    // target rate, which on its own removed any tone or voice above ~25 Hz for long clips and
+    // drew them flat. Rectified, the resampler keeps the amplitude envelope (the mean of
+    // |signal| — about 0.64 of the peak for a sine), which is what a waveform view needs.
     let target_samples = (buckets as f64 * 6.0).max(buckets as f64);
     let sample_rate = ((target_samples / duration).ceil() as u32).clamp(50, 4_000);
 
@@ -178,6 +182,8 @@ pub fn audio_peaks(path: &Path, buckets: u32) -> Result<AudioPeaks, AnalysisErro
             "-sn",
             "-ac",
             "1",
+            "-af",
+            "aeval=exprs=abs(val(0))",
             "-ar",
             &sample_rate.to_string(),
             "-f",
@@ -266,6 +272,44 @@ mod tests {
         let spans = parse_silence(stderr).unwrap();
         assert_eq!(spans.len(), 1);
         assert!((spans[0].duration_secs - 1.5).abs() < 1e-9);
+    }
+
+    /// Regression: a steady 440 Hz tone over a long clip used to come back nearly flat
+    /// (~0.005) because the low-rate resample filtered the tone out before the peaks were
+    /// measured. The rectified envelope keeps it.
+    #[test]
+    fn audio_peaks_keep_tones_above_the_decode_rate() {
+        if !ffmpeg_available() {
+            eprintln!("skipping audio_peaks tone test: ffmpeg not on PATH");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("renderly-peaks-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("tone.wav");
+        // 20 s: 440 Hz at amplitude 0.5 for 10 s, then 10 s of silence.
+        let status = crate::proc::command(ffmpeg_path().unwrap())
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+            ])
+            .arg("aevalsrc=exprs='0.5*sin(2*PI*440*t)*lt(t,10)':s=48000:d=20")
+            .arg(&wav)
+            .status_serial()
+            .unwrap();
+        assert!(status.success());
+        let peaks = audio_peaks(&wav, 64).unwrap();
+        assert_eq!(peaks.peaks.len(), 64);
+        let (tone, silence) = peaks.peaks.split_at(32);
+        let tone_min = tone[1..31].iter().copied().fold(f32::MAX, f32::min);
+        let silence_max = silence[1..].iter().copied().fold(0.0_f32, f32::max);
+        assert!(tone_min > 0.25, "tone envelope too low: {tone_min}");
+        assert!(silence_max < 0.01, "silence not silent: {silence_max}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

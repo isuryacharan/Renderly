@@ -29,7 +29,7 @@ const ipc = vi.hoisted(() => ({
 }));
 vi.mock("../lib/ipc", () => ipc);
 
-import { connectStoreToBackendEvents, useEditorStore } from "./editorStore";
+import { connectStoreToBackendEvents, formatCommandError, useEditorStore } from "./editorStore";
 
 const initial = useEditorStore.getState();
 const store = () => useEditorStore.getState();
@@ -936,5 +936,19 @@ describe("nested sequences (schema v7)", () => {
     const batch = ipc.applyCommands.mock.calls[0][0];
     expect(batch[0]).toMatchObject({ command: "AddTrack", kind: "video", sequence_id: "s2" });
     expect(batch[1]).toMatchObject({ command: "AddAdjustmentLayer", track_id: batch[0].id, duration_secs: 2 });
+  });
+});
+
+describe("formatCommandError", () => {
+  it("turns the engine's overlap error into a sentence without the track id", () => {
+    const msg = formatCommandError(
+      new Error("clip range [31, 36) overlaps an existing clip on track bbbbbbbb-0000-4000-8000-000000000007"),
+    );
+    expect(msg).toBe("Can't place it there: 31.0s–36.0s overlaps another clip on that track");
+    expect(msg).not.toMatch(/[0-9a-f]{8}-/);
+  });
+
+  it("keeps other engine errors as they are", () => {
+    expect(formatCommandError(new Error("track not found: x"))).toBe("track not found: x");
   });
 });

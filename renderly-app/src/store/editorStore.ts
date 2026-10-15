@@ -1097,9 +1097,14 @@ function errMsg(e: unknown): string {
 
 /// Surfaces the backend `CommandError` / Tauri error string without a redundant
 /// "Edit failed:" prefix when the message is already self-describing.
-function formatCommandError(e: unknown, fallbackPrefix = "Edit failed"): string {
+export function formatCommandError(e: unknown, fallbackPrefix = "Edit failed"): string {
   const msg = errMsg(e).trim();
   if (!msg) return fallbackPrefix;
+  const overlap = /clip range \[([\d.]+), ([\d.]+)\) overlaps an existing clip on track [0-9a-f-]{36}/i.exec(msg);
+  if (overlap) {
+    const secs = (v: string) => `${Number(v).toFixed(1)}s`;
+    return `Can't place it there: ${secs(overlap[1])}–${secs(overlap[2])} overlaps another clip on that track`;
+  }
   // Engine errors that carry a bare UUID read badly in a toast; say what to do instead.
   if (/sequence [0-9a-f-]{36} is still placed/i.test(msg)) {
     return "That sequence is still used by a clip - delete or unnest those clips first";

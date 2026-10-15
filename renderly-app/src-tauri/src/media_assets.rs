@@ -42,7 +42,7 @@ const MAX_TILES: u32 = 24;
 const TILE_HEIGHT: u32 = 72;
 const WAVEFORM_BUCKETS: u32 = 512;
 /// Bumped when generation params change so stale heavy strips/peaks are rebuilt once.
-const CACHE_VERSION: &str = "v2";
+const CACHE_VERSION: &str = "v3";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThumbInfo {
