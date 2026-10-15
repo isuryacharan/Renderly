@@ -1,6 +1,6 @@
 # In-app agent chat: design note
 
-Status: **design, not implemented.** Parity row: [parity-board.md](parity-board.md) "In-app agent chat" (⬜).
+Status: **design, decisions recorded 2026-10-15; not implemented.** Parity row: [parity-board.md](parity-board.md) "In-app agent chat" (⬜).
 Date of research: 2026-10-15. Source-of-truth specs this builds on:
 [mcp-agent-guide.md](mcp-agent-guide.md), [bridge-protocol.md](bridge-protocol.md),
 [command-api.md](command-api.md), [architecture.md](architecture.md), [AGENTS.md](../AGENTS.md).
@@ -15,18 +15,37 @@ never holds the user's agent credentials.
 
 ## 1. Summary
 
-- **Protocol: Agent Client Protocol (ACP).** Renderly acts as an ACP *client*, spawns the agent as a
-  stdio subprocess, and passes `renderly-mcp` to the agent as an MCP server in `session/new`.
-- **Where the client lives: Rust, in `renderly-app/src-tauri`**, as a new module. Not in `renderly-core`
-  (AGPL rule 2: the engine never depends on UI or process management), and not in the webview.
-- **Blocking policy issue for Claude and Gemini.** Vendor terms restrict using a subscription login
-  through a third-party integration. The Claude adapter itself ships a flag that refuses subscription
-  billing. The MVP must therefore default to **API-key auth** for Claude and Gemini, and the owner must
-  decide whether subscription login is offered at all (open question Q1, Q2).
-- **Codex is the least constrained** of the three on paper, but the ChatGPT-login reuse question is
-  unverified (Q3).
-- **Antigravity is proprietary** and has no official headless interface. It is a Phase 3 candidate
-  at best (Q4).
+**Decision (owner, 2026-10-15): drive the agent CLIs the user has already installed and signed
+into, the way [T3 Code](https://github.com/pingdotgg/t3code) does.** Renderly never performs a login,
+never sees a token or API key, and never calls a model API. It launches the vendor's own,
+unmodified CLI as a child process; the CLI uses whatever account the user signed it into
+(subscription or API key). This supersedes the earlier "API key by default" proposal and closes
+Q1–Q3 in §9.
+
+- **Embedded in the main editor window**, not a separate window or modal: a docked, resizable
+  panel beside the inspector (§4.1).
+- **Per-agent drivers behind one interface** in `renderly-app/src-tauri` (new `agent_chat`
+  module). Each driver speaks the CLI's own headless protocol:
+
+  | Agent | Driver | User setup |
+  |---|---|---|
+  | Codex | `codex app-server` — JSON-RPC over stdio, one process per session (as T3 Code does) | install Codex CLI, `codex login` |
+  | Claude Code | `claude -p --input-format stream-json --output-format stream-json --verbose`, with `--mcp-config` pointing at `renderly-mcp` and a Renderly permission bridge | install Claude Code, `claude auth login` (or `/login`) |
+  | Gemini CLI | `gemini --acp` (Google's own CLI speaking ACP) | install Gemini CLI, sign in |
+  | Others | ACP, when the agent's own CLI speaks it natively | per agent |
+
+  Third-party wrappers that re-implement a vendor's login (for example the ACP adapter built on
+  the Claude Agent SDK) are **not** used.
+- **Renderly's MCP server is the agent's only way to edit.** Each session hands the CLI
+  `renderly-mcp --project <open project>` as an MCP server, so edits flow through the command API
+  and the live bridge into the app's shared undo stack (§3.3, §3.4).
+- **Not in `renderly-core`** (AGENTS.md §0.2: the engine never depends on UI or process
+  management), and not in the webview (no process-spawn capability in the page).
+- **Antigravity**: only if its own CLI exposes a documented headless or ACP mode; the
+  `agy_acp_server` download in the ACP registry is not used (Q4).
+
+The research below (§2) is kept for reference. Where it discusses ACP adapters and SDK login
+policy, the decision above takes precedence.
 
 ---
 
@@ -189,10 +208,16 @@ So Ctrl+Z in the app undoes an agent edit, and the chat undo button calls the br
 
 ## 4. UX
 
-### 4.1 Placement
+### 4.1 Placement: embedded in the main window
 
-- Right-hand dock, next to the inspector, toggled from the toolbar. Collapsible. Does not cover the preview canvas (preview is webview; keep the chat in a separate column so the preview's `#preview-host` keeps its layout).
-- Empty state: agent picker, "Connect your agent" if none is detected.
+- The chat is part of the editor layout, always one click away: a **docked panel in the right
+  column**, sharing it with the inspector through a tab strip ("Inspector" / "Agent"), and able to
+  split the column vertically when both are wanted. Resizable; width persists per user.
+- Toggled from the top bar and with a shortcut (`Ctrl+L`), which focuses the prompt box.
+- Never covers the preview canvas or the timeline; the preview's `#preview-host` keeps its layout.
+- The prompt box carries context chips (playhead time, selected clips, open sequence) that the
+  user can remove before sending.
+- Empty state: agent picker listing detected CLIs (§4.5), or "Connect your agent" instructions.
 
 ### 4.2 Message model
 
@@ -258,9 +283,11 @@ Rules:
 ### 5.2 Credentials
 
 - Renderly stores **no** vendor credentials. Login state stays with the vendor's CLI (`~/.claude`, `~/.codex/auth.json`, the Gemini CLI store, the Antigravity store).
-- Renderly never reads, copies, or displays those files. It only checks the agent's `authMethods` and status through ACP.
-- API keys come from the user's environment or the vendor CLI. Renderly does not prompt for them in a form (the rule is "Never enter passwords or keys into a Renderly UI"). Test keys during development follow the AGENTS.md test-only exception, not production.
-- **Subscription login is off by default for Claude and Gemini** (§2.3, Q1, Q2). For Claude, the adapter must be launched with `--hide-claude-auth`; the owner decides otherwise.
+- Renderly never reads, copies, or displays those files, and never asks for a key in its UI. It
+  only asks the CLI whether it is signed in (its own status command or protocol call) and, if not,
+  tells the user which command to run in a terminal (`claude auth login`, `codex login`, …).
+- Whatever account the user signed the CLI into — subscription or API key — is what the session
+  uses. That is the user running the vendor's own tool; Renderly is the screen it reports to.
 
 ### 5.3 Data leaving the machine
 
@@ -291,18 +318,23 @@ Rules:
 
 ## 6. Phased plan
 
-### Phase 1: MVP, one agent end to end (Claude Code OR Codex)
+### Phase 1: MVP — embedded panel, Claude Code and Codex
 
-Pick one agent for MVP. Recommend **Codex** first: Apache-2.0 adapter, documented API-key path, no subscription-policy question for API-key use. Claude is second because its adapter needs `--hide-claude-auth` and the policy answer (Q1) is still open.
+- `agent_chat/` module in `src-tauri` with an `AgentDriver` trait (spawn, send prompt, stream
+  events, answer permission requests, cancel, shut down) and two drivers: Claude Code
+  (stream-json) and Codex (`codex app-server`). Detection of installed CLIs and their sign-in
+  state.
+- `renderly-mcp --project <path>` startup argument (Q5, approved) so the session starts with the
+  open project and edits go live through the bridge.
+- The embedded panel (§4.1): transcript, streaming text, tool-call cards with an Undo on edit
+  cards, permission prompts with the §4.3 defaults, cancel, agent picker.
+- Tests: a fake agent CLI (small test binary speaking each driver's stdio protocol) drives the
+  backend in `cargo test`; no vendor CLI or account needed in CI. Vitest for the panel's event
+  reducer.
 
-- `agent_chat/` module in `src-tauri`: detect, spawn, `initialize`, `session/new` (with `renderly-mcp`), `session/prompt`, `session/cancel`, event forwarding.
-- Chat panel: transcript, streaming text, tool-call cards, cancel.
-- Permission modal with the §4.3 defaults.
-- Bootstrap via prompt-to-`open_project` (option 1) until Q5 is decided.
-- Undo button on edit cards.
-- Tests: a fake ACP agent (a small test binary that speaks JSON-RPC over stdio) drives the chat backend in `cargo test`. No vendor CLI needed in CI.
-
-Exit criterion: user types "trim the first clip to 5 seconds" in the chat, the edit appears live in the timeline, and Ctrl+Z undoes it.
+Exit criterion: user types "trim the first clip to 5 seconds" in the panel, the edit appears live
+in the timeline, and Ctrl+Z undoes it — with Claude Code and with Codex, each signed in with the
+user's own account.
 
 ### Phase 2: picker, permissions UI, first-run flow
 
@@ -354,11 +386,11 @@ Exit criterion: user types "trim the first clip to 5 seconds" in the chat, the e
 
 | # | Question | Why it matters | Current default |
 |---|---|---|---|
-| Q1 | **Claude subscription login.** Can Renderly offer "sign in with your Claude subscription" through the adapter, or is that a third-party integration the vendor prohibits? Ask Anthropic sales if unsure | Decides whether Claude is usable for subscribers at all. Vendor docs allow a user to sign into the *unmodified* CLI, but the adapter is a third-party wrapper | API key only; adapter launched with `--hide-claude-auth` |
-| Q2 | **Gemini Google sign-in.** Google's terms say third-party tools using CLI OAuth violate the terms. Is Renderly "a third-party tool" in that sense? | Decides whether the free Google-account tier can be offered | Gemini API key only |
-| Q3 | **Codex ChatGPT login.** Is reusing a ChatGPT subscription login through a third-party ACP client permitted? Not found in OpenAI docs | Decides whether Codex subscription users are supported | API key only until confirmed |
+| Q1 | ~~**Claude subscription login.** Can Renderly offer "sign in with your Claude subscription" through the adapter, or is that a third-party integration the vendor prohibits? Ask Anthropic sales if unsure~~ | — | Resolved 2026-10-15: drive the installed, signed-in `claude` CLI itself; no adapter, no login handled by Renderly. |
+| Q2 | ~~**Gemini Google sign-in.** Google's terms say third-party tools using CLI OAuth violate the terms. Is Renderly "a third-party tool" in that sense?~~ | — | Resolved 2026-10-15: drive Google's own `gemini` CLI (`--acp`) that the user signed in; Renderly handles no OAuth. |
+| Q3 | ~~**Codex ChatGPT login.** Is reusing a ChatGPT subscription login through a third-party ACP client permitted? Not found in OpenAI docs~~ | — | Resolved 2026-10-15: drive the installed, signed-in `codex` CLI (`codex app-server`). |
 | Q4 | **Antigravity.** Proprietary binary, no documented headless interface, and only community bridges. Is it in scope at all? | Affects the "Antigravity" promise in the parity row | Not in MVP; re-check in Phase 3 |
-| Q5 | **Bootstrap.** Approve a `--project <path>` startup argument for `renderly-mcp`? It would change a server that AGENTS.md treats as stable | Replaces unreliable prompt-driven `open_project` | Prompt-driven until approved |
+| Q5 | ~~**Bootstrap.** Approve a `--project <path>` startup argument for `renderly-mcp`? It would change a server that AGENTS.md treats as stable~~ | — | Approved 2026-10-15: add `renderly-mcp --project <path>`. |
 | Q6 | **Undo granularity.** One undo step per agent *edit*, per *turn*, or per *user message*? | Shared undo with the human is only useful if agent turns group cleanly | Per edit (matches today's history) |
 | Q7 | **Permission defaults.** Accept the §4.3 table, or stricter (ask for every edit)? | Trades speed against control | As written |
 | Q8 | **Vendor mode.** Should Renderly ever request the agent's most permissive mode? | Recommendation is no | No |

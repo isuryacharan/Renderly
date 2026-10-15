@@ -58,7 +58,7 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 | P4-6b | Text-to-sticker | 🟡 | `GenerateSticker`; locally generated PNG, not an image model |
 | P4-6 | Templates | ✅ | Pack `templates[]` + `ApplyTemplate` |
 | P4-7 | Multicam groups + angle switch | ✅ | `CreateMulticamGroup`, `SetMulticamAngle` |
-| — | In-app agent chat | ⬜ | A chat panel in the app that drives an external coding agent the user already pays for (Claude Code, Codex, Gemini CLI, Antigravity, …) over the [Agent Client Protocol](https://agentclientprotocol.com) or a vendor agent SDK, pointed at Renderly's MCP server so it edits through the command API with shared undo. Uses the user's own subscription; nothing bundled or proxied. Design: [agent-chat-design.md](agent-chat-design.md). Open questions: which agents speak ACP natively vs need an adapter, and showing tool calls / diffs in the panel |
+| — | In-app agent chat | ⬜ | A panel docked in the main editor window that drives the agent CLI the user already has installed and signed in (Claude Code, Codex, Gemini CLI, …), the way T3 Code does — Renderly handles no login or API key. Edits go through `renderly-mcp`, sharing the app's undo. [agent-chat-design.md](agent-chat-design.md) |
 
 ## Platform & distribution
 
