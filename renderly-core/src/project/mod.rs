@@ -171,14 +171,25 @@ impl Project {
 
     /// A copy of the project whose root timeline is `sequence_id`'s tracks, for hosts that
     /// preview or play one container as if it were the whole timeline (the desktop app while
-    /// a sequence is open). Everything else — media, other sequences, settings — is kept, so
-    /// nested sequences inside the opened one still resolve. `None` for an unknown sequence.
-    /// Output size stays the project's: a sequence with its own size is previewed at the
-    /// project canvas while it is being edited.
+    /// a sequence is open). Everything else — media, other sequences — is kept, so nested
+    /// sequences inside the opened one still resolve. `settings.width`/`height` become the
+    /// sequence's effective size (`sequence_size`), so the view renders at the sequence's own
+    /// output size and aspect. `None` for an unknown sequence.
+    ///
+    /// Nested sequences that inherit the size are pinned to the project's size in the copy
+    /// first: their resolution is relative to the real project, not to the opened sequence.
     pub fn with_sequence_as_root(&self, sequence_id: Id) -> Option<Project> {
-        let tracks = self.find_sequence(sequence_id)?.tracks.clone();
+        let seq = self.find_sequence(sequence_id)?;
+        let (width, height) = self.sequence_size(seq);
+        let tracks = seq.tracks.clone();
         let mut view = self.clone();
+        for nested in &mut view.sequences {
+            nested.width = Some(nested.width.unwrap_or(self.settings.width));
+            nested.height = Some(nested.height.unwrap_or(self.settings.height));
+        }
         view.tracks = tracks;
+        view.settings.width = width;
+        view.settings.height = height;
         Some(view)
     }
 
@@ -1535,6 +1546,60 @@ mod tests {
             .sequence_media(seq_id)
             .is_some_and(|m| m.id == seq_media));
         assert!(p.with_sequence_as_root(Id::new_v4()).is_none());
+    }
+
+    #[test]
+    fn with_sequence_as_root_uses_sequence_size_and_inherits_otherwise() {
+        let (mut p, seq_id, _, _) = seq_project();
+        let (project_w, project_h) = (p.settings.width, p.settings.height);
+        // seq_project's sequence is 640 wide with an inherited height.
+        let view = p.with_sequence_as_root(seq_id).unwrap();
+        assert_eq!(
+            (view.settings.width, view.settings.height),
+            (640, project_h)
+        );
+        // The project itself is untouched.
+        assert_eq!(
+            (p.settings.width, p.settings.height),
+            (project_w, project_h)
+        );
+
+        // Both inherited: the view keeps the project size.
+        p.sequences[0].width = None;
+        let view = p.with_sequence_as_root(seq_id).unwrap();
+        assert_eq!(
+            (view.settings.width, view.settings.height),
+            (project_w, project_h)
+        );
+
+        // Both explicit and square inside a project of another aspect.
+        p.sequences[0].width = Some(1080);
+        p.sequences[0].height = Some(1080);
+        let view = p.with_sequence_as_root(seq_id).unwrap();
+        assert_eq!((view.settings.width, view.settings.height), (1080, 1080));
+    }
+
+    #[test]
+    fn with_sequence_as_root_keeps_inheriting_nested_sequences_at_project_size() {
+        let (mut p, outer_id, _, _) = seq_project();
+        let inner_id = Id::new_v4();
+        p.sequences.push(Sequence {
+            id: inner_id,
+            name: "inner".into(),
+            width: None,
+            height: None,
+            tracks: Vec::new(),
+        });
+        p.sequences[0].width = Some(1080);
+        p.sequences[0].height = Some(1080);
+        let view = p.with_sequence_as_root(outer_id).unwrap();
+        assert_eq!((view.settings.width, view.settings.height), (1080, 1080));
+        // A nested sequence that inherits still resolves against the project, not the open one.
+        let nested = view.find_sequence(inner_id).unwrap();
+        assert_eq!(
+            view.sequence_size(nested),
+            (p.settings.width, p.settings.height)
+        );
     }
 
     #[test]

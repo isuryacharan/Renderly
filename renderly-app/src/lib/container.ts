@@ -43,9 +43,27 @@ export function activeTracks(project: Project | null, activeSequenceId: string |
 const viewCache = new WeakMap<Project, Map<string, Project>>();
 
 /**
+ * Output size of the open container: the sequence's own `width`/`height`, each falling back to
+ * the project's when null (the same inheritance `Project::sequence_size` applies in core). The
+ * root's size is the project's. This is the canvas aspect the preview and its overlays use.
+ */
+export function activeContainerSize(
+  project: Project,
+  activeSequenceId: string | null,
+): { width: number; height: number } {
+  const id = resolveActiveSequenceId(project, activeSequenceId);
+  const seq = id ? findSequence(project, id) : undefined;
+  return {
+    width: seq?.width ?? project.settings.width,
+    height: seq?.height ?? project.settings.height,
+  };
+}
+
+/**
  * The project as the open container sees it: identical to `project` but with `tracks` set to
- * `activeTracks(...)`, so geometry / snapping / rendering helpers written against
- * `project.tracks` work on a sequence unchanged. For the root it is `project` itself. Cached
+ * `activeTracks(...)` and `settings.width`/`height` set to `activeContainerSize(...)`, so
+ * geometry / snapping / rendering helpers written against `project.tracks` and
+ * `project.settings` work on a sequence unchanged. For the root it is `project` itself. Cached
  * per (project, sequence) so repeated reads are referentially stable. READ-ONLY: never put a
  * view into the store — write edits back with `replaceActiveTracks`.
  */
@@ -59,7 +77,12 @@ export function containerView(project: Project, activeSequenceId: string | null)
   }
   let view = perProject.get(id);
   if (!view) {
-    view = { ...project, tracks: activeTracks(project, id) };
+    const { width, height } = activeContainerSize(project, id);
+    view = {
+      ...project,
+      tracks: activeTracks(project, id),
+      settings: { ...project.settings, width, height },
+    };
     perProject.set(id, view);
   }
   return view;

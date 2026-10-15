@@ -19,7 +19,12 @@ import {
 import type { AdjustmentClip, ClipMask, MediaClip } from "../../lib/types";
 import { clipDurationSecs } from "../../lib/types";
 import { resolveTransform } from "../../lib/previewMath";
-import { activeTracks, findTrackAnywhere, updateClip } from "../../lib/container";
+import {
+  activeContainerSize,
+  activeTracks,
+  findTrackAnywhere,
+  updateClip,
+} from "../../lib/container";
 import { useEditorStore } from "../../store/editorStore";
 
 type ContentBounds = { left: number; top: number; width: number; height: number };
@@ -105,6 +110,7 @@ export function PreviewMaskOverlay({
   const selection = useEditorStore((s) => s.selection);
   const playing = useEditorStore((s) => s.playing);
   const project = useEditorStore((s) => s.project);
+  const activeSequenceId = useEditorStore((s) => s.activeSequenceId);
   const toolMode = useEditorStore((s) => s.toolMode);
   const dispatch = useEditorStore((s) => s.dispatch);
   const setDragging = useEditorStore((s) => s.setDragging);
@@ -121,8 +127,10 @@ export function PreviewMaskOverlay({
 
   const activeMediaClip = active?.clip.type === "video" ? active.clip : null;
   const media = project?.media.find((m) => m.id === activeMediaClip?.media_id);
-  const outW = project?.settings.width ?? 1080;
-  const outH = project?.settings.height ?? 1920;
+  // The open container's output size (a sequence may have its own).
+  const outSize = project ? activeContainerSize(project, activeSequenceId) : null;
+  const outW = outSize?.width ?? 1080;
+  const outH = outSize?.height ?? 1920;
   const layerW = media?.width ?? outW;
   const layerH = media?.height ?? outH;
   // The overlay uses the clip's static transform (as the handles do), so the cover window

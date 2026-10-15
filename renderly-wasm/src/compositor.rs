@@ -481,36 +481,15 @@ impl WasmCompositor {
     pub fn set_project(&mut self, json: &str) -> Result<(), JsValue> {
         let project: Project =
             serde_json::from_str(json).map_err(|e| js_err("set_project parse", e))?;
-        let (w, h) = (project.settings.width, project.settings.height);
-        let needs_rebuild = match &self.compositor {
-            Some(c) => c.width() != w || c.height() != h,
-            None => true,
-        };
-        if needs_rebuild {
-            let compositor =
-                Compositor::with_device(Arc::clone(&self.device), Arc::clone(&self.queue), w, h)
-                    .map_err(|e| js_err("compositor build", e))?;
-            self.compositor = Some(compositor);
-            self.blit_bind_group = None;
-            if let Some(compositor) = self.compositor.as_mut() {
-                for (key, (w, h, luma)) in &self.mattes {
-                    compositor
-                        .set_matte(key, *w, *h, luma)
-                        .map_err(|e| js_err("re-register matte", e))?;
-                }
-                compositor.clear_pack_lut_cache();
-            }
-        }
         self.root_project = Some(project);
-        self.refresh_view();
-        Ok(())
+        self.refresh_view()
     }
 
     /// Open a nested sequence for preview (`Some(uuid)`) or return to the root timeline
     /// (`None`). Times passed to `render` / `active_media_layers` afterwards are local to
     /// that sequence. An unparsable id is an error; an id the project does not contain
     /// falls back to the root so a stale id (undo, delete) never blanks the preview. The
-    /// output stays at the project's resolution even if the sequence has its own size.
+    /// output follows the open container's size (the sequence's own, or the project's).
     pub fn set_active_sequence(&mut self, sequence_id: Option<String>) -> Result<(), JsValue> {
         self.active_sequence = match sequence_id {
             None => None,
@@ -519,8 +498,7 @@ impl WasmCompositor {
                     .map_err(|e| js_err("set_active_sequence parse", e))?,
             ),
         };
-        self.refresh_view();
-        Ok(())
+        self.refresh_view()
     }
 
     /// JSON `{ "mattes": [{"key", "path"}], "pack_luts": [{"pack_id", "lut_id"}] }`: the
@@ -859,13 +837,42 @@ impl WasmCompositor {
         Ok(())
     }
 
-    /// Recompute `project` from `root_project` and `active_sequence`.
-    fn refresh_view(&mut self) {
+    /// Recompute `project` from `root_project` and `active_sequence`, then rebuild the core
+    /// compositor when the view's output size differs from it (the open sequence may have its
+    /// own size). Matte and pack-LUT state is re-registered on a rebuild.
+    fn refresh_view(&mut self) -> Result<(), JsValue> {
         self.project = self.root_project.as_ref().map(|root| {
             self.active_sequence
                 .and_then(|id| root.with_sequence_as_root(id))
                 .unwrap_or_else(|| root.clone())
         });
+        let Some((w, h)) = self
+            .project
+            .as_ref()
+            .map(|p| (p.settings.width, p.settings.height))
+        else {
+            return Ok(());
+        };
+        let needs_rebuild = match &self.compositor {
+            Some(c) => c.width() != w || c.height() != h,
+            None => true,
+        };
+        if needs_rebuild {
+            let compositor =
+                Compositor::with_device(Arc::clone(&self.device), Arc::clone(&self.queue), w, h)
+                    .map_err(|e| js_err("compositor build", e))?;
+            self.compositor = Some(compositor);
+            self.blit_bind_group = None;
+            if let Some(compositor) = self.compositor.as_mut() {
+                for (key, (mw, mh, luma)) in &self.mattes {
+                    compositor
+                        .set_matte(key, *mw, *mh, luma)
+                        .map_err(|e| js_err("re-register matte", e))?;
+                }
+                compositor.clear_pack_lut_cache();
+            }
+        }
+        Ok(())
     }
 
     fn rebuild_packs(&mut self) {

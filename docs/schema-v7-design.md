@@ -381,15 +381,19 @@ Where the shipped engine extends or differs from the design above (everything el
   host's project and renders that view, so `render`, `active_media_layers` (instance keys,
   rates) and the matte/LUT sync all follow the open sequence with no change to the shared
   evaluation code; `webviewPreviewEngine.ts` reads the same container through `containerView`
-  to decide which `<video>` elements to seek. The output stays at the **project** resolution
-  while editing (a sequence with its own size is previewed on the project canvas; it is
-  placed at its own size when nested). Captions are root-only, so none render inside a
-  sequence.
+  to decide which `<video>` elements to seek. `with_sequence_as_root` sets the view's
+  `settings.width`/`height` to the sequence's effective size, so the compositor output is the
+  sequence's own size while it is open and the preview canvas letterboxes to its aspect
+  (`activeContainerSize` in `lib/container.ts` drives `PreviewPanel` and the handles/mask
+  overlays). Nested sequences that inherit the size are pinned to the project size in the view,
+  so they still resolve against the project. Closing the sequence restores the project
+  size. A sequence placed inside a parent is still cover-fitted into that parent like any
+  media. Captions are root-only, so none render inside a sequence.
 - **Native playback / scrub audio.** The `set_active_sequence` Tauri command records the open
   sequence; `AppState::playback_project()` hands playback, `refresh_frame`, scrub audio and the
   bridge `play` the same `with_sequence_as_root` view, so audio for an open sequence plays that
-  sequence's mix (including its nested sequences and per-container ducking). Known gap: a
-  sequence's own width/height is not applied to the preview canvas.
+  sequence's mix (including its nested sequences and per-container ducking). Playback produces
+  no frames (the webview renders video), so the view's size has no effect here.
 - **Nest / unnest / adjustment from the UI** go through `NestClips`, `UnnestClip`,
   `AddAdjustmentLayer` (default 5 s at the playhead on the selected, else topmost, video track;
   a container with no video track gets one created in the same batch), `SetAdjustmentLayer`

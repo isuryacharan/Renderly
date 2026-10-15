@@ -14,7 +14,12 @@ import {
 } from "../../lib/previewMath";
 import type { ClipTransform, MediaClip } from "../../lib/types";
 import { clipDurationSecs } from "../../lib/types";
-import { activeTracks, findTrackAnywhere, updateClip } from "../../lib/container";
+import {
+  activeContainerSize,
+  activeTracks,
+  findTrackAnywhere,
+  updateClip,
+} from "../../lib/container";
 import { useEditorStore } from "../../store/editorStore";
 
 type ContentBounds = { left: number; top: number; width: number; height: number };
@@ -105,6 +110,7 @@ export function PreviewHandlesOverlay({
   const selection = useEditorStore((s) => s.selection);
   const playing = useEditorStore((s) => s.playing);
   const project = useEditorStore((s) => s.project);
+  const activeSequenceId = useEditorStore((s) => s.activeSequenceId);
   const toolMode = useEditorStore((s) => s.toolMode);
   const dispatch = useEditorStore((s) => s.dispatch);
   const setDragging = useEditorStore((s) => s.setDragging);
@@ -123,8 +129,10 @@ export function PreviewHandlesOverlay({
   }, [playhead, playing, project, selection, toolMode]);
 
   const transform = resolveTransform(active?.clip.transform);
-  const projW = project?.settings.width ?? 1920;
-  const projH = project?.settings.height ?? 1080;
+  // The open container's output size (a sequence may have its own).
+  const outSize = project ? activeContainerSize(project, activeSequenceId) : null;
+  const projW = outSize?.width ?? 1920;
+  const projH = outSize?.height ?? 1080;
 
   useEffect(() => {
     const host = hostRef.current;

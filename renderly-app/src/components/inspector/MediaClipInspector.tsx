@@ -17,7 +17,7 @@ import {
 } from "../../lib/commands";
 import type { ClipTransform, MediaClip, Track, TrackAudioRole } from "../../lib/types";
 import { IDENTITY_TRANSFORM } from "../../lib/types";
-import { activeTracks } from "../../lib/container";
+import { activeContainerSize, activeTracks } from "../../lib/container";
 import { motionTargetChoices, motionTargetRef } from "../../lib/motionTarget";
 import { MenuSelect } from "../ui/MenuSelect";
 import { Tooltip } from "../ui/Tooltip";
@@ -85,6 +85,9 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
   const project = useEditorStore((s) => s.project);
   const media = useEditorStore((s) => s.project?.media.find((m) => m.id === clip.media_id));
   const activeSequenceId = useEditorStore((s) => s.activeSequenceId);
+  // Output aspect of the open container (a sequence may have its own size).
+  const outputSize = project ? activeContainerSize(project, activeSequenceId) : null;
+  const outputAspect = outputSize ? outputSize.width / outputSize.height : 1080 / 1920;
 
   // "Apply to" for Track motion. The pick is remembered per clip; otherwise the default applies.
   const [motionPick, setMotionPick] = useState<{ clipId: string; value: string } | null>(null);
@@ -451,7 +454,7 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
                   autoReframeClip(
                     track.id,
                     clip.id,
-                    (project?.settings.width ?? 1080) / (project?.settings.height ?? 1920),
+                    outputAspect,
                   ),
                 )
               }

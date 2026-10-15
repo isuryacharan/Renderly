@@ -85,6 +85,9 @@ an adjustment layer on "Adjustments") or any project with a few clips.
       inherits (empty field); delete a sequence that is placed -> "still used by a clip"
       toast; delete an unused one -> gone. Drag a sequence onto a video lane (picture clip)
       and onto an audio lane (audio clip); an empty sequence is refused with a toast.
+- [ ] **Sequence size:** give a sequence its own square size (settings dialog, e.g. 1080x1080
+      in a 1080x1920 project) and open it -> the preview canvas becomes square, the frame is not
+      stretched, and the overlays line up with it; close it -> the project aspect returns.
 - [ ] **Adjustment layer:** track-header menu (...) on a video track -> "Add adjustment layer"
       adds a 5 s amber block at the playhead and selects it; where a clip already sits at the
       playhead an overlap toast appears. Drag its edges (trim handles) and body; undo each.

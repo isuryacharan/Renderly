@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { project as makeProject, track, videoClip } from "../test/fixtures";
 import {
+  activeContainerSize,
   activeTracks,
   breadcrumbItems,
   containerDurationSecs,
@@ -89,6 +90,35 @@ describe("containerView", () => {
     expect(containerView(p2, "s-intro")).not.toBe(v);
     // Unknown sequence -> root.
     expect(containerView(p, "nope")).toBe(p);
+  });
+});
+
+describe("activeContainerSize", () => {
+  it("is the project size for the root and for a sequence that inherits", () => {
+    const p = sample();
+    expect(activeContainerSize(p, null)).toEqual({ width: 1920, height: 1080 });
+    expect(activeContainerSize(p, "s-intro")).toEqual({ width: 1920, height: 1080 });
+    expect(activeContainerSize(p, "missing")).toEqual({ width: 1920, height: 1080 });
+  });
+
+  it("is the sequence's own size per axis when set, inheriting the other", () => {
+    const p = sample();
+    p.sequences![0] = { ...p.sequences![0]!, width: 1080, height: 1080 };
+    p.sequences![1] = { ...p.sequences![1]!, width: 640, height: null };
+    expect(activeContainerSize(p, "s-intro")).toEqual({ width: 1080, height: 1080 });
+    expect(activeContainerSize(p, "s-titles")).toEqual({ width: 640, height: 1080 });
+    // The root stays at the project size.
+    expect(activeContainerSize(p, null)).toEqual({ width: 1920, height: 1080 });
+  });
+
+  it("containerView carries the container size and leaves the project's settings alone", () => {
+    const p = sample();
+    p.sequences![0] = { ...p.sequences![0]!, width: 1080, height: 1080 };
+    const v = containerView(p, "s-intro");
+    expect(v.settings.width).toBe(1080);
+    expect(v.settings.height).toBe(1080);
+    expect(v.settings.fps).toBe(p.settings.fps);
+    expect(p.settings.width).toBe(1920);
   });
 });
 
