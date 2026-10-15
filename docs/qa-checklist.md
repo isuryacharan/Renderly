@@ -112,5 +112,39 @@ an adjustment layer on "Adjustments") or any project with a few clips.
 | Ctrl+C / V / D | Copy / paste / duplicate |
 | Ctrl+G / Ctrl+Shift+G | Nest selection / unnest clip |
 | Alt+Up | Close the open sequence |
+| Ctrl+L | Open the Agent tab and focus its prompt (`view.focus-agent`) |
 | Delete | Delete selection |
 | Esc | Exit fullscreen preview / close dialog |
+
+## Agent chat (manual, with your own signed-in CLIs)
+
+Run these yourself. The automated tests use a fake agent, so nothing here has been run against
+a real `claude` or `codex` account. Do not paste credentials anywhere while doing this.
+
+- [ ] **Detection:** Agent tab with no session shows each CLI. Claude Code shows its version and
+  "signed in"; with `claude auth logout` (then `claude auth login`) it shows the sign-in command
+  instead. Codex shows "not installed" if absent, and a note that sign-in is not checked.
+- [ ] **Claude Code happy path:** Start Claude Code on a project. Ask "trim the first clip to 5
+  seconds". Text streams in; a tool card appears; the clip changes in the timeline without
+  reloading; the card's Undo restores it; Ctrl+Z also works.
+- [ ] **Permissions (Claude Code):** Ask it to export. A permission card appears with Allow once
+  and Deny. Deny: the turn ends and nothing is written. Allow once: export runs and the card shows
+  done. Confirm the tool input shown in the card matches what the agent sends.
+- [ ] **Cancel with a prompt pending:** Leave a permission prompt unanswered, then press Cancel. The
+  turn ends with "Stopped" and the card shows Cancelled. No file is written.
+- [ ] **Auto-apply toggle:** Turn "Apply edits without asking" off. A trim should now ask first.
+- [ ] **Cancel mid-turn:** Ask for a longer job and press Cancel. The process ends (check Task
+  Manager for `claude.exe` under the project), the next message starts a new turn in the same
+  conversation (it resumes), and edits already applied are still in the timeline.
+- [ ] **Stop and project close:** Stop the session, then start one again. Close the project with a
+  session running; no `claude.exe` or `codex.exe` remains afterwards. Quit the app with a session
+  running; the same check.
+- [ ] **Codex (untested so far):** Start Codex. Expect either a working turn or a visible error.
+  Record the error text and the output of `codex --version` and `codex app-server --help`. If an
+  approval prompt appears, check Allow and Deny both reach Codex.
+- [ ] **Context chips:** Remove the playhead chip, then send a message: the bubble should show no
+  "at … s" context. Re-add it and check the time shown matches the playhead.
+- [ ] **Keyboard:** Ctrl+L from the Inspector tab switches to Agent and focuses the prompt.
+  Enter sends; Shift+Enter adds a line.
+- [ ] **Vendor notice:** the panel shows the data-disclosure line under the agent name (§5.3).
+  Read it and confirm the wording is acceptable (Q9).

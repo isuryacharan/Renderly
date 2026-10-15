@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type { Project } from "./types";
+import type { AgentEnvelope, AgentId, AgentInfo, ChatContext } from "./agentChat";
 
 export interface HistoryStatus {
   can_undo: boolean;
@@ -413,6 +414,41 @@ export function onPlaybackPerf(cb: (payload: PlaybackPerfPayload) => void): () =
 /** E3: agent `set_playhead` over the live bridge — sync GUI playhead. */
 export function onBridgePlayhead(cb: (payload: { time_secs: number }) => void): () => void {
   const unlisten = listen<{ time_secs: number }>("bridge:playhead", (e) => cb(e.payload));
+  return () => void unlisten.then((f) => f());
+}
+
+// ---- Agent chat (docs/agent-chat-design.md): the backend drives the user's installed CLIs. ----
+
+export function agentList() {
+  return invoke<AgentInfo[]>("agent_list");
+}
+
+export function agentStart(agentId: AgentId) {
+  return invoke<string>("agent_start", { agentId });
+}
+
+export function agentSend(sessionId: string, text: string, context: ChatContext | null) {
+  return invoke<void>("agent_send", { sessionId, text, context });
+}
+
+export function agentAnswerPermission(sessionId: string, requestId: string, optionId: string) {
+  return invoke<void>("agent_answer_permission", { sessionId, requestId, optionId });
+}
+
+export function agentCancel(sessionId: string) {
+  return invoke<void>("agent_cancel", { sessionId });
+}
+
+export function agentStop(sessionId: string) {
+  return invoke<void>("agent_stop", { sessionId });
+}
+
+export function agentSetAutoEdits(sessionId: string, enabled: boolean) {
+  return invoke<void>("agent_set_auto_edits", { sessionId, enabled });
+}
+
+export function onAgentEvent(cb: (payload: AgentEnvelope) => void): () => void {
+  const unlisten = listen<AgentEnvelope>("agent:event", (e) => cb(e.payload));
   return () => void unlisten.then((f) => f());
 }
 

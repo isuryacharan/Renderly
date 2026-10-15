@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { TopBar } from "./components/TopBar";
 import { LeftPanel } from "./components/leftpanel/LeftPanel";
 import { PreviewPanel } from "./components/preview/PreviewPanel";
-import { InspectorPanel } from "./components/inspector/InspectorPanel";
+import { RightColumn } from "./components/agent/RightColumn";
 import { TimelineSection } from "./components/timeline/TimelineSection";
 import { ExportDialog } from "./components/dialogs/ExportDialog";
 import { Toasts } from "./components/Toasts";
@@ -12,12 +12,14 @@ import { connectStoreToBackendEvents, useEditorStore } from "./store/editorStore
 import * as ipc from "./lib/ipc";
 import { importFromPath } from "./lib/projectFlows";
 import { handleGlobalKeyDown } from "./lib/actions";
+import { connectAgentChatEvents } from "./store/agentChatStore";
 
 export function App() {
   const [exportOpen, setExportOpen] = useState(false);
   const projectPath = useEditorStore((s) => s.projectPath);
 
   useEffect(() => connectStoreToBackendEvents(), []);
+  useEffect(() => connectAgentChatEvents(), []);
 
   // Root-cause fix for thumbnails/waveforms intermittently missing on reopen: generation
   // on the backend is push-only (`media:thumbnails-ready` / `media:waveform-ready`), and
@@ -89,7 +91,7 @@ export function App() {
       <div className="workspace">
         <LeftPanel />
         <PreviewPanel />
-        <InspectorPanel />
+        <RightColumn />
       </div>
       <TimelineSection />
       <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} />

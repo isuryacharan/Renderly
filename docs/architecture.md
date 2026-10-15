@@ -366,6 +366,36 @@ or opening a project with many items never slows down `apply_command`/`undo`/`re
 Note: `perceive`'s MCP-facing thumbnail tool (letting an agent request a strip
 independent of the GUI cache) is a follow-up, not yet wired up.
 
+### Agent chat (`src-tauri/src/agent_chat/`, Phase 1)
+
+Status: implemented; the Codex driver is untested against the real CLI (see
+[agent-chat-design.md](agent-chat-design.md) §10 for status). Nothing here is in
+`renderly-core`; the module is a UI-layer dispatcher, like the bridge.
+
+| File | Role |
+|---|---|
+| `driver.rs` | `AgentDriver` / `AgentSession` traits, `AgentId`, `SessionConfig`, launch-file helpers (MCP config, system prompt) |
+| `claude.rs` | Claude Code driver: `claude -p --input-format stream-json --output-format stream-json`, `renderly-mcp` as the only MCP server, `--permission-prompt-tool` routed to the app. Documents the flags and message shapes it relies on |
+| `codex.rs` | Codex driver: `codex app-server` (JSON-RPC over JSONL). Approval and item payloads are assumptions, marked in the file |
+| `events.rs` | `AgentEvent` (one enum for every driver) and `AgentEnvelope` (`session_id` + event), sent as the `agent:event` Tauri event |
+| `permission.rs` | `PermissionBroker`: classifies each tool (perception / edit / file write / model download / native / unknown), applies the §4.3 defaults, holds pending prompts and session-scoped "always" answers |
+| `detect.rs` | `agent_list`: `PATH` lookup, `--version`, and `claude auth status` (exit code only; no credential files read) |
+| `process.rs` | PATH resolution (`.exe`/`.cmd`/`.bat` on Windows), no-console spawn (mirrors `renderly_core::proc::command`), tree kill, stderr tail |
+| `mod.rs` | `AgentChatHub` (one active session), Tauri commands, the context preamble, `mcp_binary_path`, `stop_active` (project close and app exit) |
+
+Flow: the webview calls `agent_start`; the backend spawns the CLI in the project's folder
+with `renderly-mcp --project <open project>` registered. Each prompt goes through
+`agent_send`; the CLI's stdout is normalised into `AgentEvent`s. When the agent asks to use a
+tool outside the pre-allowed read-only set, Claude Code calls the `permission_prompt` tool of
+`renderly-mcp`, which calls the bridge method `agent_permission`. `bridge.rs` hands it to
+`agent_chat::bridge_permission`, which waits for the user's answer in the Agent tab. Edits
+then reach the open project through the normal bridge `apply_command` path and share the
+undo stack.
+
+Tests: `cargo test -p renderly-app` runs unit tests and `tests/agent_chat.rs`, which drives the
+real drivers against `tests/fake_agent` (a test-only binary that speaks the two stdio
+protocols). No vendor CLI or network is involved.
+
 ## Plugins (Phase 3)
 
 Two tiers are implemented:

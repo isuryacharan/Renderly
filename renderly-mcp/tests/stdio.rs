@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 /// Every tool `server.rs` defines. Kept in sync by `tools/list` equality below.
 const TOOLS: &[&str] = &[
     "apply_command",
+    "describe_commands",
     "detect_scenes",
     "detect_silence",
     "download_model",
@@ -27,6 +28,7 @@ const TOOLS: &[&str] = &[
     "list_models",
     "new_project",
     "open_project",
+    "permission_prompt",
     "probe_media",
     "render_frame",
 ];
@@ -59,7 +61,12 @@ struct McpProcess {
 
 impl McpProcess {
     fn spawn(discovery_file: &Path) -> Self {
+        Self::spawn_with_args(discovery_file, &[])
+    }
+
+    fn spawn_with_args(discovery_file: &Path, args: &[&str]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_renderly-mcp"))
+            .args(args)
             // Never let a real desktop app on this machine hijack the session.
             .env("RENDERLY_BRIDGE_DISCOVERY", discovery_file)
             .stdin(Stdio::piped())
@@ -304,6 +311,101 @@ fn stdio_session_new_apply_get_project() {
     );
     let (_, text) = mcp.call_tool("get_project", json!({}));
     assert!(text.contains("\"V1\""));
+}
+
+#[test]
+fn stdio_project_flag_opens_the_project_at_startup() {
+    let dir = TempDir::new();
+    let project_path = dir.0.join("pinned.renderly.json");
+    let project = renderly_core::project::Project::new(
+        "pinned-at-startup".to_string(),
+        renderly_core::project::Settings {
+            fps: 30.0,
+            width: 640,
+            height: 360,
+            sample_rate: 48000,
+            duck_db: -12.0,
+        },
+    );
+    std::fs::write(
+        &project_path,
+        serde_json::to_string_pretty(&project).unwrap(),
+    )
+    .unwrap();
+    let project_arg = project_path.to_string_lossy().into_owned();
+    let mut mcp = McpProcess::spawn_with_args(
+        &missing_discovery(&dir),
+        &["--project", project_arg.as_str()],
+    );
+    mcp.handshake();
+    // No open_project call: the session must already be on the pinned project.
+    let (is_error, text) = mcp.call_tool("get_project", json!({}));
+    assert!(!is_error, "get_project failed: {text}");
+    assert!(text.contains("pinned-at-startup"), "{text}");
+}
+
+#[test]
+fn stdio_permission_prompt_denies_when_the_app_is_not_live() {
+    let dir = TempDir::new();
+    let project_path = dir.0.join("perm.renderly.json");
+    let project = renderly_core::project::Project::new(
+        "perm".to_string(),
+        renderly_core::project::Settings {
+            fps: 30.0,
+            width: 640,
+            height: 360,
+            sample_rate: 48000,
+            duck_db: -12.0,
+        },
+    );
+    std::fs::write(&project_path, serde_json::to_string(&project).unwrap()).unwrap();
+    let project_arg = project_path.to_string_lossy().into_owned();
+    let mut mcp = McpProcess::spawn_with_args(
+        &missing_discovery(&dir),
+        &["--project", project_arg.as_str()],
+    );
+    mcp.handshake();
+    let (is_error, text) = mcp.call_tool(
+        "permission_prompt",
+        json!({ "tool_name": "mcp__renderly__export", "input": {}, "tool_use_id": "tu_1" }),
+    );
+    assert!(!is_error, "{text}");
+    let v: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["behavior"], "deny", "{text}");
+    assert!(
+        v["message"].as_str().unwrap().contains("not running"),
+        "{text}"
+    );
+}
+
+#[test]
+fn stdio_project_flag_with_missing_file_fails_to_start() {
+    let dir = TempDir::new();
+    let missing = dir.0.join("nope.renderly.json");
+    let missing_arg = missing.to_string_lossy().into_owned();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_renderly-mcp"))
+        .args(["--project", missing_arg.as_str()])
+        .env("RENDERLY_BRIDGE_DISCOVERY", missing_discovery(&dir))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn renderly-mcp");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(
+                !status.success(),
+                "a bad --project must not start a session"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "server did not exit on a bad --project"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[test]

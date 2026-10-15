@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Tauri 2 desktop app for Renderly — Phase 2 GUI MVP."
+default-run = "renderly-app"
+# Only the integration tests listed below; tests/fake_agent is a binary, not a test target.
+autotests = false
+
+[[test]]
+name = "agent_chat"
+path = "tests/agent_chat.rs"
 
 [lib]
 name = "renderly_app_lib"
@@ -12,6 +19,12 @@ crate-type = ["lib", "cdylib", "staticlib"]
 [[bin]]
 name = "renderly-app"
 path = "src/main.rs"
+
+# Test-only stand-in for the `claude` and `codex` CLIs (speaks their stdio protocols). Used by
+# tests/agent_chat.rs; it is never bundled with the app.
+[[bin]]
+name = "renderly-fake-agent"
+path = "tests/fake_agent/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

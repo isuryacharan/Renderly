@@ -58,7 +58,7 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 | P4-6b | Text-to-sticker | 🟡 | `GenerateSticker`; locally generated PNG, not an image model |
 | P4-6 | Templates | ✅ | Pack `templates[]` + `ApplyTemplate` |
 | P4-7 | Multicam groups + angle switch | ✅ | `CreateMulticamGroup`, `SetMulticamAngle` |
-| — | In-app agent chat | ⬜ | A panel docked in the main editor window that drives the agent CLI the user already has installed and signed in (Claude Code, Codex, Gemini CLI, …), the way T3 Code does — Renderly handles no login or API key. Edits go through `renderly-mcp`, sharing the app's undo. [agent-chat-design.md](agent-chat-design.md) |
+| — | In-app agent chat | 🟡 | Phase 1: "Agent" tab beside the inspector (`Ctrl+L`) driving the user's installed, signed-in Claude Code or Codex CLI — no login or API key handled by Renderly. Edits go through `renderly-mcp --project` with shared undo. Claude Code checked live (headless); the panel in the real desktop app and the Codex driver are not yet run against a real CLI. [agent-chat-design.md](agent-chat-design.md) |
 
 ## Platform & distribution
 

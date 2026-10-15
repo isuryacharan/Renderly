@@ -129,6 +129,16 @@ fn default_fps() -> f64 {
     60.0
 }
 
+/// Arguments Claude Code sends to its `--permission-prompt-tool` (see docs/agent-chat-design.md).
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PermissionPromptRequest {
+    pub tool_name: String,
+    #[serde(default)]
+    pub input: serde_json::Value,
+    #[serde(default)]
+    pub tool_use_id: Option<String>,
+}
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct OpenProjectRequest {
     pub path: String,
@@ -292,12 +302,63 @@ impl RenderlyMcp {
             .unwrap_or_else(|e| format!("error: {e}"))
     }
 
+    /// Open `path` exactly as the `open_project` tool does. Used for the `--project <path>`
+    /// startup argument (see docs/mcp-agent-guide.md), so the session starts on the project the
+    /// desktop app has open and edits go through the live bridge.
+    pub fn open_project_at_startup(&self, path: PathBuf) -> Result<String, String> {
+        self.open_project_impl(OpenProjectRequest {
+            path: path.to_string_lossy().into_owned(),
+        })
+    }
+
     fn open_project_impl(&self, req: OpenProjectRequest) -> Result<String, String> {
         let path = PathBuf::from(&req.path);
         let data = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
         let project = Project::from_json(&data).map_err(|e| e.to_string())?;
         *self.session.lock().map_err(|e| e.to_string())? = Some(Session { path, project });
         Ok(format!("opened {}", req.path))
+    }
+
+    #[tool(
+        description = "Permission prompt for Claude Code (--permission-prompt-tool). Forwards the \
+                       request to the Renderly desktop app, which applies the session's permission \
+                       policy and asks the user when needed. Returns {behavior: allow|deny}. Denies \
+                       when the app is not live on this project."
+    )]
+    fn permission_prompt(&self, Parameters(req): Parameters<PermissionPromptRequest>) -> String {
+        let decision = self
+            .permission_prompt_impl(req)
+            .unwrap_or_else(|e| json!({ "behavior": "deny", "message": e }));
+        decision.to_string()
+    }
+
+    fn permission_prompt_impl(
+        &self,
+        req: PermissionPromptRequest,
+    ) -> Result<serde_json::Value, String> {
+        let path = {
+            let guard = self
+                .session
+                .lock()
+                .map_err(|e| format!("session lock poisoned: {e}"))?;
+            guard.as_ref().map(|s| s.path.clone())
+        };
+        let Some(path) = path else {
+            return Ok(json!({ "behavior": "deny", "message": "no project open" }));
+        };
+        let bridged = Self::block_on_bridge(async { Ok(try_live_bridge(Some(&path)).await) })?;
+        let Some((_disc, mut client)) = bridged else {
+            return Ok(json!({
+                "behavior": "deny",
+                "message": "the Renderly app is not running on this project; permission denied"
+            }));
+        };
+        let params = json!({
+            "tool_name": req.tool_name,
+            "input": req.input,
+            "tool_use_id": req.tool_use_id,
+        });
+        Self::block_on_bridge(async move { client.call("agent_permission", params).await })
     }
 
     #[tool(description = "Return the current project JSON")]
@@ -321,7 +382,7 @@ impl RenderlyMcp {
 
     #[tool(
         name = "apply_command",
-        description = "Apply one renderly-core Command and save the project"
+        description = "Apply one renderly-core Command (a JSON object tagged by \"command\") and save the project. Call describe_commands first for the exact variants and fields."
     )]
     fn apply_command_tool(&self, Parameters(req): Parameters<ApplyCommandRequest>) -> String {
         self.apply_command_impl(req)
@@ -603,6 +664,13 @@ impl RenderlyMcp {
     }
 
     #[tool(
+        description = "The exact shape of every Command apply_command accepts (variant names, field names and types), with JSON conventions and examples. Read-only; needs no project."
+    )]
+    fn describe_commands(&self) -> String {
+        command_reference()
+    }
+
+    #[tool(
         description = "Whether the Renderly desktop app is live on this project, plus playhead/selection"
     )]
     fn get_editor_status(&self) -> String {
@@ -736,6 +804,37 @@ fn project_dir(path: &std::path::Path) -> Option<PathBuf> {
     std::path::absolute(parent).ok()
 }
 
+/// The command reference `describe_commands` returns: the `Command` enum block from
+/// docs/command-api.md (the spec this server dispatches to), plus how it maps to JSON. Agents
+/// otherwise guess field names from error messages one at a time.
+fn command_reference() -> String {
+    const DOC: &str = include_str!("../../docs/command-api.md");
+    let block = DOC
+        .find("pub enum Command {")
+        .and_then(|start| {
+            DOC[start..]
+                .find(
+                    "
+}",
+                )
+                .map(|end| &DOC[start..start + end + 2])
+        })
+        .unwrap_or("(command reference unavailable: docs/command-api.md changed shape)");
+    format!(
+        "JSON form of a Command: an object whose \"command\" field is the variant name, plus          that variant's fields under the same snake_case names. `Id` is a UUID string from          get_project. `Option<T>` fields may be omitted. Times are seconds (f64). Enum values          are lowercase / snake_case strings (TrackKind: \"video\" | \"audio\" | \"caption\").          Caption style ids: \"tiktok-bold-yellow\", \"tiktok-box\", \"youtube-lower-thirds\"          (and any from loaded packs).
+
+         Examples:
+         {{\"command\":\"AddTrack\",\"kind\":\"video\",\"name\":\"V2\"}}
+         {{\"command\":\"AddCaption\",\"track_id\":\"<uuid>\",\"text\":\"Hi\",\"position_secs\":0.0,\"duration_secs\":2.0,\"style_id\":\"tiktok-box\"}}
+         {{\"command\":\"TrimClip\",\"track_id\":\"<uuid>\",\"clip_id\":\"<uuid>\",\"new_source_out_secs\":5.0}}
+
+         Variants (Rust syntax, from docs/command-api.md):
+
+{block}
+"
+    )
+}
+
 fn media_path(project: &Project, media_id: uuid::Uuid) -> Result<std::path::PathBuf, String> {
     project
         .find_media(media_id)
@@ -798,6 +897,21 @@ impl ServerHandler for RenderlyMcp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn describe_commands_returns_the_real_command_enum() {
+        let text = command_reference();
+        assert!(text.contains("pub enum Command {"), "{text}");
+        assert!(
+            text.contains("AddCaption {") && text.contains("style_id"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Export {"),
+            "block must run to the end of the enum"
+        );
+        assert!(!text.contains("unavailable"));
+    }
 
     fn temp_path(tag: &str) -> String {
         std::env::temp_dir()
@@ -1148,6 +1262,7 @@ mod tests {
         let mut expected = vec![
             "apply_command",
             "detect_scenes",
+            "describe_commands",
             "detect_silence",
             "download_model",
             "export",
@@ -1161,6 +1276,7 @@ mod tests {
             "list_models",
             "new_project",
             "open_project",
+            "permission_prompt",
             "probe_media",
             "render_frame",
         ];

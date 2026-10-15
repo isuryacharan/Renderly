@@ -25,6 +25,23 @@ Configure in Cursor / Claude Desktop MCP settings:
 
 Logging goes to **stderr**; stdout is reserved for MCP JSON-RPC.
 
+### `--project <path>` (startup project)
+
+```sh
+renderly-mcp --project "C:/Users/me/Videos/my-project/edit.renderly.json"
+```
+
+The server opens that project at startup exactly as the `open_project` tool would, so the
+session starts on it without a bootstrap call. With the desktop app live on the same path,
+edits then go through the bridge and share the app's undo history. Without the flag the
+behaviour is unchanged (no project until `open_project` or `new_project`).
+
+- A missing or invalid file, or a missing value after `--project`, makes the process exit
+  with an error before serving MCP. It never falls back to a headless session with no project.
+- Any other argument is rejected with a usage message.
+- The Renderly desktop agent chat passes this flag for each session (see
+  [agent-chat-design.md](agent-chat-design.md)).
+
 ## Live desktop bridge (E1/E2)
 
 When `renderly-app` is running, it publishes a discovery file and a loopback WebSocket
@@ -38,6 +55,7 @@ whatever the app happens to have on screen. Call `open_project` with the app's p
 | Tool | Description |
 |---|---|
 | `get_editor_status` | `{ live, project_path, playhead, selection, … }` — whether the desktop app is connected |
+| `permission_prompt` | Used by the desktop agent chat only (`--permission-prompt-tool` for Claude Code). Forwards the request to the app, which asks the user in its Agent tab. Returns `{behavior: allow\|deny}`. Denies when the app is not live on this project. Not for other clients |
 
 Agent edits over the bridge share the app's undo stack (Ctrl+Z undoes agent changes) and
 emit `project:changed` so the GUI updates live.

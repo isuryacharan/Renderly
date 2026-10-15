@@ -3,6 +3,7 @@ mod ml;
 mod playback;
 mod preview_assets;
 
+pub mod agent_chat;
 mod bridge;
 
 use parking_lot::Mutex;
@@ -1056,6 +1057,7 @@ fn thumb_is_fresh(project_path: &std::path::Path, thumb_path: &std::path::Path) 
 async fn close_project(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let _edit_guard = state.edit_lock.lock().await;
     stop_playback_blocking(&app).await;
+    agent_chat::stop_active(&app, "project closed");
     *state.session.lock() = None;
     state.history.lock().clear();
     state.reset_revision();
@@ -1606,6 +1608,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::new())
+        .manage(agent_chat::AgentChatHub::new())
         .setup(|app| {
             // Point renderly-core at the ffmpeg/ffprobe bundled beside the app (fetched at
             // build time into the Tauri resource dir — see scripts/fetch-ffmpeg.mjs and
@@ -1674,9 +1677,22 @@ pub fn run() {
             ml::ml_download_model,
             ml::cancel_background_matte,
             ml::background_matte_status,
+            agent_chat::agent_list,
+            agent_chat::agent_start,
+            agent_chat::agent_send,
+            agent_chat::agent_answer_permission,
+            agent_chat::agent_cancel,
+            agent_chat::agent_set_auto_edits,
+            agent_chat::agent_stop,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Renderly");
+        .build(tauri::generate_context!())
+        .expect("error while building Renderly")
+        .run(|app, event| {
+            // Agent CLI processes must not outlive the app.
+            if let tauri::RunEvent::Exit = event {
+                agent_chat::stop_active(app, "app exited");
+            }
+        });
 }
 
 #[cfg(test)]

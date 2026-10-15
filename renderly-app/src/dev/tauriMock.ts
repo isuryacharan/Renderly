@@ -695,6 +695,126 @@ function startMockPlayback(fromSecs: number): void {
   emit("playback:state", { playing: true, time_secs: fromSecs });
 }
 
+// ---- Scripted fake agent (agent chat, docs/agent-chat-design.md). Stands in for the Rust
+// agent_chat backend so the Agent tab can be exercised in the browser harness. Prompts with
+// "export" script a permission prompt; any other prompt trims the first video clip for real
+// through the mock's apply_command (so the edit card's Undo works against the mock's stack).
+// Nothing here talks to a model or a vendor CLI.
+const mockAgent = {
+  sessionId: null as string | null,
+  turn: 0,
+  pending: new Map<string, (option: string) => void>(),
+};
+
+const MOCK_AGENTS = [
+  {
+    id: "claude-code",
+    name: "Claude Code",
+    installed: true,
+    version: "2.1.274 (Claude Code)",
+    signIn: "signed_in",
+    signInCommand: "claude auth login",
+    installHint: "Install Claude Code (see https://code.claude.com/docs/en/setup), then sign in.",
+    note: null,
+  },
+  {
+    id: "codex",
+    name: "Codex",
+    installed: false,
+    version: null,
+    signIn: "unknown",
+    signInCommand: "codex login",
+    installHint: "Install the Codex CLI from OpenAI, then run `codex login`.",
+    note: "Codex support is untested against the real CLI.",
+  },
+];
+
+function agentEmit(event: Record<string, unknown>): void {
+  if (mockAgent.sessionId) emit("agent:event", { session_id: mockAgent.sessionId, ...event });
+}
+
+function firstVideoClip(): { trackId: string; clipId: string; sourceOut: number } | null {
+  for (const track of currentProject.tracks) {
+    if (track.kind !== "video") continue;
+    const clip = track.clips.find((c) => c.type === "video");
+    if (clip && clip.type === "video") {
+      return { trackId: track.id, clipId: clip.id, sourceOut: clip.source_out_secs };
+    }
+  }
+  return null;
+}
+
+async function runMockTurn(prompt: string): Promise<void> {
+  const turn = ++mockAgent.turn;
+  const live = () => mockAgent.turn === turn && mockAgent.sessionId !== null;
+  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const say = async (text: string) => {
+    for (const piece of text.split(/(?<= )/)) {
+      if (!live()) return;
+      agentEmit({ type: "text_delta", text: piece });
+      await pause(35);
+    }
+  };
+
+  if (/export/i.test(prompt)) {
+    await say("Rendering writes a file, so I need your permission first. ");
+    const requestId = `mock-perm-${turn}`;
+    const option = await new Promise<string>((resolve) => {
+      mockAgent.pending.set(requestId, resolve);
+      agentEmit({
+        type: "permission_request",
+        request_id: requestId,
+        tool: "mcp__renderly__export",
+        input: { output_path: "out/mock-export.mp4", preset: "tiktok" },
+        options: [
+          { id: "allow_once", label: "Allow once" },
+          { id: "reject_once", label: "Deny" },
+        ],
+      });
+    });
+    mockAgent.pending.delete(requestId);
+    if (!live()) return;
+    if (option === "allow_once") {
+      agentEmit({ type: "tool_started", id: `mock-tu-${turn}`, name: "mcp__renderly__export", input: { preset: "tiktok" } });
+      await pause(400);
+      agentEmit({ type: "tool_finished", id: `mock-tu-${turn}`, output_summary: "Mock export: nothing was written.", is_error: false });
+      await say("Export finished (mock).");
+    } else {
+      await say("Okay, I won't export.");
+    }
+    agentEmit({ type: "turn_finished", stop_reason: "end_turn" });
+    return;
+  }
+
+  await say("I'll trim the first video clip to 5 seconds. ");
+  const target = firstVideoClip();
+  if (!target) {
+    await say("There is no video clip to trim.");
+    agentEmit({ type: "turn_finished", stop_reason: "end_turn" });
+    return;
+  }
+  const command = {
+    command: "TrimClip",
+    track_id: target.trackId,
+    clip_id: target.clipId,
+    new_source_out_secs: Math.min(5, target.sourceOut),
+  };
+  await pause(300);
+  if (!live()) return;
+  const toolId = `mock-tu-${turn}`;
+  agentEmit({ type: "tool_started", id: toolId, name: "mcp__renderly__apply_command", input: { command } });
+  try {
+    const result = (await invoke<{ revision: number }>("apply_command", { command })) as { revision: number };
+    await pause(250);
+    agentEmit({ type: "tool_finished", id: toolId, output_summary: `revision ${result.revision}`, is_error: false });
+  } catch (e) {
+    agentEmit({ type: "tool_finished", id: toolId, output_summary: String(e), is_error: true });
+  }
+  if (!live()) return;
+  await say("Done. The edit card has an Undo button.");
+  agentEmit({ type: "turn_finished", stop_reason: "end_turn" });
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function invoke<T = unknown>(cmd: string, args?: any): Promise<T> {
   const reply = (v: unknown) => Promise.resolve(v as T);
@@ -835,6 +955,51 @@ export function invoke<T = unknown>(cmd: string, args?: any): Promise<T> {
       return reply(undefined);
     case "project_thumbnail":
       return reply(null);
+    case "agent_list":
+      return reply(MOCK_AGENTS);
+    case "agent_start": {
+      if (args?.agentId === "codex") {
+        return Promise.reject("Codex is not installed (mock). Install it, then start again.");
+      }
+      mockAgent.sessionId = `mock-session-${Date.now()}`;
+      mockAgent.turn = 0;
+      mockAgent.pending.clear();
+      setTimeout(() => agentEmit({ type: "session_started", agent_id: args?.agentId ?? "claude-code" }), 0);
+      return reply(mockAgent.sessionId);
+    }
+    case "agent_send": {
+      if (!mockAgent.sessionId || args?.sessionId !== mockAgent.sessionId) {
+        return Promise.reject("no agent session");
+      }
+      void runMockTurn(String(args?.text ?? ""));
+      return reply(undefined);
+    }
+    case "agent_answer_permission": {
+      const resolve = mockAgent.pending.get(args?.requestId);
+      if (!resolve) return Promise.reject(`no pending permission request ${args?.requestId}`);
+      resolve(String(args?.optionId));
+      return reply(undefined);
+    }
+    case "agent_cancel": {
+      if (mockAgent.sessionId) {
+        mockAgent.turn += 1; // invalidates the running script
+        for (const resolve of mockAgent.pending.values()) resolve("reject_once");
+        mockAgent.pending.clear();
+        agentEmit({ type: "turn_finished", stop_reason: "cancelled" });
+      }
+      return reply(undefined);
+    }
+    case "agent_set_auto_edits":
+      return reply(undefined);
+    case "agent_stop": {
+      const sid = mockAgent.sessionId;
+      mockAgent.turn += 1;
+      for (const resolve of mockAgent.pending.values()) resolve("reject_once");
+      mockAgent.pending.clear();
+      if (sid) emit("agent:event", { session_id: sid, type: "session_ended", reason: "stopped" });
+      mockAgent.sessionId = null;
+      return reply(undefined);
+    }
     default:
       return reply(undefined);
   }

@@ -15,6 +15,7 @@ import { deleteSelected, splitSelectedAtPlayhead } from "../timeline/interaction
 import { activeTracks, containerDurationSecs, isNestedClip } from "./container";
 import { cycleTheme } from "./theme";
 import { resetTimelineThemeCache } from "../timeline/theme";
+import { useAgentChatStore } from "../store/agentChatStore";
 
 export interface ActionContext {
   /** Optional UI callbacks that aren't pure store state (e.g. open export dialog). */
@@ -314,6 +315,15 @@ export const ACTIONS: Record<string, EditorAction> = {
       useEditorStore.getState().bumpThemeEpoch();
     },
     matchKey: (e, mod) => mod && e.shiftKey && (e.key === "l" || e.key === "L"),
+  },
+  /** Opens the Agent tab in the right column and focuses its prompt box. */
+  "view.focus-agent": {
+    id: "view.focus-agent",
+    label: "Ask the agent",
+    shortcut: "Ctrl+L",
+    isEnabled: () => true,
+    run: () => useAgentChatStore.getState().requestPromptFocus(),
+    matchKey: (e, mod) => mod && !e.shiftKey && (e.key === "l" || e.key === "L"),
   },
 };
 

@@ -286,6 +286,17 @@ async fn dispatch(
                 "byte_len": png.len(),
             }))
         }
+        "agent_permission" => {
+            // renderly-mcp forwards Claude Code's --permission-prompt-tool requests here. The
+            // answer waits for the user in the Agent panel; nothing is approved by default.
+            let tool = params
+                .get("tool_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let input = params.get("input").cloned().unwrap_or(Value::Null);
+            Ok(crate::agent_chat::bridge_permission(app, &tool, input).await)
+        }
         "get_editor_status" => {
             let (project_path, name) = state
                 .with_session(|s| {

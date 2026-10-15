@@ -75,6 +75,7 @@ or
 | `export` | `output_path`, `preset` | `{ ok, output_path }` |
 | `render_frame` | `time_secs`, `preset` | `{ time_secs, png_base64, byte_len }` |
 | `get_editor_status` | | `{ live, project_path, project_name, playhead, playing, selection, revision }` |
+| `agent_permission` | `tool_name`, `input`, `tool_use_id?` | `{ behavior: "allow", updatedInput }` or `{ behavior: "deny", message }`. Sent by `renderly-mcp`'s `permission_prompt` tool for the desktop agent chat. Waits for the user's answer in the app; denies when no agent session is running. Not for other clients |
 
 ### `render_frame` (E3 — live FrameRenderer)
 

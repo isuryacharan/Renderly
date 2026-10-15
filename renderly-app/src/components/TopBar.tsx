@@ -11,8 +11,10 @@ import {
   Sun,
   Moon,
   Monitor,
+  MessageSquare,
 } from "lucide-react";
 import { useEditorStore } from "../store/editorStore";
+import { useAgentChatStore } from "../store/agentChatStore";
 import { getAction, invokeAction } from "../lib/actions";
 import { IconButton } from "./ui/IconButton";
 import { WindowControls } from "./ui/WindowControls";
@@ -32,6 +34,7 @@ function actionTooltip(id: string, fallback: string): string {
 
 export function TopBar({ onExport }: { onExport: () => void }) {
   const project = useEditorStore((s) => s.project);
+  const rightTab = useAgentChatStore((s) => s.rightTab);
   const canUndo = useEditorStore((s) => s.canUndo);
   const canRedo = useEditorStore((s) => s.canRedo);
   const saveStatus = useEditorStore((s) => s.saveStatus);
@@ -113,6 +116,14 @@ export function TopBar({ onExport }: { onExport: () => void }) {
       <span className="spacer" data-tauri-drag-region />
 
       <div className="topbar-group">
+        <IconButton
+          icon={MessageSquare}
+          iconOnly
+          aria-pressed={rightTab === "agent"}
+          className={rightTab === "agent" ? "is-active" : undefined}
+          tooltip={rightTab === "agent" ? "Show the Inspector" : actionTooltip("view.focus-agent", "Ask the agent")}
+          onClick={() => useAgentChatStore.getState().toggleAgentTab()}
+        />
         <IconButton
           icon={
             getThemePreference() === "dark" ? Moon : getThemePreference() === "light" ? Sun : Monitor

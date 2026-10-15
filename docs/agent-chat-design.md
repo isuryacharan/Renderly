@@ -1,6 +1,11 @@
 # In-app agent chat: design note
 
-Status: **design, decisions recorded 2026-10-15; not implemented.** Parity row: [parity-board.md](parity-board.md) "In-app agent chat" (⬜).
+Status: **Phase 1 implemented (2026-10-15), not yet verified with a signed-in CLI.** Parity row: [parity-board.md](parity-board.md) "In-app agent chat" (⬜).
+
+**Phase 1 implemented:** what works and what does not is listed in §11. The Claude Code path is
+built on the documented headless flags; the Codex path is built from the published docs and is
+**untested against the real `codex` binary**. The manual checks the owner must run are in
+[qa-checklist.md](qa-checklist.md) ("Agent chat").
 Date of research: 2026-10-15. Source-of-truth specs this builds on:
 [mcp-agent-guide.md](mcp-agent-guide.md), [bridge-protocol.md](bridge-protocol.md),
 [command-api.md](command-api.md), [architecture.md](architecture.md), [AGENTS.md](../AGENTS.md).
@@ -412,3 +417,80 @@ user's own account.
 - Vendor image size limits behind the §5.4 numbers.
 - Whether the Claude Agent SDK's permission modes can be set per session through the adapter.
 - Windows `npx` launch via `cmd /c` (§3.2) is untested.
+
+---
+
+## 11. Phase 1 status (implemented 2026-10-15)
+
+**Built**
+
+- `renderly-mcp --project <path>` opens the project at startup (same as `open_project`; a bad path
+  exits with an error). Documented in [mcp-agent-guide.md](mcp-agent-guide.md).
+- `renderly-mcp` tool `permission_prompt`: the `--permission-prompt-tool` target. It forwards the
+  request to the app's bridge method `agent_permission` and denies when the app is not live on
+  the project.
+- Backend `renderly-app/src-tauri/src/agent_chat/` (see [architecture.md](architecture.md)):
+  `AgentDriver` trait; Claude Code driver; Codex driver; one `AgentEvent` enum sent as `agent:event`;
+  `PermissionBroker` with the §4.3 defaults; `agent_list`, `agent_start`, `agent_send`,
+  `agent_answer_permission`, `agent_cancel`, `agent_set_auto_edits` (not in the original command list;
+  needed for the auto-edit toggle), `agent_stop`. Stop on project close and on app exit.
+- Frontend: Agent tab beside the Inspector in the right column; top-bar toggle; `Ctrl+L`
+  (`view.focus-agent`). Picker with install and sign-in state and the exact command to fix each.
+  Streamed text, tool cards, an Undo on the latest successful edit, permission prompts, cancel,
+  stop, an auto-apply toggle and removable context chips. Reducer in `lib/agentChat.ts` with Vitest.
+- Browser harness: scripted fake agent in `dev/tauriMock.ts` (text, a real `TrimClip` through the
+  mock's `apply_command`, an export permission prompt).
+
+**Claude Code: how permissions work**
+
+Claude Code is started with `--permission-prompt-tool mcp__renderly__permission_prompt`. For every
+tool call not on the pre-allowed list (the Renderly perception tools), it calls that MCP tool. The
+tool forwards to the app; the app's policy allows perception tools, allows edits when the toggle is
+on, and asks the user for everything else. The reply is JSON `{"behavior":"allow","updatedInput":…}`
+or `{"behavior":"deny","message":…}`. This reply shape follows the documented `canUseTool` contract;
+it has not been checked against the real binary (see below).
+
+**Codex**
+
+Driven as `codex app-server`, with the Renderly MCP server passed as `-c` overrides so the user's
+`config.toml` is not edited. Built from the published docs (`initialize`, `thread/start`,
+`turn/start`, `turn/interrupt`, `item/agentMessage/delta`, `item/started`/`item/completed`,
+`turn/completed`). **Untested against the real binary.** The approval method names and the response
+shape, and the MCP `-c` override, are assumptions. If they are wrong, the session fails to start or
+approvals hang until the user cancels; the failure is shown in the panel.
+
+**Does not work yet**
+
+- Vendor binaries are not shipped. `renderly-mcp` must be next to the app executable or in the
+  workspace `target` build. The installer does not ship it (Q10 is still open).
+- Cancel kills the CLI process tree and the next turn relaunches with `--resume`. There is no
+  graceful SIGINT on Windows.
+- One session at a time; no per-turn undo grouping (Q6 undecided); no "Always" for file writes or
+  shell (by design, §4.3).
+- The Inspector and Agent cannot be shown side by side (§4.1 split). The column width is not
+  persisted.
+- Assistant text is shown as plain text; Markdown is not rendered.
+- Gemini and the other agents (Phase 3) are not listed.
+
+**Not verified against the real CLIs (owner must check, see qa-checklist.md)**
+
+- The `--permission-prompt-tool` reply shape and whether the MCP server is connected before the
+  first turn.
+- Whether `stream_event` text deltas arrive in the form the parser expects.
+- `claude auth status` exit codes (documented as 0 signed in, 1 not signed in).
+- Codex's `-c` overrides before `app-server`, the `approvalPolicy` value, approval request names and
+  payloads, and item payload fields.
+
+**Tests**
+
+- `renderly-mcp`: unit tests for the argument parser, the `--project` stdio cases, and the
+  `permission_prompt` denial when no app is live.
+- `renderly-app`: permission classification and broker (allow once, allow always scoped to the
+  tool and command, reject, cancel-all, no always for file writes); the stream-json and Codex
+  parsers; launch-flag contract; `tests/agent_chat.rs` runs both real drivers against the
+  `renderly-fake-agent` binary (text, a tool call, a Codex approval allowed and denied, cancel then a
+  second turn, kill on stop, missing CLI). The Claude permission path is not exercised end to end in
+  tests: it needs the real CLI to call the MCP tool. The broker, the MCP tool's denial path and the
+  flag contract are unit-tested instead.
+- Vitest: reducer (text streaming, tools, permissions, turns, errors, session ids), edit-card
+  summaries, and Undo eligibility.
