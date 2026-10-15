@@ -29,8 +29,11 @@ Logging goes to **stderr**; stdout is reserved for MCP JSON-RPC.
 
 When `renderly-app` is running, it publishes a discovery file and a loopback WebSocket
 JSON-RPC server — see [bridge-protocol.md](bridge-protocol.md). `renderly-mcp` prefers that
-bridge for `get_project`, `apply_command`, `export`, and `render_frame` when the open project
-path matches; otherwise it keeps today's headless file mode.
+bridge for `get_project`, `apply_command`, `export`, and `render_frame` when the project opened
+with `open_project` / `new_project` is the one the app has open; otherwise it works headlessly on
+the file. With no project open these tools fail with "no project open" — they never act on
+whatever the app happens to have on screen. Call `open_project` with the app's project path
+(from `get_editor_status`) to edit it live.
 
 | Tool | Description |
 |---|---|

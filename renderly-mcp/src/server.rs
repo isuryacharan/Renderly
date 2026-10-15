@@ -78,7 +78,13 @@ impl RenderlyMcp {
                 .map_err(|e| format!("session lock poisoned: {e}"))?;
             guard.as_ref().map(|s| s.path.clone())
         };
-        let bridged = Self::block_on_bridge(async { Ok(try_live_bridge(path.as_deref()).await) })?;
+        // Only attach to the desktop app when this server has a project open AND the app is on
+        // that same project. With no project open, never fall through to whatever the app has
+        // on screen: the call fails with "no project open" like any other headless call.
+        let Some(path) = path else {
+            return self.with_session(headless);
+        };
+        let bridged = Self::block_on_bridge(async { Ok(try_live_bridge(Some(&path)).await) })?;
         if let Some((_disc, mut client)) = bridged {
             return live(&mut client);
         }

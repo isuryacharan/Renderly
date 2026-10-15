@@ -458,3 +458,54 @@ fn stdio_proxies_to_live_bridge_when_discovery_matches_session() {
         serde_json::from_str(&std::fs::read_to_string(&project_path).unwrap()).unwrap();
     assert!(on_disk["tracks"].as_array().unwrap().is_empty());
 }
+
+/// With no project open, edit and render tools must NOT fall through to whatever project the
+/// desktop app has open — they fail with "no project open" and the bridge sees nothing.
+#[test]
+fn stdio_does_not_attach_to_the_app_without_an_open_project() {
+    const TOKEN: &str = "stdio-noattach-token";
+    let dir = TempDir::new();
+    let app_project = dir.0.join("in-the-app.renderly.json");
+    let (port, log) = start_fake_bridge(TOKEN, app_project.to_string_lossy().into_owned());
+    let discovery = dir.0.join("bridge.json");
+    std::fs::write(
+        &discovery,
+        json!({
+            "pid": std::process::id(),
+            "port": port,
+            "token": TOKEN,
+            "project_path": app_project.to_string_lossy(),
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut mcp = McpProcess::spawn(&discovery);
+    mcp.handshake();
+    for (tool, args) in [
+        ("get_project", json!({})),
+        (
+            "apply_command",
+            json!({ "command": { "command": "AddTrack", "kind": "video", "name": "V1" } }),
+        ),
+        ("render_frame", json!({ "time_secs": 0.0 })),
+        (
+            "export",
+            json!({ "output_path": dir.0.join("x.mp4").to_string_lossy() }),
+        ),
+    ] {
+        let (_, text) = mcp.call_tool(tool, args);
+        assert!(text.contains("no project open"), "{tool}: {text}");
+    }
+
+    // Status still reports the running app; it is read-only and needs no project.
+    let (_, text) = mcp.call_tool("get_editor_status", json!({}));
+    let status: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(status["live"], true, "{text}");
+
+    let log = log.lock().unwrap();
+    assert!(
+        log.iter().all(|r| r["method"] == "get_editor_status"),
+        "only the status call may reach the app: {log:?}"
+    );
+}
