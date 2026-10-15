@@ -22,6 +22,8 @@ const PROP_OPTIONS: { value: AnimProperty; label: string; video?: boolean; audio
   { value: "scale_y", label: "Scale Y", video: true },
   { value: "rotation", label: "Rotation", video: true },
   { value: "opacity", label: "Opacity", video: true },
+  { value: "fit_x", label: "Pan within frame X", video: true },
+  { value: "fit_y", label: "Pan within frame Y", video: true },
   { value: "speed", label: "Speed", video: true, audio: true },
   { value: "volume", label: "Volume (dB)", audio: true, video: true },
 ];
@@ -51,6 +53,10 @@ function defaultValue(prop: AnimProperty, clip: MediaClip | AdjustmentClip): num
       return t?.rotation_deg ?? 0;
     case "opacity":
       return t?.opacity ?? 1;
+    case "fit_x":
+      return t?.fit_x ?? 0;
+    case "fit_y":
+      return t?.fit_y ?? 0;
     case "speed":
       return clip.speed ?? 1;
     case "volume":

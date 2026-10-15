@@ -12,12 +12,17 @@ export type CoverUv = {
   offset: [number, number];
 };
 
-/** Same cover-fit as renderly-core `cover_uv`. */
+/**
+ * Same cover-fit as renderly-core `cover_uv` / `cover_window`. `fitX`/`fitY` (-1..1, the clip's
+ * `fit_x`/`fit_y`) slide the window across the cropped axis: offset = (1 - scale)(1 + fit)/2.
+ */
 export function coverUv(
   layerW: number,
   layerH: number,
   outW: number,
   outH: number,
+  fitX = 0,
+  fitY = 0,
 ): CoverUv {
   const layerAspect = layerW / Math.max(layerH, 1e-9);
   const outAspect = outW / Math.max(outH, 1e-9);
@@ -25,9 +30,11 @@ export function coverUv(
     layerAspect > outAspect
       ? [outAspect / layerAspect, 1]
       : [1, layerAspect / outAspect];
+  const fx = Math.max(-1, Math.min(1, fitX));
+  const fy = Math.max(-1, Math.min(1, fitY));
   return {
     scale,
-    offset: [(1 - scale[0]) / 2, (1 - scale[1]) / 2],
+    offset: [((1 - scale[0]) * (1 + fx)) / 2, ((1 - scale[1]) * (1 + fy)) / 2],
   };
 }
 

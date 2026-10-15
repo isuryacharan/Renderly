@@ -639,6 +639,15 @@ pub struct ClipTransform {
     /// 0..1
     #[serde(default = "default_opacity")]
     pub opacity: f64,
+    /// Position of the cover-fit window inside the source, horizontally, in -1..1: 0 = centred
+    /// (the cover window is the middle of the source), -1 = flush with the left edge, +1 =
+    /// flush with the right edge. Only meaningful on an axis the source overflows; the other
+    /// axis ignores it. Serde-defaulted (0), so older projects render unchanged.
+    #[serde(default)]
+    pub fit_x: f64,
+    /// As `fit_x`, vertically (-1 = top edge, +1 = bottom edge).
+    #[serde(default)]
+    pub fit_y: f64,
 }
 
 fn default_scale() -> f64 {
@@ -658,6 +667,8 @@ impl Default for ClipTransform {
             scale_y: 1.0,
             rotation_deg: 0.0,
             opacity: 1.0,
+            fit_x: 0.0,
+            fit_y: 0.0,
         }
     }
 }
@@ -673,6 +684,50 @@ impl ClipTransform {
             ..self
         }
     }
+
+    /// Clamp the cover-fit window position to -1..1 on both axes.
+    pub fn clamp_fit(self) -> Self {
+        Self {
+            fit_x: self.fit_x.clamp(-1.0, 1.0),
+            fit_y: self.fit_y.clamp(-1.0, 1.0),
+            ..self
+        }
+    }
+}
+
+/// The cover-fit window of a `src_w` x `src_h` layer on an `out_w` x `out_h` canvas, in source
+/// UV space (0..1, origin top-left, +v down, as the compositor samples it).
+///
+/// Returns `(scale, offset)` per axis: the visible window covers `scale` of the source and
+/// starts at `offset`. The axis the layer overflows is cropped to `scale < 1`; the other axis is
+/// `1, 0`. `fit_x`/`fit_y` (clamped to -1..1) slide the window across the slack:
+/// `offset = (1 - scale) * (1 + fit) / 2`, so `fit = 0` is the centred window and `±1` are the
+/// two flush positions. An axis with no slack has `scale == 1` and therefore ignores its fit.
+pub fn cover_window(
+    src_w: f64,
+    src_h: f64,
+    out_w: f64,
+    out_h: f64,
+    fit_x: f64,
+    fit_y: f64,
+) -> ([f64; 2], [f64; 2]) {
+    let src_aspect = src_w / src_h;
+    let out_aspect = out_w / out_h;
+    let (scale_x, scale_y) = if src_aspect > out_aspect {
+        // Source is relatively wider than the output: crop its left/right edges.
+        (out_aspect / src_aspect, 1.0)
+    } else {
+        // Source is relatively taller (or equal) than the output: crop top/bottom.
+        (1.0, src_aspect / out_aspect)
+    };
+    let (fx, fy) = (fit_x.clamp(-1.0, 1.0), fit_y.clamp(-1.0, 1.0));
+    (
+        [scale_x, scale_y],
+        [
+            (1.0 - scale_x) * (1.0 + fx) / 2.0,
+            (1.0 - scale_y) * (1.0 + fy) / 2.0,
+        ],
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -687,6 +742,10 @@ pub enum AnimProperty {
     Volume,
     /// Playback rate over clip-local timeline time (Phase 3 deferred / schema v5).
     Speed,
+    /// Cover-fit window position across the source, -1..1 (see `ClipTransform::fit_x`).
+    FitX,
+    /// Cover-fit window position down the source, -1..1 (see `ClipTransform::fit_y`).
+    FitY,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1151,6 +1210,83 @@ pub struct CaptionClip {
     pub position_secs: f64,
     pub duration_secs: f64,
     pub style_id: String,
+}
+
+#[cfg(test)]
+mod cover_window_tests {
+    use super::{cover_window, ClipTransform};
+
+    /// The pre-fit compositor window: centred, `(1 - scale) / 2`.
+    fn legacy_offset(scale: f64) -> f64 {
+        (1.0 - scale) / 2.0
+    }
+
+    #[test]
+    fn fit_zero_is_the_old_centred_window_exactly() {
+        for (sw, sh, ow, oh) in [
+            (1920.0, 1080.0, 1080.0, 1920.0),
+            (1080.0, 1920.0, 1920.0, 1080.0),
+            (1080.0, 1920.0, 1080.0, 1920.0),
+            (400.0, 500.0, 270.0, 480.0),
+        ] {
+            let (scale, offset) = cover_window(sw, sh, ow, oh, 0.0, 0.0);
+            assert_eq!(offset[0], legacy_offset(scale[0]), "x for {sw}x{sh}");
+            assert_eq!(offset[1], legacy_offset(scale[1]), "y for {sw}x{sh}");
+        }
+    }
+
+    #[test]
+    fn plus_and_minus_one_put_the_window_flush_with_each_edge() {
+        // Wide source on a tall canvas: horizontal slack only.
+        let (scale, left) = cover_window(1920.0, 1080.0, 1080.0, 1920.0, -1.0, 0.0);
+        assert_eq!(left[0], 0.0);
+        assert!((scale[0] - 0.5625 / (16.0 / 9.0)).abs() < 1e-12);
+        let (scale, right) = cover_window(1920.0, 1080.0, 1080.0, 1920.0, 1.0, 0.0);
+        assert!(
+            (right[0] + scale[0] - 1.0).abs() < 1e-12,
+            "flush with the right edge"
+        );
+        // Tall source on a wide canvas: vertical slack, top and bottom.
+        let (scale, top) = cover_window(1080.0, 1920.0, 1920.0, 1080.0, 0.0, -1.0);
+        assert_eq!(top[1], 0.0);
+        let (scale2, bottom) = cover_window(1080.0, 1920.0, 1920.0, 1080.0, 0.0, 1.0);
+        assert_eq!(scale, scale2);
+        assert!((bottom[1] + scale[1] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_axis_without_slack_ignores_its_fit() {
+        let (scale, offset) = cover_window(1920.0, 1080.0, 1080.0, 1920.0, 0.0, 1.0);
+        assert_eq!(scale[1], 1.0);
+        assert_eq!(offset[1], 0.0);
+        let (scale, offset) = cover_window(1920.0, 1080.0, 1080.0, 1920.0, 0.7, -0.9);
+        assert_eq!(scale[1], 1.0);
+        assert_eq!(offset[1], 0.0);
+        assert!(offset[0] > 0.0, "the slack axis still moves");
+    }
+
+    #[test]
+    fn fit_is_clamped_to_unit_range() {
+        let a = cover_window(1920.0, 1080.0, 1080.0, 1920.0, 3.0, 0.0);
+        let b = cover_window(1920.0, 1080.0, 1080.0, 1920.0, 1.0, 0.0);
+        assert_eq!(a, b);
+        let t = ClipTransform {
+            fit_x: -4.0,
+            fit_y: 2.0,
+            ..ClipTransform::default()
+        }
+        .clamp_fit();
+        assert_eq!((t.fit_x, t.fit_y), (-1.0, 1.0));
+    }
+
+    #[test]
+    fn old_projects_without_fit_fields_load_with_zero_fit() {
+        let t: ClipTransform = serde_json::from_str(
+            r#"{"x":0.1,"y":0.0,"scale_x":1.0,"scale_y":1.0,"rotation_deg":0.0,"opacity":1.0}"#,
+        )
+        .unwrap();
+        assert_eq!((t.fit_x, t.fit_y), (0.0, 0.0));
+    }
 }
 
 #[cfg(test)]

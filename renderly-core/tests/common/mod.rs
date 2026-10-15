@@ -130,6 +130,8 @@ pub fn rich_project() -> Project {
         scale_y: 1.2,
         rotation_deg: 5.0,
         opacity: 0.9,
+        fit_x: 0.3,
+        fit_y: 0.0,
     };
     loaded.keyframes = vec![
         KeyframeTrack {

@@ -322,6 +322,35 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
               />
             </label>
           </div>
+          <div className="insp-grid-2">
+            {(["fit_x", "fit_y"] as const).map((axis) => {
+              const withFit = (v: number): ClipTransform =>
+                axis === "fit_x" ? { ...transform, fit_x: v } : { ...transform, fit_y: v };
+              return (
+                <label className="insp-cell" key={axis}>
+                  <span>
+                    Pan within frame {axis === "fit_x" ? "X" : "Y"} · {transform[axis].toFixed(2)}
+                  </span>
+                  <input
+                    type="range"
+                    min={-1}
+                    max={1}
+                    step={0.01}
+                    value={transform[axis]}
+                    disabled={track.locked}
+                    title="Moves the cover-fit window across the source (-1 edge, 0 centre, +1 edge). Has no effect on an axis the source does not overflow."
+                    onChange={(e) => setTransform(withFit(parseFloat(e.target.value)))}
+                    onMouseUp={(e) =>
+                      void commitTransform(withFit(parseFloat((e.target as HTMLInputElement).value)))
+                    }
+                    onTouchEnd={(e) =>
+                      void commitTransform(withFit(parseFloat((e.target as HTMLInputElement).value)))
+                    }
+                  />
+                </label>
+              );
+            })}
+          </div>
         </div>
       )}
 

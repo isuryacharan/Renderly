@@ -226,6 +226,22 @@ source decode → pack LUT → WASM frame → **chroma key (GPU WGSL effect pass
 For a nested sequence the same chain runs on the sequence's composited picture (minus the
 CPU-side steps, which have no decoded frame): GPU builtins → clip mask → composite blend.
 
+## Cover-fit position (`ClipTransform.fit_x` / `fit_y`)
+
+The compositor cover-fits every media layer to the canvas: it crops the source to the canvas
+aspect and only then applies the clip transform. `fit_x` and `fit_y` choose **which part of the
+source** that cover window shows, on the axis the source overflows:
+
+- `fit_x`, `fit_y` in `-1..=1` (`f64`, both `#[serde(default)]` = `0`, clamped on write and on
+  evaluation). `0` is the centred window (the old behaviour), `-1` puts the window flush with
+  the left (top) edge of the source, `+1` flush with the right (bottom) edge.
+- The window start is `offset = (1 - scale) * (1 + fit) / 2` in source UV, where `scale` is the
+  cover scale of that axis. An axis with no slack (`scale == 1`) ignores its fit.
+- Keyframable as `AnimProperty::FitX` / `FitY` (`"fit_x"` / `"fit_y"`), evaluated by
+  `evaluate_transform` like the other transform properties.
+- Masks are unaffected: clip masks and mattes are in **source-frame** UVs and are applied to the
+  source before the cover draw, so they stay attached to the picture as the window moves.
+
 ## Limits accepted in v7
 
 - Per-sequence frame rate / sample rate; blend modes on adjustment layers.
@@ -240,6 +256,11 @@ CPU-side steps, which have no decoded frame): GPU builtins → clip mask → com
   renders them with the same Rust code as export).
 
 ## Version history
+
+- **v7, additive (cover-fit pan)**: `ClipTransform.fit_x` / `fit_y` (serde-defaulted `0`) and
+  `AnimProperty::FitX` / `FitY`, choosing where the cover-fit window sits inside the source (see
+  "Cover-fit position" above). **No version bump**: v7 has not been released, the fields are
+  optional, and a file without them loads and renders exactly as before.
 
 - **v7, additive (AI background removal)**: optional `MediaClip.background_removal.matte_frames`
   (`{ start_secs, fps, count, width, height, stamp }`, serde-defaulted, omitted when absent) and

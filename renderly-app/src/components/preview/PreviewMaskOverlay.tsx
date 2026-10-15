@@ -125,9 +125,13 @@ export function PreviewMaskOverlay({
   const outH = project?.settings.height ?? 1920;
   const layerW = media?.width ?? outW;
   const layerH = media?.height ?? outH;
+  // The overlay uses the clip's static transform (as the handles do), so the cover window
+  // follows the static fit; keyframed fit is not evaluated here.
+  const fitX = activeMediaClip?.transform?.fit_x ?? 0;
+  const fitY = activeMediaClip?.transform?.fit_y ?? 0;
   const cover = useMemo(
-    () => coverUv(layerW, layerH, outW, outH),
-    [layerW, layerH, outW, outH],
+    () => coverUv(layerW, layerH, outW, outH, fitX, fitY),
+    [layerW, layerH, outW, outH, fitX, fitY],
   );
   const transform = resolveTransform(activeMediaClip?.transform);
   const mask = active?.clip.mask ?? null;

@@ -7,7 +7,7 @@ use super::{
 /// Evaluate the effective transform at `timeline_secs` (absolute on the project timeline).
 pub fn evaluate_transform(clip: &MediaClip, timeline_secs: f64) -> ClipTransform {
     let local = (timeline_secs - clip.position_secs).max(0.0);
-    let mut t = clip.transform.clamp_opacity();
+    let mut t = clip.transform.clamp_opacity().clamp_fit();
     for track in &clip.keyframes {
         let Some(v) = sample_track(track, local) else {
             continue;
@@ -19,6 +19,8 @@ pub fn evaluate_transform(clip: &MediaClip, timeline_secs: f64) -> ClipTransform
             AnimProperty::ScaleY => t.scale_y = v,
             AnimProperty::Rotation => t.rotation_deg = v,
             AnimProperty::Opacity => t.opacity = v.clamp(0.0, 1.0),
+            AnimProperty::FitX => t.fit_x = v.clamp(-1.0, 1.0),
+            AnimProperty::FitY => t.fit_y = v.clamp(-1.0, 1.0),
             AnimProperty::Volume | AnimProperty::Speed => {}
         }
     }
@@ -248,6 +250,59 @@ fn apply_easing(t: f64, easing: Easing) -> f64 {
             }
         }
         Easing::Bezier => t, // Handled specially in sample_track
+    }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::*;
+    use crate::project::{Id, Keyframe};
+
+    fn key(time_secs: f64, value: f64) -> Keyframe {
+        Keyframe {
+            time_secs,
+            value,
+            easing: Easing::Linear,
+            handle_left: None,
+            handle_right: None,
+        }
+    }
+
+    #[test]
+    fn fit_x_keyframes_interpolate_and_clamp() {
+        let clip = MediaClip {
+            id: Id::new_v4(),
+            media_id: Id::new_v4(),
+            position_secs: 0.0,
+            source_in_secs: 0.0,
+            source_out_secs: 4.0,
+            keyframes: vec![KeyframeTrack {
+                property: AnimProperty::FitX,
+                keys: vec![key(0.0, -1.0), key(2.0, 1.0)],
+            }],
+            ..MediaClip::default()
+        };
+        assert!((evaluate_transform(&clip, 0.0).fit_x + 1.0).abs() < 1e-9);
+        assert!(evaluate_transform(&clip, 1.0).fit_x.abs() < 1e-9);
+        assert!((evaluate_transform(&clip, 2.0).fit_x - 1.0).abs() < 1e-9);
+        assert_eq!(evaluate_transform(&clip, 1.0).fit_y, 0.0);
+    }
+
+    #[test]
+    fn fit_y_keyframes_are_clamped_to_unit_range() {
+        let clip = MediaClip {
+            id: Id::new_v4(),
+            media_id: Id::new_v4(),
+            position_secs: 0.0,
+            source_in_secs: 0.0,
+            source_out_secs: 4.0,
+            keyframes: vec![KeyframeTrack {
+                property: AnimProperty::FitY,
+                keys: vec![key(0.0, 5.0)],
+            }],
+            ..MediaClip::default()
+        };
+        assert_eq!(evaluate_transform(&clip, 0.0).fit_y, 1.0);
     }
 }
 

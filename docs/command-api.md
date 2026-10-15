@@ -267,7 +267,10 @@ instead of only via `AddClip`'s default.
 
 ### `SetClipTransform` (Phase 3.1)
 Replaces the static `transform` on a media clip (video or audio). Finite numbers only;
-`opacity` is clamped to `0..=1`.
+`opacity` is clamped to `0..=1` and the cover-fit position `fit_x` / `fit_y` to `-1..=1`
+(see [project-schema.md](project-schema.md) "Cover-fit position"). The GUI's "Pan within frame"
+sliders dispatch this command; keyframes of `fit_x` / `fit_y` go through `SetClipKeyframes`
+(values in `-1..=1`).
 
 - Errors: track/clip not found, not a media clip, or non-finite transform fields.
 
@@ -340,7 +343,9 @@ keyframes are honoured when mapping timeline time to source frames.
 
 Output convention (matches the compositor): `PosX`/`PosY` are the tracked point's position as
 an NDC offset from the canvas centre (+x right, **+y up**), after the cover-fit mapping to the
-project canvas, so a layer with these keyframes sits on the tracked point. Previously written
+project canvas, so a layer with these keyframes sits on the tracked point. The cover window is
+the one the clip's static `transform.fit_x` / `fit_y` select (both `0` = centred, the usual case);
+keyframed fit is not read here. Previously written
 `PosX`/`PosY` (and, when `track_rotation_scale`, `Rotation`/`ScaleX`/`ScaleY`) tracks are
 replaced; other keyframe tracks are untouched. `Rotation` is degrees, counter-clockwise on
 screen. Still images are a no-op (`Applied`, nothing written).
@@ -386,24 +391,35 @@ continuity bonus for faces near the previous subject so it does not flip between
 it is held through gaps up to 2 s and interpolated across longer ones (leading/trailing gaps
 take the nearest detection). Detections need >= 0.7 confidence in at least 10% of the samples.
 
-Result (video): one constant zoom written to `transform.scale_x/scale_y` (at least 1; capped
-at 3x, and so the face never fills more than half the visible width) and `PosX` / `PosY`
-keyframes (clip-local times, NDC, simplified) from a dead-zone follower (the camera ignores
-movement within 15% of the visible half-extent) plus ~0.3 s Gaussian smoothing, clamped so
-the zoomed layer always covers the canvas (`|pos| <= scale - 1`, no borders). Existing
-`PosX`/`PosY`/`ScaleX`/`ScaleY` tracks are replaced; `transform.x/y` are reset to 0. Still
-images: one detection, a static `transform` (no keyframes).
+Framing: the subject is followed by **moving the cover-fit window across the source**, not by
+moving or zooming the layer. The subject path (smoothed, ~0.12 s) drives a dead-zone camera on
+the window centre (the camera ignores movement within 15% of the visible half-extent, then
+~0.3 s Gaussian smoothing), kept inside the source. The result is written as `FitX` keyframes
+(clip-local times, simplified), so the window pans across the whole frame; `FitY` keyframes
+are written only when the source overflows the canvas vertically (taller than the canvas
+aspect). The static `transform.fit_x/fit_y` is set to the first sample. The mapping is the
+inverse of the compositor's window placement: a subject at source fraction `u` is centred by
+`fit = (2u - 1) / (1 - cs)`, `cs` being the visible fraction of that axis, clamped to `-1..=1`.
+A subject outside the reachable range (the window cannot leave the source) sits at the nearest
+flush position.
 
-Fallback: if no face is found (or the media cannot be decoded) the clip gets the original
-centred behaviour unchanged: uniform `scale = max(src_aspect/target, target/src_aspect, 1)`,
-`x = y = 0`, keyframes untouched.
+Scale: `transform.scale_x/scale_y` = the minimum zoom for the target aspect (`1` when the canvas
+already has that aspect, which is the usual case). The older face-filling zoom is gone.
+`PosX` / `PosY` / `ScaleX` / `ScaleY` / `FitX` / `FitY` keyframes are replaced, and
+`transform.x/y` are reset to 0. Still images: one detection, a static `transform` (`fit_x/fit_y`
+set, no keyframes).
 
-Limitation: the compositor cover-fits the layer to the canvas and has no pan beyond that
-window, so a subject can only be centred while it lies inside the part of the source the
-canvas already shows (e.g. the centre ~32% width strip of 16:9 footage on a 9:16 canvas).
-Following subjects across the whole frame needs a per-clip crop offset, which is a schema
-change and is not part of this command. Errors as before (`TrackNotFound`, `ClipNotFound`,
-`TrackKindMismatch`, `NotMediaClip`, `MediaNotFound`, `Analysis` for a bad `target_aspect`).
+Fallback: if no face is found (or the media cannot be decoded) the clip is centred: `x = y = 0`,
+`fit_x = fit_y = 0`, `scale = ` the minimum zoom for the target aspect (`1` when the canvas
+matches it), and any `FitX` / `FitY` keyframes are removed. The earlier fallback zoomed in to
+`max(src_aspect/target, target/src_aspect)` (about 3.16x for 16:9 footage on a 9:16 target); that
+cut away most of the picture even though the cover fit already fills the canvas, so it was
+replaced.
+
+Limitation: the framing is a window position, so a subject can only be centred while the window
+can reach it (the window stays inside the source). Errors as before (`TrackNotFound`,
+`ClipNotFound`, `TrackKindMismatch`, `NotMediaClip`, `MediaNotFound`, `Analysis` for a bad
+`target_aspect`).
 
 ### `SetClipAudioDenoise` (Phase 4)
 Sets (`Some`) or clears (`None`) `audio_denoise` on a clip of an **audio** track. `config` is
@@ -643,6 +659,12 @@ remain follow-ups on top of the Phase 4 command surface above.
 
 - **Auto-reframe subject detection** (non-breaking, schema stays v6): `AutoReframeClip` detects
   faces (YuNet via tract) and keyframes `PosX`/`PosY`; centred scale kept as the no-face fallback.
+
+- **Cover-fit pan** (additive, schema stays v7): `SetClipTransform` takes `fit_x`/`fit_y`
+  (`-1..=1`, default `0`); `SetClipKeyframes` accepts `fit_x`/`fit_y` keys in `-1..=1`.
+  `AutoReframeClip` now follows the subject with `FitX`/`FitY` keyframes (the window pans across
+  the whole source) at scale 1 instead of `PosX`/`PosY` plus a zoom; its no-face fallback is
+  centred at scale 1 (it previously zoomed to the source/target aspect ratio).
 
 - **RNNoise denoise** (non-breaking, schema stays v6): `SetClipAudioDenoise` also accepts
   `backend: "rnnoise"`; `afftdn` unchanged.

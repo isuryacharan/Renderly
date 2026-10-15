@@ -372,15 +372,20 @@ enum Src {
     Stripes,
     /// 128x128 square with rings (aspect != output: cover-fit crops top/bottom).
     Square,
+    /// 480x180 (wider than the 16:9 canvas): eight 60 px colour columns. Cover-fit crops the
+    /// left and right edges, so the cover-fit window position is visible.
+    Wide,
 }
 
 impl Src {
-    const ALL: [Src; 5] = [
+    // `Wide` is appended so the ids (position in ALL) of the existing sources do not change.
+    const ALL: [Src; 6] = [
         Src::Bars,
         Src::Sprite,
         Src::Green,
         Src::Stripes,
         Src::Square,
+        Src::Wide,
     ];
 
     fn name(self) -> &'static str {
@@ -390,6 +395,7 @@ impl Src {
             Src::Green => "green",
             Src::Stripes => "stripes",
             Src::Square => "square",
+            Src::Wide => "wide",
         }
     }
 
@@ -402,6 +408,7 @@ impl Src {
             Src::Bars | Src::Green | Src::Stripes => (320, 180),
             Src::Sprite => (160, 90),
             Src::Square => (128, 128),
+            Src::Wide => (480, 180),
         }
     }
 
@@ -412,6 +419,7 @@ impl Src {
             Src::Green => gen_green(),
             Src::Stripes => gen_stripes(),
             Src::Square => gen_square(),
+            Src::Wide => gen_wide(),
         }
     }
 
@@ -505,6 +513,27 @@ fn gen_stripes() -> RgbaImage {
             Rgba([250, 120, 20, 255])
         } else {
             Rgba([60, 20, 140, 255])
+        }
+    })
+}
+
+fn gen_wide() -> RgbaImage {
+    const COLS: [[u8; 3]; 8] = [
+        [235, 235, 235],
+        [230, 220, 30],
+        [30, 200, 220],
+        [40, 180, 60],
+        [200, 40, 180],
+        [220, 40, 40],
+        [40, 60, 210],
+        [25, 25, 25],
+    ];
+    RgbaImage::from_fn(480, 180, |x, y| {
+        let c = COLS[(x / 60) as usize];
+        if y % 90 < 2 {
+            Rgba([255, 255, 255, 255])
+        } else {
+            Rgba([c[0], c[1], c[2], 255])
         }
     })
 }
@@ -856,6 +885,8 @@ fn xf(x: f64, y: f64, sx: f64, sy: f64, rot: f64, opacity: f64) -> ClipTransform
         scale_y: sy,
         rotation_deg: rot,
         opacity,
+        fit_x: 0.0,
+        fit_y: 0.0,
     }
 }
 
@@ -993,6 +1024,15 @@ fn scenes() -> Vec<Scene> {
 
     v.push(scene("baseline_bars", &[0.5], vec![full(Src::Bars)]));
     v.push(scene("cover_fit_square", &[0.5], vec![full(Src::Square)]));
+    // Cover-fit window slid to the right-hand part of a wide source (fit_x 0.8 of -1..1).
+    v.push(scene(
+        "cover_fit_pan",
+        &[0.5],
+        vec![full(Src::Wide).transform(ClipTransform {
+            fit_x: 0.8,
+            ..ClipTransform::default()
+        })],
+    ));
 
     // --- transform / opacity / keyframes / z-order -------------------------------------
     v.push(scene(
@@ -1786,6 +1826,7 @@ macro_rules! golden_tests {
 golden_tests!(
     golden_baseline_bars,
     golden_cover_fit_square,
+    golden_cover_fit_pan,
     golden_transform_pos_scale_rot,
     golden_opacity,
     golden_keyframed_transform_ease,

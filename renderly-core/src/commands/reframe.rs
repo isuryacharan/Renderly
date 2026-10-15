@@ -1,23 +1,20 @@
 //! `AutoReframeClip`: subject-aware reframing driven by the YuNet face detector.
 //!
 //! Frames are sampled sequentially (one ffmpeg process, <= 360 px tall, ~5 fps of timeline
-//! time), faces are detected, one subject is followed through the clip and its path becomes
-//! `PosX`/`PosY` keyframes plus one constant zoom. When no face is ever found (or the media
-//! cannot be decoded) the old centred scale is applied unchanged.
+//! time), faces are detected, and one subject is followed through the clip. Its path becomes
+//! `FitX` keyframes (and `FitY` when the source overflows the canvas vertically): the
+//! cover-fit window slides across the whole source to keep the subject centred. The layer keeps
+//! scale 1 unless the target aspect differs from the canvas. When no face is ever found (or the
+//! media cannot be decoded) the clip is centred (see `centred_reframe`).
 //!
-//! ## Geometry (compositor conventions, see `compose/composite.wgsl` and `motion.rs`)
+//! ## Geometry (compositor conventions, see `project::cover_window`)
 //!
-//! The layer is cover-fitted to the canvas first, so with scale 1 the canvas shows only the
-//! central `cover_fractions` window of the source. Call a point's position inside that window
-//! `p` in -1..1 (x right, y up). A layer scaled by `s` and translated by `(x, y)` NDC puts `p`
-//! at `x + s*p`; the canvas stays fully covered iff `|x| <= s - 1` (same for y). Centring a
-//! subject at `p` therefore needs `x = -s*p`, which is reachable only while `|p| <= 1 - 1/s`.
-//!
-//! Consequence worth knowing: the compositor has no pan beyond the cover window (a 16:9 clip in
-//! a 9:16 canvas can only follow subjects inside its centre ~32% width strip). The follower
-//! therefore never asks for more than the window can give; subjects outside it are kept as
-//! close to the edge of the picture as possible. Lifting that needs a per-clip crop offset in
-//! the schema, which this command deliberately does not introduce.
+//! The layer is cover-fitted to the canvas, so the canvas shows a window of the source that is
+//! `cs` of the axis (`cover_fractions`) wide. Its position is the clip's fit: with window
+//! centre `c` (source fraction, 0..1, origin top-left) the fit is `2 (c - 1/2) / (1 - cs)`,
+//! clamped to -1..1. So a subject at source fraction `u` is centred by `fit = (2u - 1) / (1 - cs)`,
+//! reachable only while the window stays inside the source (`|u - 1/2| <= (1 - cs) / 2`); a
+//! subject further out is kept at the nearest reachable window position.
 
 use super::motion::{
     analysis_err, cover_fractions, key, keys_simplified, out_size, plan_samples, resolve,
@@ -32,11 +29,6 @@ use crate::tracking::gaussian_smooth;
 const SAMPLE_FPS: f64 = 5.0;
 /// Minimum detector confidence for a face to count (stricter than OpenCV's 0.6 default).
 const MIN_SCORE: f32 = 0.7;
-/// Highest zoom the reframer will add on top of the base cover scale.
-const MAX_ZOOM: f64 = 3.0;
-/// The face may fill at most 1/FACE_FIT_W of the visible width and 1/FACE_FIT_H of its height.
-const FACE_FIT_W: f64 = 2.0;
-const FACE_FIT_H: f64 = 1.6;
 /// Dead zone half-size as a fraction of the visible half-extent: the camera ignores subject
 /// movement inside it.
 const DEAD_ZONE: f64 = 0.15;
@@ -165,83 +157,75 @@ fn fill_gaps(subjects: &[Option<Subject>], times: &[f64]) -> Option<Vec<Subject>
     Some(out)
 }
 
-/// The framing decided for a clip: one constant scale and a camera path as NDC offsets.
+/// The framing decided for a clip: one constant scale and the cover-window position over time.
 #[derive(Debug, Clone, PartialEq)]
 struct Framing {
     scale: f64,
-    /// `(PosX, PosY)` per sample time.
-    pos: Vec<(f64, f64)>,
+    /// `(fit_x, fit_y)` per sample time, each in -1..=1.
+    fit: Vec<(f64, f64)>,
 }
 
-/// Turn a subject path into a zoom and camera path (see the module docs for the maths).
-/// `cover` is `(cs_x, cs_y)` from [`cover_fractions`], `base_scale` the minimum zoom, `dt` the
-/// sample spacing in seconds.
+/// Cover-fit position (-1..=1) that centres a window of visible fraction `cs` on source
+/// fraction `c`. An axis with no slack (`cs == 1`) has no position to choose: 0.
+fn fit_centring(c: f64, cs: f64) -> f64 {
+    if 1.0 - cs < 1e-9 {
+        0.0
+    } else {
+        (2.0 * (c - 0.5) / (1.0 - cs)).clamp(-1.0, 1.0)
+    }
+}
+
+/// Dead-zone follower for one axis. Works on the window centre `c` (source fraction) rather
+/// than on a pan offset, so the camera can never leave the source: `c` stays within
+/// `[cs/2, 1 - cs/2]`. Returns the smoothed centre per sample.
+fn follow_axis(subject: &[f64], cs: f64, scale: f64, sigma_camera: f64) -> Vec<f64> {
+    let (lo, hi) = (cs / 2.0, 1.0 - cs / 2.0);
+    // The dead zone is a fraction of the visible half-extent (cs / (2 * scale)).
+    let dead = DEAD_ZONE * cs / (2.0 * scale);
+    let mut c = subject[0].clamp(lo, hi);
+    let raw: Vec<f64> = subject
+        .iter()
+        .map(|&x| {
+            let d = x - c;
+            if d.abs() > dead {
+                c += d - dead * d.signum();
+            }
+            c = c.clamp(lo, hi);
+            c
+        })
+        .collect();
+    gaussian_smooth(&raw, sigma_camera)
+}
+
+/// Turn a subject path into a window path (see the module docs for the maths). `cover` is
+/// `(cs_x, cs_y)` from [`cover_fractions`], `base_scale` the minimum zoom, `dt` the sample
+/// spacing in seconds. The scale is `base_scale`: the subject is followed by moving the
+/// cover-fit window across the source, not by zooming in.
 fn plan_framing(path: &[Subject], cover: (f64, f64), base_scale: f64, dt: f64) -> Framing {
     let sigma_of = |secs: f64| if dt > 1e-9 { secs / dt } else { 0.0 };
     let (sigma_subject, sigma_camera) =
         (sigma_of(SUBJECT_SMOOTH_SECS), sigma_of(CAMERA_SMOOTH_SECS));
-    let to_p = |s: &Subject| ((s.cx - 0.5) / cover.0 * 2.0, -(s.cy - 0.5) / cover.1 * 2.0);
-    let raw: (Vec<f64>, Vec<f64>) = path.iter().map(to_p).unzip();
-    let (px, py) = (
+    let raw: (Vec<f64>, Vec<f64>) = path.iter().map(|s| (s.cx, s.cy)).unzip();
+    let (sx, sy) = (
         gaussian_smooth(&raw.0, sigma_subject),
         gaussian_smooth(&raw.1, sigma_subject),
     );
-
-    // Zoom: enough that the window can reach the farthest subject position, but not so much
-    // that the face would overfill the crop, and never below the base cover scale.
-    let pmax = px
-        .iter()
-        .chain(py.iter())
-        .fold(0.0f64, |m, v| m.max(v.abs()))
-        .min(0.95);
-    let reach = if pmax > 1e-3 { 1.0 / (1.0 - pmax) } else { 1.0 };
-    let face_w = path.iter().fold(0.0f64, |m, s| m.max(s.w)).max(1e-3);
-    let face_h = path.iter().fold(0.0f64, |m, s| m.max(s.h)).max(1e-3);
-    let face_cap = (cover.0 / (FACE_FIT_W * face_w)).min(cover.1 / (FACE_FIT_H * face_h));
-    let scale = reach
-        .min(face_cap)
-        .min(MAX_ZOOM * base_scale)
-        .max(base_scale)
-        .max(1.0);
-
-    // Dead-zone follower on the smoothed subject path, camera confined to the no-border range.
-    let limit = (1.0 - 1.0 / scale).max(0.0);
-    let dead = DEAD_ZONE / scale;
-    let follow = |v: &[f64]| -> Vec<f64> {
-        let mut c = v[0].clamp(-limit, limit);
-        v.iter()
-            .map(|&x| {
-                let d = x - c;
-                if d.abs() > dead {
-                    c += d - dead * d.signum();
-                }
-                c = c.clamp(-limit, limit);
-                c
-            })
-            .collect()
-    };
+    let scale = base_scale.max(1.0);
     let (cx, cy) = (
-        gaussian_smooth(&follow(&px), sigma_camera),
-        gaussian_smooth(&follow(&py), sigma_camera),
+        follow_axis(&sx, cover.0, scale, sigma_camera),
+        follow_axis(&sy, cover.1, scale, sigma_camera),
     );
-    // Smoothing a clamped series stays inside the clamp, but guard against rounding anyway.
-    let bound = scale - 1.0;
-    let pos = cx
+    let fit = cx
         .iter()
         .zip(&cy)
-        .map(|(&x, &y)| {
-            (
-                (-scale * x).clamp(-bound, bound),
-                (-scale * y).clamp(-bound, bound),
-            )
-        })
+        .map(|(&x, &y)| (fit_centring(x, cover.0), fit_centring(y, cover.1)))
         .collect();
-    Framing { scale, pos }
+    Framing { scale, fit }
 }
 
 /// Minimum zoom so a `target_aspect` window covers the canvas: 1 when the canvas already has
 /// that aspect (the usual case), otherwise the ratio between the two aspects.
-fn base_scale(target_aspect: f64, out_w: f64, out_h: f64) -> f64 {
+pub(super) fn base_scale(target_aspect: f64, out_w: f64, out_h: f64) -> f64 {
     let canvas = out_w / out_h;
     if (canvas / target_aspect - 1.0).abs() < 0.01 {
         1.0
@@ -286,24 +270,37 @@ pub(super) fn auto_reframe_clip(
     let framing = plan_framing(&a.path, cover, base, dt);
 
     let clip = media_clip_mut(project, track_id, clip_id)?;
+    // The framing owns position, zoom and window fit; older pos/zoom keys are replaced.
     clip.keyframes.retain(|t| {
         !matches!(
             t.property,
-            AnimProperty::PosX | AnimProperty::PosY | AnimProperty::ScaleX | AnimProperty::ScaleY
+            AnimProperty::PosX
+                | AnimProperty::PosY
+                | AnimProperty::ScaleX
+                | AnimProperty::ScaleY
+                | AnimProperty::FitX
+                | AnimProperty::FitY
         )
     });
+    clip.transform.x = 0.0;
+    clip.transform.y = 0.0;
     clip.transform.scale_x = framing.scale;
     clip.transform.scale_y = framing.scale;
-    if vc.kind == MediaKind::Image {
-        let (x, y) = framing.pos[0];
-        clip.transform.x = x;
-        clip.transform.y = y;
-    } else {
-        clip.transform.x = 0.0;
-        clip.transform.y = 0.0;
-        let xs: Vec<f64> = framing.pos.iter().map(|p| p.0).collect();
-        let ys: Vec<f64> = framing.pos.iter().map(|p| p.1).collect();
-        for (property, values) in [(AnimProperty::PosX, xs), (AnimProperty::PosY, ys)] {
+    // The static fit is the first sample; keyframes (below) override it over time.
+    let (fit_x0, fit_y0) = framing.fit[0];
+    clip.transform.fit_x = fit_x0;
+    clip.transform.fit_y = fit_y0;
+    if vc.kind != MediaKind::Image {
+        let xs: Vec<f64> = framing.fit.iter().map(|p| p.0).collect();
+        let ys: Vec<f64> = framing.fit.iter().map(|p| p.1).collect();
+        // An axis the source does not overflow has no window position to animate.
+        for (property, has_slack, values) in [
+            (AnimProperty::FitX, cover.0 < 1.0, xs),
+            (AnimProperty::FitY, cover.1 < 1.0, ys),
+        ] {
+            if !has_slack {
+                continue;
+            }
             let mut keys = keys_simplified(&a.times, &values, POS_TOLERANCE);
             if keys.len() < 2 {
                 // Constant path collapsed to one key: keep both ends so the track is explicit.
@@ -489,15 +486,15 @@ mod tests {
     }
 
     #[test]
-    fn centred_stationary_subject_needs_no_zoom_or_motion() {
+    fn centred_stationary_subject_needs_no_motion() {
         let path = vec![subj(0.5, 0.5, 0.08, 0.12); 30];
         let f = plan_framing(&path, (0.316, 1.0), 1.0, 0.2);
         assert!((f.scale - 1.0).abs() < 1e-9);
-        assert!(f.pos.iter().all(|p| p.0.abs() < 1e-9 && p.1.abs() < 1e-9));
+        assert!(f.fit.iter().all(|p| p.0.abs() < 1e-9 && p.1.abs() < 1e-9));
     }
 
     #[test]
-    fn framing_never_reveals_borders_and_ignores_small_jitter() {
+    fn framing_keeps_the_window_in_range_and_ignores_small_jitter() {
         // Wide source, 9:16 canvas: cover window is 31.6% of the width. Subject wanders inside
         // it with a small tremor.
         let cover = (0.316, 1.0);
@@ -514,25 +511,60 @@ mod tests {
             })
             .collect();
         let f = plan_framing(&path, cover, 1.0, 0.2);
-        assert!(f.scale > 1.0 && f.scale <= MAX_ZOOM);
-        for &(x, y) in &f.pos {
-            assert!(x.abs() <= f.scale - 1.0 + 1e-9 && y.abs() <= f.scale - 1.0 + 1e-9);
+        assert_eq!(
+            f.scale, 1.0,
+            "no zoom when the canvas already has the target aspect"
+        );
+        for &(x, y) in &f.fit {
+            assert!((-1.0..=1.0).contains(&x) && y == 0.0, "fit ({x}, {y})");
         }
-        // Dead zone + smoothing: the camera moves far less than the raw subject path jitters.
+        // Dead zone + smoothing: the window moves far less than the raw subject path jitters.
         let steps: f64 = f
-            .pos
+            .fit
             .windows(2)
             .map(|w| (w[1].0 - w[0].0).abs())
             .fold(0.0, f64::max);
-        assert!(steps < 0.12, "camera step {steps}");
+        assert!(steps < 0.12, "window step {steps}");
     }
 
     #[test]
-    fn face_size_caps_the_zoom() {
-        // Big face near the edge would want a large zoom for reach, but the face must fit.
-        let path = vec![subj(0.6, 0.5, 0.12, 0.3); 10];
-        let f = plan_framing(&path, (0.316, 1.0), 1.0, 0.2);
-        assert!(f.scale <= 0.316 / (FACE_FIT_W * 0.12) + 1e-9 || (f.scale - 1.0).abs() < 1e-9);
+    fn wide_motion_pans_the_window_across_the_source() {
+        // Subject sweeps +-35% of the source width, well outside the 31.6% centre strip.
+        let cover = (0.316, 1.0);
+        let path: Vec<Subject> = (0..80)
+            .map(|i| {
+                let t = i as f64 * 0.1;
+                subj(
+                    0.5 + 0.35 * (t * std::f64::consts::TAU / 4.0).sin(),
+                    0.5,
+                    0.07,
+                    0.17,
+                )
+            })
+            .collect();
+        let f = plan_framing(&path, cover, 1.0, 0.1);
+        assert_eq!(f.scale, 1.0);
+        let max = f.fit.iter().fold(f64::MIN, |m, p| m.max(p.0));
+        let min = f.fit.iter().fold(f64::MAX, |m, p| m.min(p.0));
+        // A centred subject at +-0.85 would need fit +-1.0; the smoothed camera peaks just
+        // short of the flush position (measured +-0.87), so the bound is 0.8.
+        assert!(
+            max > 0.8 && min < -0.8,
+            "window did not reach the edges: [{min}, {max}]"
+        );
+    }
+
+    #[test]
+    fn fit_centring_is_the_inverse_of_the_window_placement() {
+        // Window of fraction 0.316 centred on u = 0.6: offset o = (1-cs)(1+fit)/2, centre o+cs/2.
+        let cs = 0.316;
+        let fit = fit_centring(0.6, cs);
+        let centre = (1.0 - cs) * (1.0 + fit) / 2.0 + cs / 2.0;
+        assert!((centre - 0.6).abs() < 1e-9);
+        // No slack on the axis: nothing to choose.
+        assert_eq!(fit_centring(0.9, 1.0), 0.0);
+        // Out of reach: clamped to the flush position.
+        assert_eq!(fit_centring(0.99, cs), 1.0);
     }
 
     #[test]
@@ -559,7 +591,9 @@ mod tests {
     const SRC: (u32, u32) = (640, 360);
     const FPS: f64 = 15.0;
     const SECS: f64 = 4.0;
-    const AMP_X: f64 = 50.0;
+    /// Horizontal sweep: +-35% of the 640 px source width, well outside the centre third that
+    /// the 9:16 window covers at fit 0 (the head box stays inside the frame for the whole sweep).
+    const AMP_X: f64 = 224.0;
     const AMP_Y: f64 = 30.0;
 
     fn tmp_dir(tag: &str) -> PathBuf {
@@ -726,53 +760,78 @@ mod tests {
             started.elapsed()
         );
         let clip = clip_ref(&project, tid, cid);
-        for p in [AnimProperty::PosX, AnimProperty::PosY] {
-            assert!(clip.keyframes.iter().any(|k| k.property == p), "{p:?} keys");
-        }
-        let (cs_x, cs_y) = cover_fractions(f64::from(SRC.0), f64::from(SRC.1), 270.0, 480.0);
-        // Face box half-size in cover-window units (p) at scale 1.
-        let k = OVERLAY / f64::from(CROP.2);
-        let half_w = 34.0 * k / (f64::from(SRC.0) * cs_x) * 2.0;
-        let half_h = 45.0 * k / (f64::from(SRC.1) * cs_y) * 2.0;
-        let (mut worst_c, mut worst_edge, mut max_border) = (0.0f64, 0.0f64, f64::MIN);
-        for j in 0..=16 {
-            let local = SECS * f64::from(j) / 16.0;
-            let tf = evaluate_transform(clip, clip.position_secs + local);
-            let (fx, fy) = face_at(local);
-            let p = (
-                (fx / f64::from(SRC.0) - 0.5) / cs_x * 2.0,
-                -(fy / f64::from(SRC.1) - 0.5) / cs_y * 2.0,
-            );
-            // Where the face centre lands on the canvas (NDC, y up).
-            let (nx, ny) = (tf.x + tf.scale_x * p.0, tf.y + tf.scale_y * p.1);
-            worst_c = worst_c.max(nx.abs()).max(ny.abs());
-            worst_edge = worst_edge
-                .max(nx.abs() + half_w * tf.scale_x)
-                .max(ny.abs() + half_h * tf.scale_y);
-            // Border check: the scaled layer must cover the whole canvas.
-            max_border = max_border
-                .max(tf.x.abs() - (tf.scale_x - 1.0))
-                .max(tf.y.abs() - (tf.scale_y - 1.0));
-            eprintln!(
-                "t={local:.2} face ndc=({nx:+.3},{ny:+.3}) scale={:.2} pos=({:+.3},{:+.3})",
-                tf.scale_x, tf.x, tf.y
-            );
-        }
-        eprintln!(
-            "worst centre offset {worst_c:.3} ndc, worst face edge {worst_edge:.3}, border excess {max_border:.4}"
-        );
-        assert!(
-            max_border <= 1e-6,
-            "layer reveals the canvas background by {max_border}"
-        );
-        assert!(worst_edge < 1.0, "face leaves the crop: {worst_edge}");
-        assert!(worst_c < 0.35, "face not near the crop centre: {worst_c}");
-        // Constant zoom, no scale keyframes.
-        assert!(clip.transform.scale_x > 1.2);
+        // The subject is followed by moving the window, not by moving or zooming the layer.
         assert!(clip
             .keyframes
             .iter()
-            .all(|k| !matches!(k.property, AnimProperty::ScaleX | AnimProperty::ScaleY)));
+            .any(|k| k.property == AnimProperty::FitX));
+        assert!(clip
+            .keyframes
+            .iter()
+            .all(|k| !matches!(k.property, AnimProperty::PosX | AnimProperty::PosY)));
+        // 640x360 source is wider than 9:16 only: no vertical slack, so no FitY keys.
+        assert!(clip
+            .keyframes
+            .iter()
+            .all(|k| k.property != AnimProperty::FitY));
+        assert_eq!(clip.transform.scale_x, 1.0);
+        assert_eq!(clip.transform.scale_y, 1.0);
+        let (_, cs_y) = cover_fractions(f64::from(SRC.0), f64::from(SRC.1), 270.0, 480.0);
+        assert_eq!(cs_y, 1.0);
+        // Measure the face centre on the canvas through the real evaluation path: the window
+        // comes from `evaluate_transform` (keyed fit) and `cover_window` (compositor math),
+        // then the layer transform maps it to NDC. Canvas x is right, y up.
+        let (mut worst_c, mut worst_edge, mut worst_border) = (0.0f64, 0.0f64, f64::MIN);
+        let mut samples = 0;
+        for j in 0..=64 {
+            let local = SECS * f64::from(j) / 64.0;
+            let tf = evaluate_transform(clip, clip.position_secs + local);
+            let (window_scale, window_offset) = crate::project::cover_window(
+                f64::from(SRC.0),
+                f64::from(SRC.1),
+                270.0,
+                480.0,
+                tf.fit_x,
+                tf.fit_y,
+            );
+            let (fx, fy) = face_at(local);
+            // Face centre as a window coordinate in 0..1 (window = `window_scale` of source).
+            let u = (fx / f64::from(SRC.0) - window_offset[0]) / window_scale[0];
+            let v = (fy / f64::from(SRC.1) - window_offset[1]) / window_scale[1];
+            let pre = (u * 2.0 - 1.0, 1.0 - v * 2.0);
+            let (nx, ny) = (tf.x + tf.scale_x * pre.0, tf.y + tf.scale_y * pre.1);
+            worst_c = worst_c.max(nx.abs()).max(ny.abs());
+            // Face half-size on the canvas (34 x 45 source px at the overlay scale).
+            let k = OVERLAY / f64::from(CROP.2);
+            let half_w = 34.0 * k / (f64::from(SRC.0) * window_scale[0]) * 2.0;
+            worst_edge = worst_edge.max(nx.abs() + half_w * tf.scale_x);
+            // The layer must still cover the whole canvas.
+            worst_border = worst_border
+                .max(tf.x.abs() - (tf.scale_x - 1.0))
+                .max(tf.y.abs() - (tf.scale_y - 1.0));
+            samples += 1;
+            if j % 8 == 0 {
+                eprintln!(
+                    "t={local:.2} face ndc=({nx:+.3},{ny:+.3}) fit=({:+.3},{:+.3})",
+                    tf.fit_x, tf.fit_y
+                );
+            }
+        }
+        assert_eq!(samples, 65);
+        eprintln!(
+            "worst face-centre offset {worst_c:.3} ndc, worst face edge {worst_edge:.3}, border excess {worst_border:.4}"
+        );
+        assert!(
+            worst_border <= 1e-6,
+            "layer reveals the background by {worst_border}"
+        );
+        assert!(worst_edge < 1.0, "face leaves the canvas: {worst_edge}");
+        // Tolerance 0.45 NDC (half the visible half-width). The kept dead zone lets the face sit
+        // up to DEAD_ZONE = 0.15 of the visible half-width off-centre while the window stays
+        // put, and the Gaussian camera smoothing rounds off the turnarounds of the 4 s sweep
+        // (a further ~0.25 NDC at the +-35% extremes). Measured worst case: 0.40 NDC, with the
+        // face's whole box still on canvas (worst edge 0.67).
+        assert!(worst_c < 0.45, "face not near the window centre: {worst_c}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -793,8 +852,13 @@ mod tests {
         let (got, want) = (clip_ref(&project, tid, cid), clip_ref(&expected, tid, cid));
         assert_eq!(got.transform, want.transform);
         assert!(got.keyframes.is_empty());
-        let old_scale = (16.0f64 / 9.0) / (9.0 / 16.0);
-        assert!((got.transform.scale_x - old_scale).abs() < 1e-9);
+        // Centred means the middle of the source at scale 1. The old result zoomed in by
+        // (16/9)/(9/16) = 3.16x here, which cropped away most of the picture for no reason: the
+        // cover fit already fills a 9:16 canvas with a 16:9 source. The fallback now only
+        // zooms when the target aspect differs from the canvas (it does not in these tests).
+        assert_eq!(got.transform.scale_x, 1.0);
+        assert_eq!(got.transform.scale_y, 1.0);
+        assert_eq!((got.transform.fit_x, got.transform.fit_y), (0.0, 0.0));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -804,7 +868,8 @@ mod tests {
             project_with(Path::new("does-not-exist.mp4"), MediaKind::Video, SRC, SECS);
         reframe(&mut project, tid, cid);
         let clip = clip_ref(&project, tid, cid);
-        assert!((clip.transform.scale_x - (16.0f64 / 9.0) / (9.0 / 16.0)).abs() < 1e-9);
+        assert_eq!(clip.transform.scale_x, 1.0);
+        assert_eq!((clip.transform.fit_x, clip.transform.fit_y), (0.0, 0.0));
         assert!(clip.keyframes.is_empty());
     }
 
@@ -818,22 +883,20 @@ mod tests {
         let clip = clip_ref(&project, tid, cid);
         assert!(clip.keyframes.is_empty());
         let tf = clip.transform;
-        assert!(
-            tf.scale_x > 1.5 && (tf.scale_x - tf.scale_y).abs() < 1e-12,
-            "{tf:?}"
-        );
-        let (cs_x, cs_y) = cover_fractions(400.0, 500.0, 270.0, 480.0);
-        let p = (
-            (FACE_CENTRE.0 / 400.0 - 0.5) / cs_x * 2.0,
-            -(FACE_CENTRE.1 / 500.0 - 0.5) / cs_y * 2.0,
-        );
-        let (nx, ny) = (tf.x + tf.scale_x * p.0, tf.y + tf.scale_y * p.1);
+        // A 400x500 still (0.8 aspect) on a 9:16 canvas overflows horizontally: the window
+        // slides to the face, the layer keeps scale 1 and no translation.
+        assert_eq!((tf.scale_x, tf.scale_y), (1.0, 1.0));
+        assert_eq!((tf.x, tf.y), (0.0, 0.0));
+        assert!(tf.fit_x.abs() > 0.0 && tf.fit_x.abs() < 1.0, "{tf:?}");
+        assert_eq!(tf.fit_y, 0.0);
+        let (scale, offset) =
+            crate::project::cover_window(400.0, 500.0, 270.0, 480.0, tf.fit_x, tf.fit_y);
+        let nx = (FACE_CENTRE.0 / 400.0 - offset[0]) / scale[0] * 2.0 - 1.0;
         eprintln!(
-            "still: scale {:.2} pos ({:+.3},{:+.3}) face ndc ({nx:+.3},{ny:+.3})",
-            tf.scale_x, tf.x, tf.y
+            "still: fit ({:+.3}, {:+.3}) face ndc x {nx:+.3}",
+            tf.fit_x, tf.fit_y
         );
-        assert!(nx.abs() < 0.1 && ny.abs() < 0.1, "face at ({nx},{ny})");
-        assert!(tf.x.abs() <= tf.scale_x - 1.0 + 1e-9 && tf.y.abs() <= tf.scale_y - 1.0 + 1e-9);
+        assert!(nx.abs() < 0.1, "face at x {nx}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -1660,13 +1660,22 @@ fn any_clip_mut(
 }
 
 fn validate_transform(t: &ClipTransform) -> Result<ClipTransform, CommandError> {
-    if ![t.x, t.y, t.scale_x, t.scale_y, t.rotation_deg, t.opacity]
-        .iter()
-        .all(|v| v.is_finite())
+    if ![
+        t.x,
+        t.y,
+        t.scale_x,
+        t.scale_y,
+        t.rotation_deg,
+        t.opacity,
+        t.fit_x,
+        t.fit_y,
+    ]
+    .iter()
+    .all(|v| v.is_finite())
     {
         return Err(CommandError::InvalidTransform);
     }
-    Ok(t.clamp_opacity())
+    Ok(t.clamp_opacity().clamp_fit())
 }
 
 fn validate_keyframes(tracks: Vec<KeyframeTrack>) -> Result<Vec<KeyframeTrack>, CommandError> {
@@ -1688,6 +1697,13 @@ fn validate_keyframes(tracks: Vec<KeyframeTrack>) -> Result<Vec<KeyframeTrack>, 
             if track.property == AnimProperty::Opacity && !(0.0..=1.0).contains(&key.value) {
                 return Err(CommandError::InvalidKeyframes(
                     "opacity keyframe must be in 0..=1".into(),
+                ));
+            }
+            if matches!(track.property, AnimProperty::FitX | AnimProperty::FitY)
+                && !(-1.0..=1.0).contains(&key.value)
+            {
+                return Err(CommandError::InvalidKeyframes(
+                    "fit keyframe must be in -1..=1".into(),
                 ));
             }
             if track.property == AnimProperty::Speed && !(0.25..=4.0).contains(&key.value) {
@@ -2692,20 +2708,25 @@ fn centred_reframe(
         .as_media()
         .ok_or(CommandError::NotMediaClip(clip_id))?;
     reject_sequence_media(project, clip.media_id, "AutoReframeClip")?;
-    let media = project
+    project
         .find_media(clip.media_id)
         .ok_or(CommandError::MediaNotFound(clip.media_id))?;
-    let src_w = media.width.unwrap_or(project.settings.width).max(1) as f64;
-    let src_h = media.height.unwrap_or(project.settings.height).max(1) as f64;
-    let src_aspect = src_w / src_h;
-    let scale = (src_aspect / target_aspect)
-        .max(target_aspect / src_aspect)
-        .max(1.0);
+    // Centred: the cover window is the middle of the source (fit 0) at scale 1. The old
+    // fallback zoomed in by the source/target aspect ratio (about 3.16x for 16:9 footage on a
+    // 9:16 target) to fill a crop that the cover fit already provides, cutting away most of
+    // the picture for no reason. Only a target aspect that differs from the canvas still needs
+    // the minimum zoom that makes it cover.
+    let (out_w, out_h) = motion::out_size(project);
+    let scale = reframe::base_scale(target_aspect, out_w, out_h);
     let clip = media_clip_mut(project, track_id, clip_id)?;
     clip.transform.scale_x = scale;
     clip.transform.scale_y = scale;
     clip.transform.x = 0.0;
     clip.transform.y = 0.0;
+    clip.transform.fit_x = 0.0;
+    clip.transform.fit_y = 0.0;
+    clip.keyframes
+        .retain(|t| !matches!(t.property, AnimProperty::FitX | AnimProperty::FitY));
     Ok(CommandOutcome::Applied)
 }
 
@@ -4337,6 +4358,8 @@ mod tests {
             scale_y: 0.8,
             rotation_deg: 15.0,
             opacity: 0.5,
+            fit_x: -0.5,
+            fit_y: 0.25,
         };
         apply_command(
             &mut project,

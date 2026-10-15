@@ -54,7 +54,7 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 | P4-2 | Audio denoise | ✅ | `SetClipAudioDenoise`; `rnnoise` backend (`nnnoiseless`, in-process, cached per source) alongside `afftdn`. Weak on steady white hiss; strong on hum, rumble and noise between words |
 | P4-4 | Motion tracking | ✅ | `TrackMotion`; Shi–Tomasi corners + pyramidal Lucas–Kanade in `renderly-core/src/tracking.rs`, optional region and rotation/scale. Frame-to-frame, no template re-anchoring |
 | P4-5 | Stabilization | ✅ | `StabilizeClip`; RANSAC similarity per frame, smoothed camera path, auto-zoom capped at 1.4×. No rolling-shutter or parallax correction |
-| P4-4b | Auto-reframe | 🟡 | `AutoReframeClip`; follows the main face (bundled YuNet, run with `tract`). Can only pan within the cover-fit window — for 16:9 on a 9:16 canvas, the centre third of the frame. Needs a per-clip crop offset to follow further |
+| P4-4b | Auto-reframe | ✅ | `AutoReframeClip`; follows the main face (bundled YuNet, run with `tract`) across the whole frame by keyframing the cover-fit pan (`fit_x`/`fit_y`). Faces only — no body or object subjects |
 | P4-6b | Text-to-sticker | 🟡 | `GenerateSticker`; locally generated PNG, not an image model |
 | P4-6 | Templates | ✅ | Pack `templates[]` + `ApplyTemplate` |
 | P4-7 | Multicam groups + angle switch | ✅ | `CreateMulticamGroup`, `SetMulticamAngle` |

@@ -103,14 +103,14 @@ const sampleProject: Project = {
     {
       id: MOCK_IDS["t-v2"], kind: "video", name: "Overlay", muted: false, locked: false, hidden: false,
       clips: [
-        { type: "video", id: MOCK_IDS["c-facecam"], media_id: MOCK_IDS["m-facecam"], position_secs: 10, source_in_secs: 0, source_out_secs: 6.2, gain_db: 0, enabled: true, fade_in_secs: 0, fade_out_secs: 0, transform: { x: 0, y: -0.55, scale_x: 0.32, scale_y: 0.32, rotation_deg: 0, opacity: 1 } },
+        { type: "video", id: MOCK_IDS["c-facecam"], media_id: MOCK_IDS["m-facecam"], position_secs: 10, source_in_secs: 0, source_out_secs: 6.2, gain_db: 0, enabled: true, fade_in_secs: 0, fade_out_secs: 0, transform: { x: 0, y: -0.55, scale_x: 0.32, scale_y: 0.32, rotation_deg: 0, opacity: 1, fit_x: 0, fit_y: 0 } },
       ],
     },
     {
       id: MOCK_IDS["t-v1"], kind: "video", name: "Gameplay", muted: false, locked: false, hidden: false,
       clips: [
         { type: "video", id: MOCK_IDS["c-round1"], media_id: MOCK_IDS["m-round1"], position_secs: 0, source_in_secs: 0, source_out_secs: 9.4, gain_db: 0, enabled: true, fade_in_secs: 0, fade_out_secs: 0, outgoing_transition: { kind: "crossfade", duration_secs: 0.5 } },
-        { type: "video", id: MOCK_IDS["c-killcam"], media_id: MOCK_IDS["m-killcam"], position_secs: 9.4, source_in_secs: 2, source_out_secs: 10.3, gain_db: -3, enabled: true, fade_in_secs: 0, fade_out_secs: 0, transform: { x: 0, y: 0, scale_x: 1, scale_y: 1, rotation_deg: 0, opacity: 1 }, effects: [{ id: MOCK_IDS["e1"], effect_id: "builtin:color_adjust", enabled: true, params: { contrast: 1.1 } }] },
+        { type: "video", id: MOCK_IDS["c-killcam"], media_id: MOCK_IDS["m-killcam"], position_secs: 9.4, source_in_secs: 2, source_out_secs: 10.3, gain_db: -3, enabled: true, fade_in_secs: 0, fade_out_secs: 0, transform: { x: 0, y: 0, scale_x: 1, scale_y: 1, rotation_deg: 0, opacity: 1, fit_x: 0, fit_y: 0 }, effects: [{ id: MOCK_IDS["e1"], effect_id: "builtin:color_adjust", enabled: true, params: { contrast: 1.1 } }] },
         { type: "video", id: MOCK_IDS["c-round2"], media_id: MOCK_IDS["m-round2"], position_secs: 18, source_in_secs: 0, source_out_secs: 11.1, gain_db: 0, enabled: true, fade_in_secs: 0, fade_out_secs: 0 },
       ],
     },

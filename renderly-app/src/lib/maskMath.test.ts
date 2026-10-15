@@ -78,6 +78,23 @@ describe("inverseTransformNdc", () => {
   });
 });
 
+describe("coverUv cover-fit position", () => {
+  it("fit 0 is the centred window; -1 and +1 are flush with the left and right edges", () => {
+    const centred = coverUv(1920, 1080, 1080, 1920);
+    expect(coverUv(1920, 1080, 1080, 1920, 0, 0)).toEqual(centred);
+    const left = coverUv(1920, 1080, 1080, 1920, -1, 0);
+    const right = coverUv(1920, 1080, 1080, 1920, 1, 0);
+    expect(left.offset[0]).toBeCloseTo(0, 12);
+    expect(right.offset[0] + right.scale[0]).toBeCloseTo(1, 12);
+    expect(left.scale).toEqual(centred.scale);
+  });
+  it("ignores the fit on an axis without slack", () => {
+    const c = coverUv(1920, 1080, 1080, 1920, 0, 1);
+    expect(c.scale[1]).toBe(1);
+    expect(c.offset[1]).toBe(0);
+  });
+});
+
 describe("UV <-> preview px", () => {
   it("maps the UV square onto the preview for an untransformed same-aspect clip", () => {
     expect(sourceUvToPreviewPx({ u: 0, v: 0 }, square, null, 200, 100)).toEqual({ x: 0, y: 0 });

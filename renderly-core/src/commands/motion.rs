@@ -374,13 +374,28 @@ pub(super) fn track_motion(
     };
     let series = analyse_motion(&vc, None, model, Some(region), true)?;
     let (out_w, out_h) = out_size(project);
-    let curves = tracking_curves(
+    let mut curves = tracking_curves(
         &series,
         out_w,
         out_h,
         sample_count as usize,
         track_rotation_scale,
     );
+    // `tracking_curves` places the point in the centred cover window. A static cover-fit
+    // position on the clip slides that window, so the tracked point sits this far further
+    // along the canvas (in NDC, before the clip transform). Zero for fit 0.
+    let fit = vc.clip.transform.clamp_fit();
+    let (cs_x, cs_y) = cover_fractions(series.width as f64, series.height as f64, out_w, out_h);
+    let (shift_x, shift_y) = (
+        -(1.0 - cs_x) * fit.fit_x / cs_x,
+        (1.0 - cs_y) * fit.fit_y / cs_y,
+    );
+    for v in &mut curves.pos_x {
+        *v += shift_x;
+    }
+    for v in &mut curves.pos_y {
+        *v += shift_y;
+    }
     let mut tracks = vec![
         (AnimProperty::PosX, keys_from(&curves.times, &curves.pos_x)),
         (AnimProperty::PosY, keys_from(&curves.times, &curves.pos_y)),

@@ -333,6 +333,7 @@ impl From<RgbaFrame> for ComposeLayer {
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct LayerParamsUniform {
     cover_scale: [f32; 2],
+    /// Window start in source UV, already including the cover-fit position (`fit_x`/`fit_y`).
     cover_offset: [f32; 2],
     user_translate: [f32; 2],
     user_scale: [f32; 2],
@@ -345,7 +346,19 @@ struct LayerParamsUniform {
 /// without distorting the layer's aspect ratio, cropping whichever axis overflows.
 /// Identity when the layer already matches the output aspect ratio (e.g. caption layers,
 /// which are already rendered at the output resolution).
-fn cover_uv(layer_w: u32, layer_h: u32, out_w: u32, out_h: u32) -> ([f32; 2], [f32; 2]) {
+///
+/// `fit_x`/`fit_y` (-1..1) slide the window across the cropped axis: offset =
+/// `(1 - scale) * (1 + fit) / 2`, so 0 is the centred window. This is the f32 mirror of
+/// [`crate::project::cover_window`] (kept in f32 so the fit-0 result is bit-identical to the
+/// pre-fit compositor and existing golden frames do not move).
+fn cover_uv(
+    layer_w: u32,
+    layer_h: u32,
+    out_w: u32,
+    out_h: u32,
+    fit_x: f32,
+    fit_y: f32,
+) -> ([f32; 2], [f32; 2]) {
     let layer_aspect = layer_w as f32 / layer_h as f32;
     let out_aspect = out_w as f32 / out_h as f32;
     let (scale_x, scale_y) = if layer_aspect > out_aspect {
@@ -357,7 +370,10 @@ fn cover_uv(layer_w: u32, layer_h: u32, out_w: u32, out_h: u32) -> ([f32; 2], [f
     };
     (
         [scale_x, scale_y],
-        [(1.0 - scale_x) / 2.0, (1.0 - scale_y) / 2.0],
+        [
+            (1.0 - scale_x) * (1.0 + fit_x) / 2.0,
+            (1.0 - scale_y) * (1.0 + fit_y) / 2.0,
+        ],
     )
 }
 
@@ -368,8 +384,15 @@ fn layer_params(
     out_h: u32,
     transform: &ClipTransform,
 ) -> LayerParamsUniform {
-    let (cover_scale, cover_offset) = cover_uv(layer_w, layer_h, out_w, out_h);
-    let t = transform.clamp_opacity();
+    let t = transform.clamp_opacity().clamp_fit();
+    let (cover_scale, cover_offset) = cover_uv(
+        layer_w,
+        layer_h,
+        out_w,
+        out_h,
+        t.fit_x as f32,
+        t.fit_y as f32,
+    );
     LayerParamsUniform {
         cover_scale,
         cover_offset,
@@ -1329,7 +1352,7 @@ mod tests {
 
     #[test]
     fn cover_uv_is_identity_for_matching_aspect_ratio() {
-        let (scale, offset) = cover_uv(1080, 1920, 1080, 1920);
+        let (scale, offset) = cover_uv(1080, 1920, 1080, 1920, 0.0, 0.0);
         assert!((scale[0] - 1.0).abs() < 1e-6);
         assert!((scale[1] - 1.0).abs() < 1e-6);
         assert!((offset[0] - 0.0).abs() < 1e-6);
@@ -1341,7 +1364,7 @@ mod tests {
         // 16:9 gameplay footage into a 9:16 TikTok export: the source is relatively wider
         // than the output, so covering it means cropping the left/right edges (scale_x < 1)
         // while using the full height (scale_y == 1) — never stretching either axis.
-        let (scale, offset) = cover_uv(1920, 1080, 1080, 1920);
+        let (scale, offset) = cover_uv(1920, 1080, 1080, 1920, 0.0, 0.0);
         assert!(
             scale[0] < 1.0,
             "expected horizontal crop, got scale={scale:?}"
@@ -1359,7 +1382,7 @@ mod tests {
 
     #[test]
     fn cover_uv_crops_top_bottom_for_taller_source_into_landscape_output() {
-        let (scale, offset) = cover_uv(1080, 1920, 1920, 1080);
+        let (scale, offset) = cover_uv(1080, 1920, 1920, 1080, 0.0, 0.0);
         assert!(
             (scale[0] - 1.0).abs() < 1e-6,
             "expected full width, got scale={scale:?}"
@@ -1378,13 +1401,108 @@ mod tests {
     #[test]
     fn identity_transform_params_match_cover_only() {
         let params = layer_params(1920, 1080, 1080, 1920, &ClipTransform::default());
-        let (scale, offset) = cover_uv(1920, 1080, 1080, 1920);
+        let (scale, offset) = cover_uv(1920, 1080, 1080, 1920, 0.0, 0.0);
         assert_eq!(params.cover_scale, scale);
         assert_eq!(params.cover_offset, offset);
         assert_eq!(params.user_translate, [0.0, 0.0]);
         assert_eq!(params.user_scale, [1.0, 1.0]);
         assert!((params.rotation_rad).abs() < 1e-6);
         assert!((params.opacity - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cover_uv_fit_slides_the_window_to_flush_edges() {
+        // 16:9 source on a 9:16 canvas: only the horizontal axis has slack.
+        let (scale, offset) = cover_uv(1920, 1080, 1080, 1920, -1.0, 0.0);
+        assert_eq!(offset[0], 0.0, "fit -1 is flush with the left edge");
+        let (_, offset) = cover_uv(1920, 1080, 1080, 1920, 1.0, 0.0);
+        assert!(
+            (offset[0] - (1.0 - scale[0])).abs() < 1e-6,
+            "fit +1 is flush right"
+        );
+        let (_, offset) = cover_uv(1920, 1080, 1080, 1920, 0.5, 0.0);
+        assert!(
+            (offset[0] - (1.0 - scale[0]) * 0.75).abs() < 1e-6,
+            "fit 0.5 is 3/4 across"
+        );
+        // The vertical axis has no slack here, so its fit is ignored.
+        let (scale, offset) = cover_uv(1920, 1080, 1080, 1920, 0.0, 1.0);
+        assert_eq!((scale[1], offset[1]), (1.0, 0.0));
+    }
+
+    #[test]
+    fn layer_params_clamps_the_fit_position() {
+        let t = ClipTransform {
+            fit_x: 5.0,
+            fit_y: -9.0,
+            ..ClipTransform::default()
+        };
+        let p = layer_params(1920, 1080, 1080, 1920, &t);
+        assert!((p.cover_offset[0] - (1.0 - p.cover_scale[0])).abs() < 1e-6);
+        assert_eq!(p.cover_offset[1], 0.0);
+    }
+
+    #[test]
+    fn cover_fit_slides_the_visible_window_across_the_source() {
+        let mut c = match Compositor::new(9, 16) {
+            Ok(c) => c,
+            Err(ComposeError::NoAdapter) => return,
+            Err(e) => panic!("{e}"),
+        };
+        // 32x18 source (16:9) on a 9:16 canvas: 31.6% of its width is visible at fit 0.
+        // Left third red, middle green, right third blue.
+        let (w, h) = (32u32, 18u32);
+        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let o = ((y * w + x) * 4) as usize;
+                let rgb: [u8; 3] = if x < 11 {
+                    [255, 0, 0]
+                } else if x < 21 {
+                    [0, 255, 0]
+                } else {
+                    [0, 0, 255]
+                };
+                pixels[o..o + 3].copy_from_slice(&rgb);
+                pixels[o + 3] = 255;
+            }
+        }
+        let frame = RgbaFrame {
+            width: w,
+            height: h,
+            pixels,
+        };
+        let mut render = |fit_x: f64| {
+            let layer = ComposeLayer {
+                source: LayerSource::Frame(frame.clone()),
+                transform: ClipTransform {
+                    fit_x,
+                    ..ClipTransform::default()
+                },
+                effects: vec![],
+                mask: None,
+                transition: None,
+            };
+            c.composite(&[], &[layer]).unwrap()
+        };
+        // Every visible column of the middle row shows only the expected third.
+        let row = |out: &[u8]| -> Vec<[u8; 3]> {
+            (0..9usize)
+                .map(|x| {
+                    let o = (8 * 9 + x) * 4;
+                    [out[o], out[o + 1], out[o + 2]]
+                })
+                .collect()
+        };
+        for p in row(&render(-1.0)) {
+            assert_near(p, [255, 0, 0], 8, "fit -1 shows the left third");
+        }
+        for p in row(&render(0.0)) {
+            assert_near(p, [0, 255, 0], 8, "fit 0 shows the middle third");
+        }
+        for p in row(&render(1.0)) {
+            assert_near(p, [0, 0, 255], 8, "fit +1 shows the right third");
+        }
     }
 
     #[test]

@@ -22,6 +22,10 @@ export interface ClipTransform {
   scale_y: number;
   rotation_deg: number;
   opacity: number;
+  /** Cover-fit window position across the source, -1..1 (0 = centred). Schema v7, additive. */
+  fit_x: number;
+  /** As `fit_x`, vertically (-1 = top edge, +1 = bottom edge). */
+  fit_y: number;
 }
 
 export type AnimProperty =
@@ -32,7 +36,9 @@ export type AnimProperty =
   | "rotation"
   | "opacity"
   | "volume"
-  | "speed";
+  | "speed"
+  | "fit_x"
+  | "fit_y";
 
 export type Easing = "linear" | "ease_in" | "ease_out" | "ease_in_out" | "bezier";
 
@@ -71,6 +77,8 @@ export const IDENTITY_TRANSFORM: ClipTransform = {
   scale_y: 1,
   rotation_deg: 0,
   opacity: 1,
+  fit_x: 0,
+  fit_y: 0,
 };
 
 export interface ProjectSettings {

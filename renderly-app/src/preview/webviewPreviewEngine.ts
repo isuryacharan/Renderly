@@ -250,12 +250,15 @@ function transitionIncomingLayers(project: Project, t: number): ActiveLayer[] {
 
 /// Mirror of `cover_uv` in renderly-core/src/compose/mod.rs, expressed as a pixel-space
 /// crop rect on the source instead of a UV scale/offset — equivalent math, just phrased
-/// for `ctx.drawImage`'s 9-arg form.
+/// for `ctx.drawImage`'s 9-arg form. `fitX`/`fitY` (-1..1) slide the window across the
+/// cropped axis exactly as `cover_window` does (0 = centred).
 function coverSourceRect(
   srcW: number,
   srcH: number,
   outW: number,
   outH: number,
+  fitX = 0,
+  fitY = 0,
 ): { sx: number; sy: number; sw: number; sh: number } {
   const srcAspect = srcW / srcH;
   const outAspect = outW / outH;
@@ -268,7 +271,9 @@ function coverSourceRect(
     sw = srcW;
     sh = srcW / outAspect;
   }
-  return { sx: (srcW - sw) / 2, sy: (srcH - sh) / 2, sw, sh };
+  const fx = Math.max(-1, Math.min(1, fitX));
+  const fy = Math.max(-1, Math.min(1, fitY));
+  return { sx: ((srcW - sw) * (1 + fx)) / 2, sy: ((srcH - sh) * (1 + fy)) / 2, sw, sh };
 }
 
 const SEEK_CORRECT_THRESHOLD_SECS = 0.08;
@@ -1133,7 +1138,14 @@ export class WebviewPreviewEngine {
   ): void {
     const { ctx, cssW, cssH } = this;
     if (!ctx) return;
-    const { sx, sy, sw, sh } = coverSourceRect(srcW, srcH, cssW, cssH);
+    const { sx, sy, sw, sh } = coverSourceRect(
+      srcW,
+      srcH,
+      cssW,
+      cssH,
+      transform.fit_x,
+      transform.fit_y,
+    );
     ctx.save();
     ctx.globalAlpha = Math.max(0, Math.min(1, transform.opacity));
     ctx.translate(cssW / 2, cssH / 2);
