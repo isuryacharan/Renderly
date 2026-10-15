@@ -1,0 +1,9 @@
+Crate: dasp_sample
+Version: 0.11.0
+Repository: https://github.com/rustaudio/sample
+Ref: commit 97c3bb9b2363 (crates.io VCS record)
+Path: (repository root)
+Files:
+  - LICENSE-APACHE from https://raw.githubusercontent.com/RustAudio/dasp/97c3bb9b2363c0b46ac1633858bf1054fd02a980/LICENSE-APACHE
+  - LICENSE-MIT from https://raw.githubusercontent.com/RustAudio/dasp/97c3bb9b2363c0b46ac1633858bf1054fd02a980/LICENSE-MIT
+Fetched: 2026-10-15

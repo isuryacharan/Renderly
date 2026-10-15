@@ -1,0 +1,9 @@
+Crate: jni-macros
+Version: 0.22.4
+Repository: https://github.com/jni-rs/jni-rs
+Ref: tag v0.22.4
+Path: (repository root)
+Files:
+  - LICENSE-APACHE from https://raw.githubusercontent.com/jni-rs/jni-rs/v0.22.4/LICENSE-APACHE
+  - LICENSE-MIT from https://raw.githubusercontent.com/jni-rs/jni-rs/v0.22.4/LICENSE-MIT
+Fetched: 2026-10-15

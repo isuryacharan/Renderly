@@ -1,0 +1,8 @@
+Crate: cranelift-bitset
+Version: 0.123.12
+Repository: https://github.com/bytecodealliance/wasmtime
+Ref: commit 6c0a7fc9c387 (crates.io VCS record)
+Path: (repository root)
+Files:
+  - LICENSE from https://raw.githubusercontent.com/bytecodealliance/wasmtime/6c0a7fc9c387f34dddcf94ef41d7b3b0f9d18cb0/LICENSE
+Fetched: 2026-10-15

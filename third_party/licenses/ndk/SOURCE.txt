@@ -1,0 +1,9 @@
+Crate: ndk
+Version: 0.9.0
+Repository: https://github.com/rust-mobile/ndk
+Ref: tag ndk-0.9.0
+Path: (repository root)
+Files:
+  - LICENSE-APACHE from https://raw.githubusercontent.com/rust-mobile/ndk/ndk-0.9.0/LICENSE-APACHE
+  - LICENSE-MIT from https://raw.githubusercontent.com/rust-mobile/ndk/ndk-0.9.0/LICENSE-MIT
+Fetched: 2026-10-15

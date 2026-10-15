@@ -1,0 +1,8 @@
+Crate: spirv
+Version: 0.4.0+sdk-1.4.341.0
+Repository: https://github.com/gfx-rs/rspirv
+Ref: commit 8afc3d0ac8e1 (crates.io VCS record)
+Path: (repository root)
+Files:
+  - LICENSE from https://raw.githubusercontent.com/gfx-rs/rspirv/8afc3d0ac8e158128cd1410bb2e4b4c26ab11bb4/LICENSE
+Fetched: 2026-10-15

@@ -1,0 +1,9 @@
+Crate: tao-macros
+Version: 0.1.3
+Repository: https://github.com/tauri-apps/tao
+Ref: tag tao-macros-v0.1.3
+Path: (repository root)
+Files:
+  - LICENSE from https://raw.githubusercontent.com/tauri-apps/tao/tao-macros-v0.1.3/LICENSE
+  - LICENSE.spdx from https://raw.githubusercontent.com/tauri-apps/tao/tao-macros-v0.1.3/LICENSE.spdx
+Fetched: 2026-10-15

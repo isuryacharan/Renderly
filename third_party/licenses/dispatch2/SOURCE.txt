@@ -1,0 +1,8 @@
+Crate: dispatch2
+Version: 0.3.1
+Repository: https://github.com/madsmtm/objc2
+Ref: tag dispatch2-0.3.1
+Path: (repository root)
+Files:
+  - LICENSE.md from https://raw.githubusercontent.com/madsmtm/objc2/dispatch2-0.3.1/LICENSE.md
+Fetched: 2026-10-15

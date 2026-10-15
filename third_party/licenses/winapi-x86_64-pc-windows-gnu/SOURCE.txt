@@ -1,0 +1,9 @@
+Crate: winapi-x86_64-pc-windows-gnu
+Version: 0.4.0
+Repository: https://github.com/retep998/winapi-rs
+Ref: default branch 0.3 (no matching tag or commit)
+Path: (repository root)
+Files:
+  - LICENSE-APACHE from https://raw.githubusercontent.com/retep998/winapi-rs/0.3/LICENSE-APACHE
+  - LICENSE-MIT from https://raw.githubusercontent.com/retep998/winapi-rs/0.3/LICENSE-MIT
+Fetched: 2026-10-15

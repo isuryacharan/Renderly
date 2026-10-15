@@ -1,0 +1,8 @@
+Crate: objc2-exception-helper
+Version: 0.1.1
+Repository: https://github.com/madsmtm/objc2
+Ref: tag objc2-exception-helper-0.1.1
+Path: (repository root)
+Files:
+  - LICENSE.md from https://raw.githubusercontent.com/madsmtm/objc2/objc2-exception-helper-0.1.1/LICENSE.md
+Fetched: 2026-10-15

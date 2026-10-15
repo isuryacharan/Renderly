@@ -1,0 +1,8 @@
+Crate: dlopen2_derive
+Version: 0.4.3
+Repository: https://github.com/OpenByteDev/dlopen2
+Ref: commit cc80e4a0a90d (crates.io VCS record)
+Path: (repository root)
+Files:
+  - LICENSE from https://raw.githubusercontent.com/OpenByteDev/dlopen2/cc80e4a0a90d499b677fdf7743699b4b3a43a989/LICENSE
+Fetched: 2026-10-15

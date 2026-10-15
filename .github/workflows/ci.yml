@@ -80,6 +80,13 @@ jobs:
       - name: Build
         run: cargo build --workspace --verbose
 
+      # Runs once, on the Linux leg: the notices depend on the dependency graph and the
+      # node_modules installed by `npm ci` in "Build frontend" above, not on the host OS.
+      # Fails if THIRD-PARTY-NOTICES.md is stale; run `python scripts/third_party_notices.py`.
+      - name: Check third-party notices are up to date
+        if: runner.os == 'Linux'
+        run: python3 scripts/third_party_notices.py --check
+
       - name: Test
         run: cargo test --workspace --verbose
         env:

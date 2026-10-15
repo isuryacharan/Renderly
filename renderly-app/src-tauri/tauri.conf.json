@@ -34,7 +34,12 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "resources": ["ffmpeg/*"],
+    "resources": [
+      "ffmpeg/*",
+      "../../THIRD-PARTY-NOTICES.md",
+      "../../NOTICE-ffmpeg.md",
+      "../../LICENSE"
+    ],
     "publisher": "Renderly",
     "copyright": "Copyright © 2026 Renderly contributors. AGPL-3.0.",
     "category": "Video",

@@ -1,0 +1,10 @@
+Crate: tract-extra
+Version: 0.23.8
+Repository: https://github.com/sonos/tract
+Ref: tag v0.23.8
+Path: (repository root)
+Files:
+  - LICENSE from https://raw.githubusercontent.com/sonos/tract/v0.23.8/LICENSE
+  - LICENSE-APACHE from https://raw.githubusercontent.com/sonos/tract/v0.23.8/LICENSE-APACHE
+  - LICENSE-MIT from https://raw.githubusercontent.com/sonos/tract/v0.23.8/LICENSE-MIT
+Fetched: 2026-10-15

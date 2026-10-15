@@ -1,0 +1,9 @@
+Crate: profiling-procmacros
+Version: 1.0.18
+Repository: https://github.com/aclysma/profiling
+Ref: commit 8271551172eb (crates.io VCS record)
+Path: (repository root)
+Files:
+  - LICENSE-APACHE from https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-APACHE
+  - LICENSE-MIT from https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT
+Fetched: 2026-10-15

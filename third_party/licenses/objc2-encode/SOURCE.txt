@@ -1,0 +1,8 @@
+Crate: objc2-encode
+Version: 4.1.0
+Repository: https://github.com/madsmtm/objc2
+Ref: tag objc2-encode-4.1.0
+Path: (repository root)
+Files:
+  - LICENSE.md from https://raw.githubusercontent.com/madsmtm/objc2/objc2-encode-4.1.0/LICENSE.md
+Fetched: 2026-10-15

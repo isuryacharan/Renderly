@@ -1,0 +1,9 @@
+Crate: jni-sys-macros
+Version: 0.4.1
+Repository: https://github.com/jni-rs/jni-sys
+Ref: tag v0.4.1
+Path: (repository root)
+Files:
+  - LICENSE-APACHE from https://raw.githubusercontent.com/jni-rs/jni-sys/v0.4.1/LICENSE-APACHE
+  - LICENSE-MIT from https://raw.githubusercontent.com/jni-rs/jni-sys/v0.4.1/LICENSE-MIT
+Fetched: 2026-10-15

@@ -1,0 +1,8 @@
+Crate: pulley-interpreter
+Version: 36.0.12
+Repository: https://github.com/bytecodealliance/wasmtime/tree/main/pulley
+Ref: tag v36.0.12
+Path: (repository root)
+Files:
+  - LICENSE from https://raw.githubusercontent.com/bytecodealliance/wasmtime/v36.0.12/LICENSE
+Fetched: 2026-10-15

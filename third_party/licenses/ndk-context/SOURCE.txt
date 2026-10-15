@@ -1,0 +1,9 @@
+Crate: ndk-context
+Version: 0.1.1
+Repository: https://github.com/rust-windowing/android-ndk-rs
+Ref: tag ndk-context-0.1.1
+Path: (repository root)
+Files:
+  - LICENSE-APACHE from https://raw.githubusercontent.com/rust-mobile/ndk/ndk-context-0.1.1/LICENSE-APACHE
+  - LICENSE-MIT from https://raw.githubusercontent.com/rust-mobile/ndk/ndk-context-0.1.1/LICENSE-MIT
+Fetched: 2026-10-15

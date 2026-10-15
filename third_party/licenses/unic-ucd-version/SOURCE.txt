@@ -1,0 +1,9 @@
+Crate: unic-ucd-version
+Version: 0.9.0
+Repository: https://github.com/open-i18n/rust-unic/
+Ref: tag v0.9.0
+Path: (repository root)
+Files:
+  - LICENSE-APACHE from https://raw.githubusercontent.com/open-i18n/rust-unic/v0.9.0/LICENSE-APACHE
+  - LICENSE-MIT from https://raw.githubusercontent.com/open-i18n/rust-unic/v0.9.0/LICENSE-MIT
+Fetched: 2026-10-15

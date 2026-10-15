@@ -1,0 +1,9 @@
+Crate: ndk-sys
+Version: 0.6.0+11769913
+Repository: https://github.com/rust-mobile/ndk
+Ref: commit 49bbbba16c58 (crates.io VCS record)
+Path: (repository root)
+Files:
+  - LICENSE-APACHE from https://raw.githubusercontent.com/rust-mobile/ndk/49bbbba16c58ff63cb8a0ad0eca5a9fb7ecaec25/LICENSE-APACHE
+  - LICENSE-MIT from https://raw.githubusercontent.com/rust-mobile/ndk/49bbbba16c58ff63cb8a0ad0eca5a9fb7ecaec25/LICENSE-MIT
+Fetched: 2026-10-15

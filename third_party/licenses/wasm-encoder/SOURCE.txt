@@ -1,0 +1,10 @@
+Crate: wasm-encoder
+Version: 0.236.1
+Repository: https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasm-encoder
+Ref: commit 9dd8df4fdc53 (crates.io VCS record)
+Path: (repository root)
+Files:
+  - LICENSE-APACHE from https://raw.githubusercontent.com/bytecodealliance/wasm-tools/9dd8df4fdc53597af7534b6a4d4c11d9065690d3/LICENSE-APACHE
+  - LICENSE-Apache-2.0_WITH_LLVM-exception from https://raw.githubusercontent.com/bytecodealliance/wasm-tools/9dd8df4fdc53597af7534b6a4d4c11d9065690d3/LICENSE-Apache-2.0_WITH_LLVM-exception
+  - LICENSE-MIT from https://raw.githubusercontent.com/bytecodealliance/wasm-tools/9dd8df4fdc53597af7534b6a4d4c11d9065690d3/LICENSE-MIT
+Fetched: 2026-10-15

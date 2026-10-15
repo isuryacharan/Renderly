@@ -1,0 +1,8 @@
+Crate: webview2-com-sys
+Version: 0.38.2
+Repository: https://github.com/wravery/webview2-rs
+Ref: commit b74dc5e2b394 (crates.io VCS record)
+Path: (repository root)
+Files:
+  - LICENSE from https://raw.githubusercontent.com/wravery/webview2-rs/b74dc5e2b394044bea5191052868ce7a106c202c/LICENSE
+Fetched: 2026-10-15

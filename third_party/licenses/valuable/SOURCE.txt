@@ -1,0 +1,8 @@
+Crate: valuable
+Version: 0.1.1
+Repository: https://github.com/tokio-rs/valuable
+Ref: tag v0.1.1
+Path: (repository root)
+Files:
+  - LICENSE from https://raw.githubusercontent.com/tokio-rs/valuable/v0.1.1/LICENSE
+Fetched: 2026-10-15

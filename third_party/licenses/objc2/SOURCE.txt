@@ -1,0 +1,8 @@
+Crate: objc2
+Version: 0.6.4
+Repository: https://github.com/madsmtm/objc2
+Ref: tag objc2-0.6.4
+Path: (repository root)
+Files:
+  - LICENSE.md from https://raw.githubusercontent.com/madsmtm/objc2/objc2-0.6.4/LICENSE.md
+Fetched: 2026-10-15

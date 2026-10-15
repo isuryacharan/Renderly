@@ -1,0 +1,9 @@
+Crate: zune-inflate
+Version: 0.2.54
+Repository: https://github.com/etemesi254/zune-image/tree/main/zune-inflate
+Ref: commit 69502ce83fdf (crates.io VCS record)
+Path: (repository root)
+Files:
+  - LICENSE-ZLIB from https://raw.githubusercontent.com/etemesi254/zune-image/69502ce83fdfecdd0beefd677e2abb3781b29d98/LICENSE-ZLIB
+  - LICENSE.md from https://raw.githubusercontent.com/etemesi254/zune-image/69502ce83fdfecdd0beefd677e2abb3781b29d98/LICENSE.md
+Fetched: 2026-10-15

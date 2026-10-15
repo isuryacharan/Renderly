@@ -1,0 +1,9 @@
+Crate: rustls-platform-verifier-android
+Version: 0.1.1
+Repository: https://github.com/rustls/rustls-platform-verifier
+Ref: default branch main (no matching tag or commit)
+Path: (repository root)
+Files:
+  - LICENSE-APACHE from https://raw.githubusercontent.com/rustls/rustls-platform-verifier/main/LICENSE-APACHE
+  - LICENSE-MIT from https://raw.githubusercontent.com/rustls/rustls-platform-verifier/main/LICENSE-MIT
+Fetched: 2026-10-15

@@ -1,0 +1,8 @@
+Crate: block2
+Version: 0.6.2
+Repository: https://github.com/madsmtm/objc2
+Ref: tag block2-0.6.2
+Path: (repository root)
+Files:
+  - LICENSE.md from https://raw.githubusercontent.com/madsmtm/objc2/block2-0.6.2/LICENSE.md
+Fetched: 2026-10-15

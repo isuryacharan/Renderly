@@ -156,3 +156,14 @@ ships.)
 ## License
 
 [AGPL-3.0](LICENSE) — forks and hosted services must stay open source.
+
+## Third-party licences
+
+Installers bundle third-party code, models and fonts under their own licences.
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) lists every bundled Rust crate and npm package
+with its SPDX licence and licence text, plus the bundled model and font. The FFmpeg notice is in
+[NOTICE-ffmpeg.md](NOTICE-ffmpeg.md). The installers ship these files alongside `LICENSE`.
+
+After adding, removing or upgrading a dependency, regenerate the notices with
+`python scripts/third_party_notices.py` (run `npm ci` in `renderly-app` first). CI runs the same
+script with `--check` and fails if the committed file is out of date.

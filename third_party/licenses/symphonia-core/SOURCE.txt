@@ -1,0 +1,8 @@
+Crate: symphonia-core
+Version: 0.5.5
+Repository: https://github.com/pdeljanov/Symphonia
+Ref: tag v0.5.5
+Path: (repository root)
+Files:
+  - LICENSE from https://raw.githubusercontent.com/pdeljanov/Symphonia/v0.5.5/LICENSE
+Fetched: 2026-10-15

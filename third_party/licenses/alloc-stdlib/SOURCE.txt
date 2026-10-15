@@ -1,0 +1,8 @@
+Crate: alloc-stdlib
+Version: 0.2.4
+Repository: https://github.com/dropbox/rust-alloc-no-stdlib
+Ref: tag 0.2.4
+Path: (repository root)
+Files:
+  - LICENSE from https://raw.githubusercontent.com/dropbox/rust-alloc-no-stdlib/0.2.4/LICENSE
+Fetched: 2026-10-15

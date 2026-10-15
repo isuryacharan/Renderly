@@ -1,0 +1,8 @@
+Crate: rmcp-macros
+Version: 2.1.0
+Repository: https://github.com/modelcontextprotocol/rust-sdk/
+Ref: tag rmcp-macros-v2.1.0
+Path: (repository root)
+Files:
+  - LICENSE from https://raw.githubusercontent.com/modelcontextprotocol/rust-sdk/rmcp-macros-v2.1.0/LICENSE
+Fetched: 2026-10-15

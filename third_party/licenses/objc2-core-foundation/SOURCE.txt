@@ -1,0 +1,8 @@
+Crate: objc2-core-foundation
+Version: 0.3.2
+Repository: https://github.com/madsmtm/objc2
+Ref: commit 7b1abfd750a2 (crates.io VCS record)
+Path: (repository root)
+Files:
+  - LICENSE.md from https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md
+Fetched: 2026-10-15
