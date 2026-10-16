@@ -59,6 +59,7 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 | P4-6 | Templates | ✅ | Pack `templates[]` + `ApplyTemplate` |
 | P4-7 | Multicam groups + angle switch | ✅ | `CreateMulticamGroup`, `SetMulticamAngle` |
 | — | In-app agent chat | ✅ | "Agent" tab beside the inspector (`Ctrl+L`). Claude Code and Codex: the user's installed, signed-in CLI runs as Renderly's editing assistant (Renderly's brief replaces the coding prompt; tools served in-process over loopback HTTP). Ollama: Renderly runs the agent loop itself with a slimmer tool set, fully local. Model lists are fetched live from each agent. No login or API key handled by Renderly. [agent-chat-design.md](agent-chat-design.md) |
+| — | Faster local (Ollama) agent | ⬜ | Measured 2026-10-16 on an 8 GB GPU: the 32K context Renderly requests pushes models partly onto the CPU (~2× slower); a 12B model never fits. Backlog: smaller default context that grows on demand, thinking off by default, warm-up + keep-alive, static facts in the brief to cut round trips, "Loading model… / Thinking…" progress, and a "running partly on CPU" warning |
 
 ## Platform & distribution
 
