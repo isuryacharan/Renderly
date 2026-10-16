@@ -1,10 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { project as makeProject, track, videoClip } from "../test/fixtures";
-import { EMPTY_AGENT_CHAT, type AgentEnvelope, type TranscriptItem } from "../lib/agentChat";
+import {
+  DEFAULT_LAUNCH_PREFS,
+  EMPTY_AGENT_CHAT,
+  type AgentEnvelope,
+  type AgentModels,
+  type TranscriptItem,
+} from "../lib/agentChat";
+import * as ipc from "../lib/ipc";
 
 // The store reaches the backend only through lib/ipc; mock it so Tauri stays out of the graph.
 vi.mock("../lib/ipc", () => ({
   agentList: vi.fn(),
+  agentModels: vi.fn(),
   agentStart: vi.fn(),
   agentSend: vi.fn(),
   agentStop: vi.fn(),
@@ -13,7 +21,7 @@ vi.mock("../lib/ipc", () => ({
   onAgentEvent: vi.fn(() => () => {}),
 }));
 
-import { HIGHLIGHT_MS, loadLaunchOptions, useAgentChatStore } from "./agentChatStore";
+import { HIGHLIGHT_MS, loadLaunchPrefs, useAgentChatStore } from "./agentChatStore";
 import { useEditorStore } from "./editorStore";
 
 const SID = "s-1";
@@ -86,37 +94,90 @@ describe("agent chat store: edit highlight", () => {
   });
 });
 
-describe("agent chat store: launch options", () => {
-  const store: Record<string, string> = {};
+describe("agent chat store: per-agent launch preferences", () => {
+  const saved: Record<string, string> = {};
 
   beforeEach(() => {
-    for (const k of Object.keys(store)) delete store[k];
+    for (const k of Object.keys(saved)) delete saved[k];
     vi.stubGlobal("localStorage", {
-      getItem: (k: string) => (k in store ? store[k]! : null),
+      getItem: (k: string) => (k in saved ? saved[k]! : null),
       setItem: (k: string, v: string) => {
-        store[k] = v;
+        saved[k] = v;
       },
       removeItem: (k: string) => {
-        delete store[k];
+        delete saved[k];
       },
     });
+    vi.mocked(ipc.agentStart).mockReset();
+    vi.mocked(ipc.agentModels).mockReset();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("defaults to sonnet, low effort and no built-in tools", () => {
-    expect(loadLaunchOptions()).toEqual({ model: "sonnet", effort: "low", nativeTools: false });
+  it("starts with no choices, so each agent's own defaults apply", () => {
+    expect(loadLaunchPrefs()).toEqual(DEFAULT_LAUNCH_PREFS);
   });
 
-  it("remembers the chosen options for the next run", () => {
-    useAgentChatStore.getState().setLaunch({ model: "opus", nativeTools: true });
-    expect(loadLaunchOptions()).toEqual({ model: "opus", effort: "low", nativeTools: true });
+  it("remembers the model and effort per agent, and the tools switch", () => {
+    const s = useAgentChatStore.getState();
+    s.setModelChoice("codex", "gpt-6-terra");
+    s.setEffortChoice("codex", "medium");
+    s.setModelChoice("claude-code", "sonnet");
+    s.setNativeTools(true);
+    const prefs = loadLaunchPrefs();
+    expect(prefs.models).toEqual({ codex: "gpt-6-terra", "claude-code": "sonnet" });
+    expect(prefs.efforts).toEqual({ codex: "medium" });
+    expect(prefs.nativeTools).toBe(true);
   });
 
   it("falls back to the defaults when the stored value is not valid JSON", () => {
-    store["renderly.agent.launch"] = "{not json";
-    expect(loadLaunchOptions().model).toBe("sonnet");
+    saved["renderly.agent.launch.v2"] = "{not json";
+    expect(loadLaunchPrefs()).toEqual(DEFAULT_LAUNCH_PREFS);
+  });
+
+  it("starts with the saved model when the agent still offers it", async () => {
+    vi.mocked(ipc.agentModels).mockResolvedValue(codexList());
+    vi.mocked(ipc.agentStart).mockResolvedValue("s-2");
+    useAgentChatStore.setState({ agentModels: {}, modelNotice: {}, chat: EMPTY_AGENT_CHAT });
+    useAgentChatStore.getState().setModelChoice("codex", "gpt-6-luna");
+    await useAgentChatStore.getState().startSession("codex");
+    expect(ipc.agentStart).toHaveBeenCalledWith("codex", expect.objectContaining({ model: "gpt-6-luna" }));
+    expect(useAgentChatStore.getState().modelNotice.codex).toBeUndefined();
+  });
+
+  it("uses the agent's default and says so when the saved model is no longer offered", async () => {
+    vi.mocked(ipc.agentModels).mockResolvedValue(codexList());
+    vi.mocked(ipc.agentStart).mockResolvedValue("s-3");
+    useAgentChatStore.setState({ agentModels: {}, modelNotice: {}, chat: EMPTY_AGENT_CHAT });
+    useAgentChatStore.getState().setModelChoice("codex", "gpt-retired");
+    await useAgentChatStore.getState().startSession("codex");
+    expect(ipc.agentStart).toHaveBeenCalledWith("codex", expect.objectContaining({ model: "gpt-6-terra" }));
+    expect(useAgentChatStore.getState().modelNotice.codex).toContain("gpt-retired");
+    expect(useAgentChatStore.getState().modelNotice.codex).toContain("gpt-6-terra");
+  });
+
+  it("sends the Ollama host only for Ollama", async () => {
+    vi.mocked(ipc.agentModels).mockResolvedValue(codexList());
+    vi.mocked(ipc.agentStart).mockResolvedValue("s-4");
+    useAgentChatStore.setState({ agentModels: {}, modelNotice: {}, chat: EMPTY_AGENT_CHAT });
+    useAgentChatStore.getState().setOllamaHost("http://10.0.0.5:11434");
+    await useAgentChatStore.getState().startSession("codex");
+    expect(ipc.agentStart).toHaveBeenCalledWith("codex", expect.objectContaining({ ollamaHost: null }));
   });
 });
+
+/** A Codex model list in the backend's shape, for the store tests. */
+function codexList(): AgentModels {
+  return {
+    agentId: "codex",
+    status: "ready",
+    models: [
+      { id: "gpt-6-terra", label: "GPT-6-Terra", description: null, efforts: ["low", "medium"], defaultEffort: "medium", contextLength: null, vision: false, thinking: false },
+      { id: "gpt-6-luna", label: "GPT-6-Luna", description: null, efforts: [], defaultEffort: null, contextLength: null, vision: false, thinking: false },
+    ],
+    defaultModel: "gpt-6-terra",
+    message: null,
+  };
+}

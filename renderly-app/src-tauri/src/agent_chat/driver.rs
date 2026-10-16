@@ -15,16 +15,19 @@ use std::sync::Arc;
 pub enum AgentId {
     ClaudeCode,
     Codex,
+    Ollama,
 }
 
 impl AgentId {
-    pub const ALL: [AgentId; 2] = [AgentId::ClaudeCode, AgentId::Codex];
+    pub const ALL: [AgentId; 3] = [AgentId::ClaudeCode, AgentId::Codex, AgentId::Ollama];
 
-    /// The executable name looked up on `PATH`.
+    /// The executable name looked up on `PATH`. For Ollama this is the install check; the
+    /// service itself is reached over HTTP.
     pub fn program_name(self) -> &'static str {
         match self {
             AgentId::ClaudeCode => "claude",
             AgentId::Codex => "codex",
+            AgentId::Ollama => "ollama",
         }
     }
 
@@ -32,46 +35,63 @@ impl AgentId {
         match self {
             AgentId::ClaudeCode => "Claude Code",
             AgentId::Codex => "Codex",
+            AgentId::Ollama => "Ollama (local)",
         }
     }
 }
 
-/// Model and effort the user picked for the Claude session, plus the built-in tools switch.
-/// Validated before use so arbitrary text never reaches the CLI's argv.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The model, effort and tools switch the user picked for a session. There are no fixed lists
+/// here: the model and effort are whatever the agent reported (see `models.rs`). Values are
+/// shape-checked before use, so arbitrary text never reaches an argv or a request body.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchOptions {
-    pub model: String,
-    pub effort: String,
-    /// When true, the agent may use Claude Code's built-in tools (each still asks first).
+    /// The agent's model value. `None` means the agent's own default.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The agent's effort level. `None` means the agent's own default.
+    #[serde(default)]
+    pub effort: Option<String>,
+    /// When true, the agent may use its own built-in tools (each still asks first).
+    #[serde(default)]
     pub native_tools: bool,
+    /// Ollama only: the server URL. `None` uses `OLLAMA_HOST`, then the default.
+    #[serde(default)]
+    pub ollama_host: Option<String>,
 }
 
-impl Default for LaunchOptions {
-    fn default() -> Self {
-        Self {
-            model: DEFAULT_MODEL.into(),
-            effort: DEFAULT_EFFORT.into(),
-            native_tools: false,
-        }
-    }
-}
+/// Longest model or effort value accepted.
+const MAX_OPTION_LEN: usize = 128;
 
-/// Model aliases the panel offers (`claude --help`: "fable", "opus", "sonnet").
-pub const MODEL_CHOICES: &[&str] = &["sonnet", "opus", "fable"];
-pub const DEFAULT_MODEL: &str = "sonnet";
-/// Effort levels `claude --effort` accepts.
-pub const EFFORT_CHOICES: &[&str] = &["low", "medium", "high", "xhigh", "max"];
-pub const DEFAULT_EFFORT: &str = "low";
+fn option_shape_ok(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_OPTION_LEN
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '-'))
+}
 
 impl LaunchOptions {
-    /// Checks the model and effort against the allowed lists.
+    /// Checks the shape of the model, effort and host values. Membership in the agent's list is
+    /// checked where that list is known (see `agent_start`).
     pub fn validated(self) -> Result<Self, String> {
-        if !MODEL_CHOICES.contains(&self.model.as_str()) {
-            return Err(format!("unknown model '{}'", self.model));
+        if let Some(model) = &self.model {
+            if !option_shape_ok(model) {
+                return Err(format!("invalid model '{model}'"));
+            }
         }
-        if !EFFORT_CHOICES.contains(&self.effort.as_str()) {
-            return Err(format!("unknown effort '{}'", self.effort));
+        if let Some(effort) = &self.effort {
+            if !option_shape_ok(effort) {
+                return Err(format!("invalid effort '{effort}'"));
+            }
+        }
+        if let Some(host) = &self.ollama_host {
+            let ok = host.len() <= 256
+                && (host.starts_with("http://") || host.starts_with("https://"))
+                && !host.chars().any(char::is_whitespace);
+            if !ok {
+                return Err(format!("invalid Ollama host '{host}'"));
+            }
         }
         Ok(self)
     }
@@ -90,13 +110,12 @@ pub struct SessionConfig {
     pub session_id: String,
     /// The open project. Used for the session's file names and, for Codex, its folder.
     pub project_path: PathBuf,
-    /// The in-process Renderly tool server (Claude Code). Absent for drivers that use
-    /// `mcp_binary` instead.
+    /// The in-process Renderly tool server, reached over MCP Streamable HTTP. Used by Claude
+    /// Code and Codex. Absent for Ollama, which calls `tools` directly.
     pub mcp_endpoint: Option<McpEndpointInfo>,
+    /// The Renderly tools, called in-process. Used by Ollama, which runs its own loop.
+    pub tools: Option<Arc<dyn super::tools::ToolHost>>,
     pub options: LaunchOptions,
-    /// Absolute path of the `renderly-mcp` binary to register as the agent's only MCP server
-    /// (Codex, until its HTTP MCP support is verified).
-    pub mcp_binary: PathBuf,
     /// Overrides the `PATH` lookup of the vendor CLI (tests, non-standard installs).
     pub program: Option<PathBuf>,
     /// Where launch files (MCP config, system prompt) are written.
@@ -124,6 +143,7 @@ pub fn driver_for(agent: AgentId) -> Box<dyn AgentDriver> {
     match agent {
         AgentId::ClaudeCode => Box::new(super::claude::ClaudeDriver),
         AgentId::Codex => Box::new(super::codex::CodexDriver),
+        AgentId::Ollama => Box::new(super::ollama::OllamaDriver),
     }
 }
 
@@ -175,18 +195,6 @@ pub fn project_dir(project_file: &Path) -> PathBuf {
         .filter(|p| !p.as_os_str().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
-}
-
-/// The MCP server registered for a session: the absolute `renderly-mcp` path with
-/// `--project <open project>`, so the session starts on the project the app has open.
-pub fn mcp_server_command(cfg: &SessionConfig) -> (String, Vec<String>) {
-    (
-        cfg.mcp_binary.to_string_lossy().into_owned(),
-        vec![
-            "--project".to_string(),
-            cfg.project_path.to_string_lossy().into_owned(),
-        ],
-    )
 }
 
 /// Write the system prompt to the scratch dir and return its path.

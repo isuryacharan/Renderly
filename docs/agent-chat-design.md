@@ -43,7 +43,7 @@ One process per session, launched with:
 | `--system-prompt-file <brief>` | The Renderly brief **replaces** Claude Code's coding prompt. |
 | `--tools Read,Grep,Glob` (default) or `--tools default` | Built-ins are read-only by default. The "Let the agent use its own tools" switch enables all of them, and each still asks. |
 | `--permission-prompt-tool mcp__renderly__permission_prompt` | Answers prompts for built-in tools only. Renderly's own tools are pre-allowed and never prompt. |
-| `--model <sonnet\|opus\|fable>` `--effort <low..max>` | Chosen in the panel and validated before use. Defaults: `sonnet`, `low`. |
+| `--model <value>` `--effort <level>` | Only when the user chose one from the list Claude Code reported (§0.10). Shape-checked, then checked against the list when it is cached. With no choice, neither flag is passed and Claude Code's defaults apply. |
 | `--session-id` / `--resume`, `--allowedTools` (last) | As before. `--allowedTools` lists the five Renderly tools and `Read,Grep,Glob`. |
 
 Verified against `claude --help` (Claude Code 2.1.274): `--system-prompt-file`, `--setting-sources`,
@@ -63,12 +63,109 @@ MCP over **Streamable HTTP** on `127.0.0.1` at a random port (`agent_chat/mcp_ht
 rmcp 2.1 with the `transport-streamable-http-server` feature, in stateless JSON mode. Each session
 gets a 256-bit token, and every request must present it in a `Bearer` header (constant-time check,
 401 otherwise). The server starts with the session and stops with it. The only new dependencies are
-hyper, hyper-util, http-body-util, bytes, tokio-util, tower-service, base64 and schemars. All are
+hyper, hyper-util, http-body-util, bytes, tokio-util, tower-service, base64 and schemars. Ollama's
+client (reqwest, already in the tree through renderly-core, now also a direct dependency of
+renderly-app) was added later for §0.9. All are
 MIT or Apache-2.0 and were already in the tree through Tauri or rmcp. Transport tests start the
 server on an ephemeral port, check that unauthenticated and wrong-token requests get 401, list
 tools and call one with the token, and check that stopping closes the port.
 
-Codex still uses `renderly-mcp --project` through the bridge. Its HTTP MCP support is not verified.
+Codex uses the same endpoint (§0.8). Ollama does not use MCP at all: its loop calls the same tool
+functions in-process (§0.9).
+
+### 0.8 Codex
+
+Codex runs as `codex app-server` (JSON-RPC over stdio, `jsonrpc` omitted). The Renderly endpoint
+is passed as config overrides, and the token goes in the child's environment, never in argv:
+
+```
+codex -c mcp_servers.renderly.url="http://127.0.0.1:<port>/mcp" \
+      -c mcp_servers.renderly.bearer_token_env_var="RENDERLY_AGENT_TOKEN" \
+      -c project_doc_max_bytes=0 app-server
+env: RENDERLY_AGENT_TOKEN=<session token>
+```
+
+| Key | Source | Verified |
+|---|---|---|
+| `-c key=value` (value parsed as TOML) | `codex --help` | Yes, against codex-cli 0.163.0 |
+| `mcp_servers.<id>.url`, `mcp_servers.<id>.bearer_token_env_var` | config reference (learn.chatgpt.com/docs/config-file/config-reference) | Accepted at `thread/start` by the live CLI. That the tools are then listed and called is **not** verified (qa-checklist) |
+| `project_doc_max_bytes=0` | config reference (documented as a size cap) | Not verified that 0 disables `AGENTS.md`. The scratch folder has no `AGENTS.md`, so it does not matter in practice |
+| `thread/start` `baseInstructions` (replaces the built-in instructions), `sandbox` (`read-only` or `workspace-write`), `approvalPolicy: "on-request"`, `cwd` (scratch folder), `model` | `v2/ThreadStartParams.json` in the 0.163.0 schema | Schema, and accepted by the live CLI |
+| `turn/start` `effort` | `v2/TurnStartParams.json` | Schema only; no turn was run |
+| `model/list` after `initialize` | `v2/ModelListResponse.json` | Live (returned models, efforts, defaults) |
+| Approval replies `{"decision":"accept"\|"decline"}` | `CommandExecutionRequestApprovalResponse.json`, `FileChangeRequestApprovalResponse.json` | Schema only |
+| `mcpServer/elicitation/request` reply `{"action":"accept"}` for the `renderly` server | `McpServerElicitationRequestResponse.json` | Schema only. Whether Codex sends this for Renderly tool calls is **not** verified |
+
+Not done, on purpose: dynamic tools. The schema has `item/tool/call` (`DynamicToolCallParams`), but
+`thread/start` has no field that registers client tools, so there is no way to offer Renderly's
+tools that way in this version. MCP over HTTP is the path.
+
+The tools switch maps to the sandbox. With "Let the agent use its own tools" off, the sandbox is
+`read-only` and command and file approvals are declined without a prompt. On, it is
+`workspace-write` (in the scratch folder) and each approval asks. The session runs in the scratch
+folder, not the project folder. Tool names are normalised, so a `renderly` MCP call shows as
+`mcp__renderly__<tool>`, the same action lines as Claude Code.
+
+### 0.9 Ollama (local, Renderly runs the loop)
+
+`ollama.rs`. There is no CLI to run. Renderly talks to Ollama's HTTP API and runs the agent loop.
+Sources and captured shapes are in the module header
+(github.com/ollama/ollama `docs/api.md`, checked against a local server on 2026-10-16).
+
+- **Endpoints.** `GET /api/tags` (installed models), `POST /api/show` per model (`capabilities`,
+  `model_info["<arch>.context_length"]`), `POST /api/chat` with `stream: true`, `tools`,
+  `options.num_ctx`, and `think` for thinking models. Address: the panel's Ollama address, else
+  `OLLAMA_HOST` (a scheme-less value gets `http://`), else `http://127.0.0.1:11434`.
+- **Model requirement.** Only models whose `/api/show` capabilities include `tools` are offered.
+  `vision` adds the `look` tool. `thinking` maps effort to `think` (`low`/`medium`/`high`; with no
+  effort chosen, `think: true`). A model without `thinking` offers no effort. Model without
+  `tools` fails at start with a message naming it.
+- **Context size.** `num_ctx = min(model window, 32768)`; 8192 when the model reports none. History
+  is kept under about `num_ctx × 3` characters by dropping the oldest user turns. The brief and the
+  newest turn are kept.
+- **Tools.** The slim set (`tool_definitions`): typed `add_caption`, `trim_clip`, `split_clip`,
+  `move_clip`, `delete_clip`, `set_clip_effects`, `set_transition`, `set_transform`, `add_track`,
+  `import_media`; the generic `edit` with `commands: [object]`; `edit_help` (the command reference,
+  generated from the `Command` schema, or one command's schema on request); `timeline`,
+  `find_media`, `assets`; `look` only with vision. Typed calls are turned into `Command` objects
+  and run through `run_edit`, so they are one undo step and show as `mcp__renderly__edit`.
+  Measured: the slim set is **6,193 bytes** (with `look`); the Claude `edit` input schema is
+  **29,258 bytes** (`cargo test -p renderly-app --lib slim_tool_schemas -- --nocapture`).
+- **Loop.** Each round streams one reply. Text deltas go to the panel (`<think>…</think>` blocks are
+  removed, since some models write them into `content` even with `think: false`). Tool calls run
+  through the broker (same classes as MCP: perception allowed, edits allowed when auto-edits is on,
+  file-writing commands asked). The results go back as `tool` messages. At most **16 tool rounds**
+  per turn, then a message and `tool_round_limit`. Cancel aborts the task, which drops the HTTP
+  stream.
+- **Verified.** A real turn with `qwen3:4b` on the local server called `add_caption` through the
+  in-process path and the caption was added (`cargo test -p renderly-app --test ollama_loop --
+  --ignored`). The model also streamed a lot of stray text, so the answer quality is the model's.
+  Fake-server tests cover the round trip, the cap, cancel, filtering, and server-down.
+
+### 0.10 Model lists (no fixed lists)
+
+Nothing in Renderly lists models or effort levels. `models.rs` holds the shared types and the
+parsers. Each agent answers a usage-free request, and the answer is cached per app session.
+The panel refreshes it from the settings popover.
+
+| Agent | Request | Where the list is | Sends a prompt? |
+|---|---|---|---|
+| Claude Code | stream-json `control_request` `{subtype:"initialize"}` | `control_response.response.models[]`: `value` (the `--model` alias), `displayName`, `supportsEffort`, `supportedEffortLevels`. Absent `account` means not signed in | No |
+| Codex | `initialize`, then `model/list` | `data[]`: `model`, `displayName`, `isDefault`, `defaultReasoningEffort`, `supportedReasoningEfforts[]` | No (no thread, no turn) |
+| Ollama | `GET /api/tags`, then `POST /api/show` each | Models with `tools` only | No |
+
+Verified live on 2026-10-16 (Claude Code 2.1.301, codex-cli 0.163.0, a local Ollama). A Claude
+signed-out state was not tested, so the "no account" rule is from the captured shape, not from a
+signed-out run.
+
+A saved choice is kept per agent (`renderly.agent.launch.v2`). When the agent no longer offers it,
+the agent's default is used and the panel says so. Effort follows the model: a level is kept only
+while the model offers it. The start call checks the choice against the cached list, and Ollama
+needs a model, so it takes the list's default.
+
+Status messages: not installed, not signed in, not running ("Ollama is not running at … Start
+Ollama, then refresh."), no models (with the `ollama pull` hint), and errors. Each comes from the
+backend's own text.
 
 ### 0.3 Tools
 
@@ -130,7 +227,11 @@ agent is still working joins that turn's group.
 
 ### 0.7 Gaps and not done
 
-- Codex is still on `renderly-mcp`; its HTTP MCP path is not verified.
+- Codex: not yet run for a full turn, and whether Codex lists and calls the `renderly` MCP tools is
+  not verified (§0.8). The handshake and the model list were run live.
+- Ollama: one real turn was run (qwen3:4b). The other tool-capable models are untested.
+- Model lists for Claude Code and Codex come from the CLIs' own answers, which were checked live.
+  A signed-out Claude has not been run.
 - Nothing has been run against the real `claude` binary. The fake-agent and HTTP tests cover the
   transport, the argument list and the event flow.
 - `look` sets the width, not the longest side, so a portrait frame at the default width is about

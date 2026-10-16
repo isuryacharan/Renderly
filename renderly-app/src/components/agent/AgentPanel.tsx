@@ -7,11 +7,14 @@ import { Bot, Check, MessageSquare, RefreshCw, Send, Settings2, Square, Triangle
 import { useAgentChatStore, type ChipKey } from "../../store/agentChatStore";
 import { useEditorStore } from "../../store/editorStore";
 import {
-  EFFORT_CHOICES,
-  MODEL_CHOICES,
   activityLabel,
+  chooseEffort,
+  chooseModel,
+  modelOption,
   undoableTurnActionsId,
+  type AgentId,
   type AgentInfo,
+  type AgentModels,
   type TranscriptItem,
 } from "../../lib/agentChat";
 import { IconButton } from "../ui/IconButton";
@@ -19,39 +22,135 @@ import { IconButton } from "../ui/IconButton";
 const VENDOR_NOTICE: Record<string, string> = {
   "claude-code": "Messages and project data are sent to Anthropic under your Claude Code account.",
   codex: "Messages and project data are sent to OpenAI under your Codex account.",
+  ollama: "Runs on this computer through your local Ollama. Nothing is sent to a cloud service.",
 };
 
+/** The text under a model list that is not ready, from the agent's own status. */
+function statusLine(list: AgentModels | undefined, agentName: string): string | null {
+  if (!list) return null;
+  switch (list.status) {
+    case "ready":
+      return null;
+    case "not_running":
+      return list.message ?? "Ollama is not running. Start Ollama, then refresh.";
+    case "not_installed":
+      return list.message ?? `${agentName} is not installed.`;
+    case "not_signed_in":
+      return list.message ?? `${agentName} is not signed in.`;
+    case "no_models":
+      return list.message ?? `${agentName} reported no models.`;
+    case "error":
+      return list.message ?? `Could not read the models from ${agentName}.`;
+  }
+}
+
 /** Model, effort and the built-in tools switch. Applies to the next session started. */
+const AGENT_IDS: AgentId[] = ["claude-code", "codex", "ollama"];
+/** Placeholder only: the address Ollama uses when nothing else is set. */
+const OLLAMA_PLACEHOLDER = "http://127.0.0.1:11434";
+
+/**
+ * Model, effort, the built-in tools switch and (for Ollama) the server address, for one agent at a
+ * time. The model and effort lists are the agent's own, fetched at runtime. Nothing is hard-coded.
+ */
 function LaunchFields({ note }: { note: string | null }) {
-  const launch = useAgentChatStore((s) => s.launch);
-  const setLaunch = useAgentChatStore((s) => s.setLaunch);
+  const settingsAgent = useAgentChatStore((s) => s.settingsAgent);
+  const setSettingsAgent = useAgentChatStore((s) => s.setSettingsAgent);
+  const agents = useAgentChatStore((s) => s.agents);
+  const list = useAgentChatStore((s) => s.agentModels[settingsAgent]);
+  const loading = useAgentChatStore((s) => s.modelsLoading[settingsAgent] === true);
+  const prefs = useAgentChatStore((s) => s.launchPrefs);
+  const notice = useAgentChatStore((s) => s.modelNotice[settingsAgent]);
+  const loadModels = useAgentChatStore((s) => s.loadModels);
+  const setModelChoice = useAgentChatStore((s) => s.setModelChoice);
+  const setEffortChoice = useAgentChatStore((s) => s.setEffortChoice);
+  const setNativeTools = useAgentChatStore((s) => s.setNativeTools);
+  const setOllamaHost = useAgentChatStore((s) => s.setOllamaHost);
+
+  // Read the list the first time this agent is shown.
+  useEffect(() => {
+    if (!list && !loading) void loadModels(settingsAgent);
+  }, [settingsAgent, list, loading, loadModels]);
+
+  const name = agents?.find((a) => a.id === settingsAgent)?.name ?? settingsAgent;
+  const choice = chooseModel(list ?? null, prefs.models[settingsAgent], name);
+  const current = modelOption(list ?? null, choice.model);
+  const effort = chooseEffort(current, prefs.efforts[settingsAgent]);
+  const ready = list?.status === "ready";
+  const status = statusLine(list, name);
+
   return (
     <div className="agent-launch">
       <label className="agent-launch-field">
-        <span>Model</span>
-        <select value={launch.model} onChange={(e) => setLaunch({ model: e.target.value })}>
-          {MODEL_CHOICES.map((m) => (
-            <option key={m} value={m}>
-              {m}
+        <span>Agent</span>
+        <select value={settingsAgent} onChange={(e) => setSettingsAgent(e.target.value as AgentId)}>
+          {AGENT_IDS.map((id) => (
+            <option key={id} value={id}>
+              {agents?.find((a) => a.id === id)?.name ?? id}
             </option>
           ))}
         </select>
       </label>
+      {settingsAgent === "ollama" ? (
+        <label className="agent-launch-field">
+          <span>Ollama address</span>
+          <input
+            key={prefs.ollamaHost ?? ""}
+            type="text"
+            defaultValue={prefs.ollamaHost ?? ""}
+            placeholder={OLLAMA_PLACEHOLDER}
+            onBlur={(e) => setOllamaHost(e.target.value)}
+          />
+        </label>
+      ) : null}
       <label className="agent-launch-field">
-        <span>Effort</span>
-        <select value={launch.effort} onChange={(e) => setLaunch({ effort: e.target.value })}>
-          {EFFORT_CHOICES.map((level) => (
-            <option key={level} value={level}>
-              {level}
+        <span>Model</span>
+        <select
+          value={choice.model ?? ""}
+          disabled={!ready}
+          onChange={(e) => setModelChoice(settingsAgent, e.target.value)}
+        >
+          {ready ? null : <option value="">{loading ? "Reading models…" : "No models"}</option>}
+          {(list?.models ?? []).map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label}
             </option>
           ))}
         </select>
       </label>
+      {ready && efforts(current).length > 0 ? (
+        <label className="agent-launch-field">
+          <span>Effort</span>
+          <select
+            value={effort ?? ""}
+            onChange={(e) => setEffortChoice(settingsAgent, e.target.value || null)}
+          >
+            <option value="">Agent default</option>
+            {efforts(current).map((level) => (
+              <option key={level} value={level}>
+                {level}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      <div className="agent-launch-actions">
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          disabled={loading}
+          onClick={() => void loadModels(settingsAgent, true)}
+        >
+          <RefreshCw size={14} strokeWidth={1.75} /> {loading ? "Reading…" : "Refresh models"}
+        </button>
+      </div>
+      {status ? <p className="agent-muted">{status}</p> : null}
+      {notice ? <p className="agent-muted">{notice}</p> : null}
       <label className="agent-toggle">
         <input
           type="checkbox"
-          checked={launch.nativeTools}
-          onChange={(e) => setLaunch({ nativeTools: e.target.checked })}
+          checked={prefs.nativeTools}
+          onChange={(e) => setNativeTools(e.target.checked)}
         />
         Let the agent use its own tools (asks first)
       </label>
@@ -60,22 +159,40 @@ function LaunchFields({ note }: { note: string | null }) {
   );
 }
 
+/** Effort levels a model offers, or none when there is no model. */
+function efforts(model: ReturnType<typeof modelOption>): string[] {
+  return model?.efforts ?? [];
+}
+
 function AgentPicker({ agents, error }: { agents: AgentInfo[] | null; error: string | null }) {
   const startSession = useAgentChatStore((s) => s.startSession);
   const loadAgents = useAgentChatStore((s) => s.loadAgents);
+  const loadModels = useAgentChatStore((s) => s.loadModels);
+  const agentModels = useAgentChatStore((s) => s.agentModels);
   const chat = useAgentChatStore((s) => s.chat);
   const busy = chat.status === "starting";
+
+  // Opening the picker reads each installed agent's model list (once per app session; the list
+  // is cached and the refresh button in settings re-reads it).
+  useEffect(() => {
+    for (const agent of agents ?? []) {
+      if (agent.installed && !agentModels[agent.id]) void loadModels(agent.id);
+    }
+  }, [agents, agentModels, loadModels]);
 
   return (
     <div className="agent-picker">
       <p className="agent-intro">
-        Drive an agent you already have installed and signed in. Renderly never asks for or stores
-        your agent credentials.
+        Drive an agent you already have installed and signed in, or a model on this computer
+        through Ollama. Renderly never asks for or stores your agent credentials.
       </p>
       {error ? <p className="agent-error">Could not check agents: {error}</p> : null}
       {agents === null && !error ? <p className="agent-muted">Checking installed agents…</p> : null}
       {(agents ?? []).map((agent) => {
-        const ready = agent.installed && agent.signIn !== "signed_out";
+        const list = agentModels[agent.id];
+        // A local model needs a usable list (Ollama running, with a tool-capable model).
+        const listOk = agent.id !== "ollama" || list?.status === "ready";
+        const ready = agent.installed && agent.signIn !== "signed_out" && listOk;
         return (
           <div key={agent.id} className="agent-card">
             <div className="agent-card-head">
@@ -98,6 +215,9 @@ function AgentPicker({ agents, error }: { agents: AgentInfo[] | null; error: str
               </p>
             ) : null}
             {agent.note ? <p className="agent-muted">{agent.note}</p> : null}
+            {agent.installed && list && list.status !== "not_running" && list.status !== "ready" ? (
+              <p className="agent-muted">{statusLine(list, agent.name)}</p>
+            ) : null}
             <button
               type="button"
               className="btn btn-primary btn-sm agent-start"

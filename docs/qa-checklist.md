@@ -184,3 +184,57 @@ the app must be running with a project open. Design: [agent-chat-design.md](agen
   latency and quality differ from `sonnet`/`low`. Restart the app and confirm the choice persists.
 - [ ] **Stop and cleanup:** Stop the session, then check no `claude.exe` remains and the local port
   from the session no longer answers (the token is rejected or the connection is refused).
+
+## Agent chat: Codex, Ollama and model lists (manual)
+
+Run these yourself. Nothing here runs against a real account or a real model in the automated
+suite, except the one Ollama round trip noted at the end.
+
+### Model lists (all agents)
+
+- [ ] Open the Agent tab. Each installed agent's model list loads without sending a prompt. The
+  Claude Code list shows the names Claude Code reports, not a fixed set.
+- [ ] Settings → **Refresh models** re-reads the list for the selected agent.
+- [ ] Pick a model and an effort, restart the app. Both are remembered for that agent only.
+- [ ] Remove a saved model from the agent's list (for example, a model you cannot use on your plan),
+  then start a session. The panel says the saved model is no longer offered and names the default
+  that was used.
+- [ ] Not installed: the card says so and shows the install hint. Not signed in: the card shows the
+  sign-in command.
+
+### Codex (signed-in `codex`; codex-cli 0.163.0 was checked)
+
+- [ ] Run `codex --version` and `codex app-server --help`. Note any difference from the design doc
+  §0.8 in the report.
+- [ ] The Codex model picker lists the models Codex reports. Effort options change per model.
+- [ ] Start Codex and send "Say hello." Expect a streamed reply. Record the stop reason.
+- [ ] Ask for a caption on a clip. Confirm the panel shows an action line from the `renderly` call,
+  and the change appears in the timeline and undoes with one Undo. If the agent says it has no
+  Renderly tools, the MCP config keys (`mcp_servers.renderly.url`, `bearer_token_env_var`) were not
+  picked up. Record the Codex output. Do not change the keys without checking the config reference.
+- [ ] With "Let the agent use its own tools" **off**, ask Codex to run a shell command. Expect no
+  prompt, and the command is declined.
+- [ ] With the switch **on**, ask for the same. Expect a prompt, and Allow and Deny both reach Codex.
+- [ ] Cancel a running turn. Expect it to end as cancelled, and the next message to work.
+
+### Ollama (local, with a pulled tool-capable model)
+
+- [ ] With Ollama **not running**: the Ollama card says "not running — start Ollama" and Start is
+  disabled. Start Ollama, then Refresh models. The card enables.
+- [ ] With no tool-capable model installed: the card says to pull one, with an `ollama pull`
+  example. Pull one in a terminal (for example `ollama pull qwen3`), then refresh.
+- [ ] A model without tool support is not in the list, even when installed.
+- [ ] The Ollama address field: set another address, refresh, and confirm the list follows it. An
+  empty field uses `OLLAMA_HOST`, then `http://127.0.0.1:11434`.
+- [ ] Effort is hidden for a model without thinking. For a thinking model it appears.
+- [ ] Ask for a caption. Expect an `edit` action line and the caption on the timeline. The model may
+  stream extra text; that is the model's own output.
+- [ ] Ask for a long multi-step edit. Expect at most 16 tool rounds, then the "Stopped after 16 tool
+  rounds" message.
+- [ ] Cancel mid-reply. Expect the request to stop (the Ollama server log shows the connection
+  closing) and the turn to end as cancelled.
+- [ ] Stop Ollama while a turn runs. Expect an error message, not a hang.
+
+Automated, for reference: `cargo test -p renderly-app --test ollama_loop` runs the fake-server
+tests. One real round trip against a local server with `qwen3:4b` is ignored by default; run it with
+`cargo test -p renderly-app --test ollama_loop -- --ignored --nocapture`.

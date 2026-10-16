@@ -124,7 +124,8 @@ renderly-app (Tauri)                               Claude Code (user's login)
   `Command` and the types it reaches, so the `edit` tool's schema is the real enum. The default and
   wasm builds do not include it.
 - Each session has its own endpoint and token, which stop with the session.
-- `renderly-mcp` is unchanged. It still serves external agents and the Codex driver.
+- `renderly-mcp` is unchanged. It still serves external agents. The in-app Codex driver no longer
+  uses it: Codex reaches the same in-process endpoint as Claude Code (agent-chat-design.md §0.8).
 
 ## `renderly-app`
 
@@ -390,15 +391,22 @@ independent of the GUI cache) is a follow-up, not yet wired up.
 
 ### Agent chat (`src-tauri/src/agent_chat/`, Phase 1)
 
-Status: implemented; the Codex driver is untested against the real CLI (see
-[agent-chat-design.md](agent-chat-design.md) §10 for status). Nothing here is in
-`renderly-core`; the module is a UI-layer dispatcher, like the bridge.
+Status: implemented; no full turn has been run against the real Claude Code or Codex CLI. Codex's
+handshake and model list, and Claude Code's model list, were checked live (see
+[agent-chat-design.md](agent-chat-design.md) §0 and §0.10). Nothing here is in `renderly-core`; the
+module is a UI-layer dispatcher, like the bridge.
+
+Three drivers share one tool set (`tools.rs`, a `ToolHost` trait): Claude Code and Codex reach it
+through the in-process MCP endpoint (`mcp_http.rs`), and Ollama calls it directly in its own loop.
 
 | File | Role |
 |---|---|
-| `driver.rs` | `AgentDriver` / `AgentSession` traits, `AgentId`, `SessionConfig`, launch-file helpers (MCP config, system prompt) |
-| `claude.rs` | Claude Code driver: `claude -p --input-format stream-json --output-format stream-json`, `renderly-mcp` as the only MCP server, `--permission-prompt-tool` routed to the app. Documents the flags and message shapes it relies on |
-| `codex.rs` | Codex driver: `codex app-server` (JSON-RPC over JSONL). Approval and item payloads are assumptions, marked in the file |
+| `driver.rs` | `AgentDriver` / `AgentSession` traits, `AgentId` (Claude Code, Codex, Ollama), `LaunchOptions` (model and effort are the agent's own values, not fixed lists), `SessionConfig`, launch-file helpers |
+| `claude.rs` | Claude Code driver: `claude -p --input-format stream-json --output-format stream-json`, `renderly` as the only MCP server, `--permission-prompt-tool` routed to the app. Also the model-list probe (`control_request` `initialize`). Documents the flags and message shapes it relies on |
+| `codex.rs` | Codex driver: `codex app-server` (JSON-RPC over JSONL), with the MCP endpoint as `-c` overrides and the token in the child's environment. Also the `model/list` probe. Protocol shapes are cited against the 0.163.0 schema in the file header |
+| `ollama.rs` | Ollama driver: Renderly runs the loop over `/api/chat` (streamed) with a slim tool set, a 16-round cap, and cancel by aborting the stream. Also the model list from `/api/tags` and `/api/show` |
+| `models.rs` | `AgentModels` / `ModelOption` / `ModelStatus` and the pure parsers for each agent's list |
+| `tools.rs` | The Renderly tool functions over a `ToolHost` (one implementation, used by MCP and Ollama) |
 | `events.rs` | `AgentEvent` (one enum for every driver) and `AgentEnvelope` (`session_id` + event), sent as the `agent:event` Tauri event |
 | `permission.rs` | `PermissionBroker`: classifies each tool (perception / edit / file write / model download / native / unknown), applies the §4.3 defaults, holds pending prompts and session-scoped "always" answers |
 | `detect.rs` | `agent_list`: `PATH` lookup, `--version`, and `claude auth status` (exit code only; no credential files read) |

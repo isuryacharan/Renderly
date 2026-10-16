@@ -7,7 +7,14 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type { Project } from "./types";
-import type { AgentEnvelope, AgentId, AgentInfo, ChatContext, LaunchOptions } from "./agentChat";
+import type {
+  AgentEnvelope,
+  AgentId,
+  AgentInfo,
+  AgentModels,
+  ChatContext,
+  LaunchOptions,
+} from "./agentChat";
 
 export interface HistoryStatus {
   can_undo: boolean;
@@ -421,6 +428,11 @@ export function onBridgePlayhead(cb: (payload: { time_secs: number }) => void): 
 
 export function agentList() {
   return invoke<AgentInfo[]>("agent_list");
+}
+
+/** The agent's model list, read from the agent at runtime. `refresh` re-reads it. */
+export function agentModels(agentId: AgentId, ollamaHost: string | null, refresh: boolean) {
+  return invoke<AgentModels>("agent_models", { agentId, ollamaHost, refresh });
 }
 
 export function agentStart(agentId: AgentId, options: LaunchOptions) {

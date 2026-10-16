@@ -2,7 +2,7 @@
 // `reduceAgentEvent` turns backend `agent:event` payloads into transcript items. It has no
 // React, Tauri or store dependency, so it is covered by Vitest (agentChat.test.ts).
 
-export type AgentId = "claude-code" | "codex";
+export type AgentId = "claude-code" | "codex" | "ollama";
 
 export interface AgentInfo {
   id: AgentId;
@@ -49,23 +49,169 @@ export interface ChatContext {
   selectedClipIds?: string[];
 }
 
-/** Launch options chosen in the panel's settings (Rust `LaunchOptions`, camelCase). */
+/**
+ * Launch options sent with a session start (Rust `LaunchOptions`, camelCase). `model` and
+ * `effort` are null when the user has no choice, so the agent's own default applies. Nothing
+ * here is a fixed list: the choices come from the agent (see `AgentModels`).
+ */
 export interface LaunchOptions {
-  model: string;
-  effort: string;
-  /** Let the agent use Claude Code's own built-in tools (each still asks first). */
+  model: string | null;
+  effort: string | null;
+  /** Let the agent use its own built-in tools (each still asks first). */
   nativeTools: boolean;
+  /** Ollama only: the server address, or null for `OLLAMA_HOST` / the default. */
+  ollamaHost: string | null;
 }
 
 export const DEFAULT_LAUNCH_OPTIONS: LaunchOptions = {
-  model: "sonnet",
-  effort: "low",
+  model: null,
+  effort: null,
   nativeTools: false,
+  ollamaHost: null,
 };
 
-/** Must match the backend's allowed lists (agent_chat/driver.rs). */
-export const MODEL_CHOICES = ["sonnet", "opus", "fable"] as const;
-export const EFFORT_CHOICES = ["low", "medium", "high", "xhigh", "max"] as const;
+/** One model the agent reported (Rust `ModelOption`). */
+export interface ModelOption {
+  id: string;
+  label: string;
+  description: string | null;
+  /** Effort levels offered for this model. Empty when the picker should not offer effort. */
+  efforts: string[];
+  defaultEffort: string | null;
+  contextLength: number | null;
+  vision: boolean;
+  thinking: boolean;
+}
+
+/** Why a list is or is not available (Rust `ModelStatus`). */
+export type ModelStatus =
+  | "ready"
+  | "not_installed"
+  | "not_signed_in"
+  | "not_running"
+  | "no_models"
+  | "error";
+
+/** One agent's model list as fetched at runtime (Rust `AgentModels`). */
+export interface AgentModels {
+  agentId: AgentId;
+  status: ModelStatus;
+  models: ModelOption[];
+  defaultModel: string | null;
+  message: string | null;
+}
+
+/**
+ * The picker's remembered choices, per agent (a viewer preference, kept in localStorage). A saved
+ * model or effort is only used while the agent still offers it.
+ */
+export interface LaunchPrefs {
+  nativeTools: boolean;
+  ollamaHost: string | null;
+  models: Partial<Record<AgentId, string>>;
+  efforts: Partial<Record<AgentId, string>>;
+}
+
+export const DEFAULT_LAUNCH_PREFS: LaunchPrefs = {
+  nativeTools: false,
+  ollamaHost: null,
+  models: {},
+  efforts: {},
+};
+
+/** The model to use for `list`, given the user's saved choice. */
+export interface ModelChoice {
+  /** The effective model id, or null when no list is known and nothing was saved. */
+  model: string | null;
+  /** Shown when a saved choice is no longer offered and the default was used instead. */
+  notice: string | null;
+}
+
+/**
+ * Picks the model. A saved choice that the agent still offers wins. Otherwise the agent's own
+ * default is used, and a saved choice that vanished gets a notice saying so.
+ */
+export function chooseModel(
+  list: AgentModels | null,
+  saved: string | null | undefined,
+  agentName: string,
+): ModelChoice {
+  if (!list || list.status !== "ready" || list.models.length === 0) {
+    return { model: saved ?? null, notice: null };
+  }
+  const offered = (id: string | null | undefined): id is string =>
+    !!id && list.models.some((m) => m.id === id);
+  if (offered(saved)) return { model: saved, notice: null };
+  const fallback =
+    (offered(list.defaultModel) ? list.defaultModel : null) ?? list.models[0]?.id ?? null;
+  const notice =
+    saved && fallback
+      ? `"${saved}" is no longer offered by ${agentName}. Using ${fallback}.`
+      : null;
+  return { model: fallback, notice };
+}
+
+/** The model entry for `id`, when the list has it. */
+export function modelOption(list: AgentModels | null, id: string | null): ModelOption | null {
+  if (!list || !id) return null;
+  return list.models.find((m) => m.id === id) ?? null;
+}
+
+/**
+ * The effort choice for a model: a saved level only when that model offers it, else null (the
+ * agent's default). Ollama offers effort only for thinking models, so the picker hides it otherwise.
+ */
+export function chooseEffort(model: ModelOption | null, saved: string | null | undefined): string | null {
+  if (!model || model.efforts.length === 0) return null;
+  return saved && model.efforts.includes(saved) ? saved : null;
+}
+
+/** The launch options for a session start, from the fetched list and the saved preferences. */
+export function resolveLaunchOptions(
+  agent: AgentId,
+  agentName: string,
+  list: AgentModels | null,
+  prefs: LaunchPrefs,
+): { options: LaunchOptions; notice: string | null } {
+  const choice = chooseModel(list, prefs.models[agent], agentName);
+  const effort = chooseEffort(modelOption(list, choice.model), prefs.efforts[agent]);
+  return {
+    options: {
+      model: choice.model,
+      effort,
+      nativeTools: prefs.nativeTools,
+      ollamaHost: agent === "ollama" ? prefs.ollamaHost : null,
+    },
+    notice: choice.notice,
+  };
+}
+
+/** Parse saved preferences. Anything unreadable falls back to the defaults. */
+export function parseLaunchPrefs(raw: string | null): LaunchPrefs {
+  if (!raw) return DEFAULT_LAUNCH_PREFS;
+  try {
+    const parsed = JSON.parse(raw) as Partial<LaunchPrefs>;
+    return {
+      nativeTools: parsed.nativeTools === true,
+      ollamaHost: typeof parsed.ollamaHost === "string" ? parsed.ollamaHost : null,
+      models: sanitizeChoices(parsed.models),
+      efforts: sanitizeChoices(parsed.efforts),
+    };
+  } catch {
+    return DEFAULT_LAUNCH_PREFS;
+  }
+}
+
+function sanitizeChoices(value: unknown): Partial<Record<AgentId, string>> {
+  const out: Partial<Record<AgentId, string>> = {};
+  if (!value || typeof value !== "object") return out;
+  for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+    if ((key === "claude-code" || key === "codex" || key === "ollama") && typeof v === "string") {
+      out[key] = v;
+    }
+  }
+  return out;
+}
 
 export type TranscriptItem =
   | { kind: "user"; id: string; text: string; context: ChatContext | null }

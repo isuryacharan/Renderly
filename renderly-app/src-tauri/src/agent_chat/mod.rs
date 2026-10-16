@@ -1,9 +1,10 @@
 //! In-app agent chat (docs/agent-chat-design.md). Drives the user's installed, signed-in agent
-//! CLI (Claude Code, Codex) as a child process; the agent edits the open project only through
-//! `renderly-mcp`, which reaches this app over the loopback bridge, so edits share the undo stack.
+//! CLI (Claude Code, Codex) or a local Ollama model. Claude Code and Codex reach Renderly's tools
+//! over an in-process MCP endpoint (`mcp_http.rs`); Ollama runs its own loop and calls the same
+//! tool functions directly (`ollama.rs`). Edits go through the app's `apply_commands` path, so they
+//! share the undo stack.
 //!
-//! Phase 1: one session at a time, started against the open project. Renderly never reads or
-//! stores vendor credentials and never calls a model API.
+//! Renderly never reads or stores vendor credentials and never calls a model API directly.
 
 pub mod claude;
 pub mod codex;
@@ -11,6 +12,8 @@ pub mod detect;
 pub mod driver;
 pub mod events;
 pub mod mcp_http;
+pub mod models;
+pub mod ollama;
 pub mod outline;
 pub mod permission;
 pub mod process;
@@ -20,27 +23,32 @@ use crate::AppState;
 use detect::AgentInfo;
 use driver::{driver_for, AgentId, AgentSession, LaunchOptions, McpEndpointInfo, SessionConfig};
 use events::{AgentEnvelope, AgentEvent, EventSink};
+use models::{AgentModels, ModelStatus};
 use permission::{Decision, PermissionBroker};
 use renderly_core::project::{Id, Project};
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tools::{AppToolHost, ToolHost};
 use uuid::Uuid;
 
 /// The Tauri event name carrying [`AgentEnvelope`] payloads.
 pub const EVENT_NAME: &str = "agent:event";
 
-/// The one active session, if any.
+/// The one active session, if any. Also holds the model lists fetched this app session.
 pub struct AgentChatHub {
     active: Mutex<Option<ActiveSession>>,
+    /// Model lists by [`model_cache_key`]. Fetched lazily, kept until refreshed.
+    models: Mutex<HashMap<String, AgentModels>>,
 }
 
 struct ActiveSession {
     id: String,
     broker: Arc<PermissionBroker>,
     session: Box<dyn AgentSession>,
-    /// The in-process tool server for this session (Claude). Dropping it stops the server.
+    /// The in-process tool server (Claude Code, Codex). Dropping it stops the server.
     endpoint: Option<mcp_http::McpEndpoint>,
 }
 
@@ -48,6 +56,7 @@ impl AgentChatHub {
     pub fn new() -> Self {
         Self {
             active: Mutex::new(None),
+            models: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -55,6 +64,15 @@ impl AgentChatHub {
 impl Default for AgentChatHub {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The cache key for one agent's list. Ollama's list depends on the server, so the host is part
+/// of its key.
+fn model_cache_key(agent: AgentId, ollama_host: Option<&str>) -> String {
+    match agent {
+        AgentId::Ollama => format!("ollama|{}", ollama::resolve_host(ollama_host)),
+        other => other.program_name().to_string(),
     }
 }
 
@@ -66,7 +84,7 @@ pub struct ChatContext {
     pub selected_clip_ids: Vec<String>,
 }
 
-/// The text sent to the CLI for one user turn: the live context block (outline, playhead,
+/// The text sent to the agent for one user turn: the live context block (outline, playhead,
 /// selection, open sequence) generated from the project, then the user's message.
 pub fn compose_turn(
     project: &Project,
@@ -80,36 +98,6 @@ pub fn compose_turn(
         "{}{text}",
         outline::context_block(project, playhead_secs, selected, sequence)
     )
-}
-
-/// Find the `renderly-mcp` binary: `RENDERLY_MCP_BIN` (tests, sandboxes), then next to the app
-/// executable (installed builds), then the workspace target directories (`tauri dev`).
-pub fn mcp_binary_path() -> Result<PathBuf, String> {
-    let name = if cfg!(windows) {
-        "renderly-mcp.exe"
-    } else {
-        "renderly-mcp"
-    };
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(p) = std::env::var_os("RENDERLY_MCP_BIN") {
-        candidates.push(PathBuf::from(p));
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join(name));
-        }
-    }
-    if let Some(target) = std::env::var_os("CARGO_TARGET_DIR") {
-        candidates.push(PathBuf::from(&target).join("debug").join(name));
-        candidates.push(PathBuf::from(&target).join("release").join(name));
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    candidates.push(manifest.join("../../target/debug").join(name));
-    candidates.push(manifest.join("../../target/release").join(name));
-    candidates.into_iter().find(|p| p.is_file()).ok_or_else(|| {
-        "renderly-mcp was not found next to the app; build it with `cargo build -p renderly-mcp`"
-            .to_string()
-    })
 }
 
 fn scratch_dir() -> PathBuf {
@@ -175,16 +163,78 @@ pub async fn bridge_permission(
     }
 }
 
+/// Install and running state for each agent. Model lists are not here; see `agent_models`.
 #[tauri::command]
 pub async fn agent_list() -> Result<Vec<AgentInfo>, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        AgentId::ALL
-            .iter()
-            .map(|a| detect::detect(*a))
-            .collect::<Vec<_>>()
+    let mut infos = tauri::async_runtime::spawn_blocking(|| {
+        vec![
+            detect::detect(AgentId::ClaudeCode),
+            detect::detect(AgentId::Codex),
+        ]
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    let host = ollama::resolve_host(None);
+    let installed = process::resolve_program(AgentId::Ollama.program_name()).is_some();
+    let reachable = ollama::is_reachable(&host).await;
+    infos.push(detect::ollama_info(installed, reachable));
+    Ok(infos)
+}
+
+/// The model list for one agent, read from the agent at runtime and cached for the app session.
+/// `refresh` re-reads it. Nothing is hard-coded: Claude Code and Codex report their own lists,
+/// and Ollama lists the installed models that report tool support.
+#[tauri::command]
+pub async fn agent_models(
+    hub: State<'_, AgentChatHub>,
+    agent_id: AgentId,
+    ollama_host: Option<String>,
+    refresh: Option<bool>,
+) -> Result<AgentModels, String> {
+    let key = model_cache_key(agent_id, ollama_host.as_deref());
+    if !refresh.unwrap_or(false) {
+        if let Some(cached) = hub.models.lock().map_err(|e| e.to_string())?.get(&key) {
+            return Ok(cached.clone());
+        }
+    }
+    let fetched = fetch_models(agent_id, ollama_host.as_deref()).await;
+    hub.models
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(key, fetched.clone());
+    Ok(fetched)
+}
+
+async fn fetch_models(agent_id: AgentId, ollama_host: Option<&str>) -> AgentModels {
+    match agent_id {
+        AgentId::ClaudeCode | AgentId::Codex => {
+            let Some(program) = process::resolve_program(agent_id.program_name()) else {
+                let info = detect::detect(agent_id);
+                return AgentModels::failed(agent_id, ModelStatus::NotInstalled, info.install_hint);
+            };
+            let scratch = scratch_dir();
+            tauri::async_runtime::spawn_blocking(move || match agent_id {
+                AgentId::ClaudeCode => claude::fetch_claude_models(&program, &scratch),
+                _ => codex::fetch_codex_models(&program, &scratch),
+            })
+            .await
+            .unwrap_or_else(|e| AgentModels::failed(agent_id, ModelStatus::Error, e.to_string()))
+        }
+        AgentId::Ollama => {
+            let host = ollama::resolve_host(ollama_host);
+            let list = ollama::fetch_models(&host).await;
+            if list.status == ModelStatus::NotRunning
+                && process::resolve_program(AgentId::Ollama.program_name()).is_none()
+            {
+                return AgentModels::failed(
+                    AgentId::Ollama,
+                    ModelStatus::NotInstalled,
+                    "Ollama is not installed. Install it from https://ollama.com, then refresh.",
+                );
+            }
+            list
+        }
+    }
 }
 
 #[tauri::command]
@@ -198,29 +248,63 @@ pub async fn agent_start(
     if hub.active.lock().map_err(|e| e.to_string())?.is_some() {
         return Err("an agent session is already running; stop it first".into());
     }
-    let options = options.unwrap_or_default().validated()?;
+    let mut options = options.unwrap_or_default().validated()?;
+    // Check the choice against the list the agent reported, when that list is known. Ollama needs
+    // a model, so it falls back to the list's own default.
+    let key = model_cache_key(agent_id, options.ollama_host.as_deref());
+    let cached = hub
+        .models
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get(&key)
+        .cloned();
+    if let Some(list) = cached.filter(|l| l.status == ModelStatus::Ready) {
+        match &options.model {
+            Some(m) if list.find(m).is_none() => {
+                return Err(format!(
+                    "'{m}' is not in the list {} reported. Refresh the models and pick again.",
+                    agent_id.display_name()
+                ))
+            }
+            None if agent_id == AgentId::Ollama => {
+                options.model = list.fallback_model().map(str::to_string)
+            }
+            _ => {}
+        }
+    }
+    if agent_id == AgentId::Ollama && options.model.is_none() {
+        return Err("choose an Ollama model first; refresh the list if none is shown".into());
+    }
     let project_path = state.with_session(|s| Ok(s.path.clone()))?;
     let session_id = Uuid::new_v4().to_string();
     // Edits are auto-allowed by default (§4.3); the panel shows the toggle.
     let broker = PermissionBroker::new(session_id.clone(), sink_for(&app), true);
-    // Claude gets the in-process tool server; Codex still uses renderly-mcp (see design doc).
-    let (endpoint, mcp_endpoint, mcp_binary) = match agent_id {
-        AgentId::ClaudeCode => {
+    // Claude Code and Codex get the in-process MCP endpoint. Ollama calls the same tools directly.
+    let (endpoint, mcp_endpoint, tools): (
+        Option<mcp_http::McpEndpoint>,
+        Option<McpEndpointInfo>,
+        Option<Arc<dyn ToolHost>>,
+    ) = match agent_id {
+        AgentId::ClaudeCode | AgentId::Codex => {
             let endpoint = mcp_http::start(app.clone(), Arc::clone(&broker)).await?;
             let info = McpEndpointInfo {
                 url: endpoint.url.clone(),
                 token: endpoint.token.clone(),
             };
-            (Some(endpoint), Some(info), PathBuf::new())
+            (Some(endpoint), Some(info), None)
         }
-        AgentId::Codex => (None, None, mcp_binary_path()?),
+        AgentId::Ollama => (
+            None,
+            None,
+            Some(Arc::new(AppToolHost { app: app.clone() }) as Arc<dyn ToolHost>),
+        ),
     };
     let cfg = SessionConfig {
         session_id: session_id.clone(),
         project_path,
         mcp_endpoint,
+        tools,
         options,
-        mcp_binary,
         program: None,
         scratch_dir: scratch_dir(),
         broker: Arc::clone(&broker),
@@ -383,5 +467,14 @@ mod tests {
         let out = compose_turn(&p, 0.0, None, "hi", None);
         assert!(!out.contains("selected clips"));
         assert!(out.ends_with("hi"));
+    }
+
+    #[test]
+    fn model_lists_are_cached_per_agent_and_per_ollama_host() {
+        assert_eq!(model_cache_key(AgentId::Codex, None), "codex");
+        assert_eq!(
+            model_cache_key(AgentId::Ollama, Some("http://10.0.0.5:11434")),
+            "ollama|http://10.0.0.5:11434"
+        );
     }
 }

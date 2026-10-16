@@ -34,6 +34,33 @@ pub fn detect(agent: AgentId) -> AgentInfo {
     match agent {
         AgentId::ClaudeCode => detect_claude(),
         AgentId::Codex => detect_codex(),
+        // Ollama's state needs an HTTP probe; `agent_list` calls `ollama_info` with the result.
+        AgentId::Ollama => ollama_info(process::resolve_program("ollama").is_some(), false),
+    }
+}
+
+/// Ollama's panel entry. `installed` is the `ollama` binary on `PATH`; `reachable` is whether the
+/// API answers. Ollama has no account, so there is no sign-in state.
+pub fn ollama_info(installed: bool, reachable: bool) -> AgentInfo {
+    let note = if reachable {
+        None
+    } else if installed {
+        Some("not running — start Ollama".to_string())
+    } else {
+        Some("not installed — install Ollama, then start it".to_string())
+    };
+    AgentInfo {
+        id: AgentId::Ollama,
+        name: AgentId::Ollama.display_name().into(),
+        installed: installed || reachable,
+        version: None,
+        sign_in: SignIn::Unknown,
+        sign_in_command: None,
+        install_hint:
+            "Install Ollama from https://ollama.com, start it, then pull a model with tool \
+                       support in a terminal (for example `ollama pull qwen3`)."
+                .into(),
+        note,
     }
 }
 
@@ -82,8 +109,9 @@ fn detect_codex() -> AgentInfo {
         sign_in_command: Some("codex login".into()),
         install_hint: "Install the Codex CLI from OpenAI, then run `codex login`.".into(),
         note: Some(
-            "Codex support is untested against the real CLI. If a session fails to start, sign \
-             in with `codex login` in a terminal and try again."
+            "Codex: the handshake and model list were checked against codex-cli 0.163.0. A full \
+             turn is not yet verified. If a session fails to start, sign in with `codex login` in \
+             a terminal and try again."
                 .into(),
         ),
     }

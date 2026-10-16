@@ -12,6 +12,10 @@ autotests = false
 name = "agent_chat"
 path = "tests/agent_chat.rs"
 
+[[test]]
+name = "ollama_loop"
+path = "tests/ollama_loop.rs"
+
 [lib]
 name = "renderly_app_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
@@ -57,6 +61,5 @@ bytes = "1"
 tokio-util = "0.7"
 tower-service = "0.3"
 base64 = "0.22"
-
-[dev-dependencies]
+# Ollama's HTTP API (agent_chat/ollama.rs). Already in the tree through renderly-core; rustls.
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }

@@ -46,7 +46,7 @@ impl Harness {
                 token: "test-token".into(),
             }),
             options: LaunchOptions::default(),
-            mcp_binary: PathBuf::from("renderly-mcp-not-used-by-the-fake"),
+            tools: None,
             program: Some(fake_agent_path()),
             scratch_dir: dir.join("scratch"),
             broker,
@@ -95,6 +95,53 @@ impl Drop for Harness {
 
 fn fake_agent_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_renderly-fake-agent"))
+}
+
+// ---- Model lists: usage-free probes of each CLI --------------------------------------------
+
+#[test]
+fn claude_model_list_is_read_from_the_initialize_control_response() {
+    use renderly_app_lib::agent_chat::claude::fetch_claude_models;
+    use renderly_app_lib::agent_chat::models::ModelStatus;
+    let dir = std::env::temp_dir().join(format!("renderly-models-claude-{}", uuid::Uuid::new_v4()));
+    let list = fetch_claude_models(&fake_agent_path(), &dir);
+    assert_eq!(list.status, ModelStatus::Ready, "{:?}", list.message);
+    let ids: Vec<&str> = list.models.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, vec!["default", "sonnet"]);
+    assert_eq!(list.default_model.as_deref(), Some("default"));
+    assert_eq!(list.models[1].efforts, vec!["low", "medium", "high"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn codex_model_list_is_read_from_model_list_with_each_models_efforts() {
+    use renderly_app_lib::agent_chat::codex::fetch_codex_models;
+    use renderly_app_lib::agent_chat::models::ModelStatus;
+    let dir = std::env::temp_dir().join(format!("renderly-models-codex-{}", uuid::Uuid::new_v4()));
+    let list = fetch_codex_models(&fake_agent_path(), &dir);
+    assert_eq!(list.status, ModelStatus::Ready, "{:?}", list.message);
+    let ids: Vec<&str> = list.models.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, vec!["gpt-6-terra", "gpt-6-luna"]);
+    assert_eq!(list.default_model.as_deref(), Some("gpt-6-terra"));
+    assert_eq!(list.models[0].efforts, vec!["low", "medium"]);
+    assert_eq!(list.models[0].default_effort.as_deref(), Some("medium"));
+    assert!(list.models[1].efforts.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_missing_claude_program_is_an_error_status_not_a_panic() {
+    use renderly_app_lib::agent_chat::claude::fetch_claude_models;
+    use renderly_app_lib::agent_chat::models::ModelStatus;
+    let dir =
+        std::env::temp_dir().join(format!("renderly-models-missing-{}", uuid::Uuid::new_v4()));
+    let list = fetch_claude_models(Path::new("C:/definitely/not/here/claude.exe"), &dir);
+    assert_eq!(list.status, ModelStatus::Error);
+    assert!(list
+        .message
+        .unwrap_or_default()
+        .contains("could not start claude"));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn text_of(evs: &[AgentEvent]) -> String {
@@ -272,7 +319,10 @@ fn codex_streams_text_and_tool_cards() {
 
 #[test]
 fn codex_approval_allowed_once_reaches_the_server() {
-    let h = Harness::new("codex-allow");
+    // The agent's own tools must be on for approvals to reach the user; with them off, Codex
+    // approvals are declined without a prompt (see codex.rs).
+    let mut h = Harness::new("codex-allow");
+    h.cfg.options.native_tools = true;
     let mut session = CodexDriver.start(&h.cfg).expect("start");
     session.send_turn("run an approval command").unwrap();
     let evs = h.wait_for("permission_request", |evs| {
@@ -301,7 +351,8 @@ fn codex_approval_allowed_once_reaches_the_server() {
 
 #[test]
 fn codex_approval_denied_reaches_the_server() {
-    let h = Harness::new("codex-deny");
+    let mut h = Harness::new("codex-deny");
+    h.cfg.options.native_tools = true;
     let mut session = CodexDriver.start(&h.cfg).expect("start");
     session.send_turn("run an approval command").unwrap();
     let evs = h.wait_for("permission_request", |evs| {
@@ -317,6 +368,21 @@ fn codex_approval_denied_reaches_the_server() {
         .unwrap();
     h.cfg.broker.answer(&request_id, "reject_once").unwrap();
     let evs = h.wait_turn_finished();
+    assert_eq!(text_of(&evs), "declined");
+    session.shutdown();
+}
+
+#[test]
+fn codex_approval_is_declined_without_a_prompt_when_the_agents_own_tools_are_off() {
+    let h = Harness::new("codex-tools-off");
+    let mut session = CodexDriver.start(&h.cfg).expect("start");
+    session.send_turn("run an approval command").unwrap();
+    let evs = h.wait_turn_finished();
+    assert!(
+        !evs.iter()
+            .any(|e| matches!(e, AgentEvent::PermissionRequest { .. })),
+        "no prompt expected: {evs:?}"
+    );
     assert_eq!(text_of(&evs), "declined");
     session.shutdown();
 }

@@ -1726,6 +1726,7 @@ pub fn run() {
             ml::cancel_background_matte,
             ml::background_matte_status,
             agent_chat::agent_list,
+            agent_chat::agent_models,
             agent_chat::agent_start,
             agent_chat::agent_send,
             agent_chat::agent_answer_permission,

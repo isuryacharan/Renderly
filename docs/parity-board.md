@@ -58,7 +58,7 @@ already exist, so the work is swapping the algorithm underneath a stable API.
 | P4-6b | Text-to-sticker | 🟡 | `GenerateSticker`; locally generated PNG, not an image model |
 | P4-6 | Templates | ✅ | Pack `templates[]` + `ApplyTemplate` |
 | P4-7 | Multicam groups + angle switch | ✅ | `CreateMulticamGroup`, `SetMulticamAngle` |
-| — | In-app agent chat | 🟡 | "Agent" tab beside the inspector (`Ctrl+L`) driving the user's installed, signed-in Claude Code (Codex: older path) as Renderly's editing assistant: Renderly's own brief replaces the coding-agent prompt, tools are served in-process by the app (`edit`, `timeline`, `look`, `find_media`, `assets`), context is sent with each message, one undo per turn. No login or API key handled by Renderly. Confirmed working in the desktop app with Claude Code (2026-10-16); Codex still on the older path. [agent-chat-design.md](agent-chat-design.md) |
+| — | In-app agent chat | ✅ | "Agent" tab beside the inspector (`Ctrl+L`). Claude Code and Codex: the user's installed, signed-in CLI runs as Renderly's editing assistant (Renderly's brief replaces the coding prompt; tools served in-process over loopback HTTP). Ollama: Renderly runs the agent loop itself with a slimmer tool set, fully local. Model lists are fetched live from each agent. No login or API key handled by Renderly. [agent-chat-design.md](agent-chat-design.md) |
 
 ## Platform & distribution
 

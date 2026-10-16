@@ -39,6 +39,23 @@ fn claude() {
         let Ok(v) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        // The model-list probe: a control request, answered with no prompt sent to a model.
+        if v.get("type").and_then(Value::as_str) == Some("control_request") {
+            send(
+                &json!({"type": "control_response", "response": {"subtype": "success",
+                "request_id": v["request_id"].clone(),
+                "response": {"models": [
+                    {"value": "default", "resolvedModel": "claude-opus-5-5", "displayName": "Default (recommended)",
+                     "description": "Opus 5.5", "supportsEffort": true,
+                     "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
+                    {"value": "sonnet", "resolvedModel": "claude-sonnet-5-5", "displayName": "Sonnet 5.5",
+                     "description": "Efficient for routine tasks", "supportsEffort": true,
+                     "supportedEffortLevels": ["low", "medium", "high"]}
+                ],
+                "account": {"email": "fake@example.com", "subscriptionType": "Test"}}}}),
+            );
+            continue;
+        }
         if v.get("type").and_then(Value::as_str) != Some("user") {
             continue;
         }
@@ -122,6 +139,21 @@ fn codex() {
                 run_turn(&mut lines, &text);
             }
             "turn/interrupt" => respond(&id.unwrap_or(Value::Null), json!({})),
+            // The model-list request (no turn is started).
+            "model/list" => respond(
+                &id.unwrap_or(Value::Null),
+                json!({"data": [
+                    {"id": "gpt-6-terra", "model": "gpt-6-terra", "displayName": "GPT-6-Terra",
+                     "description": "Default", "hidden": false, "isDefault": true,
+                     "defaultReasoningEffort": "medium",
+                     "supportedReasoningEfforts": [
+                         {"reasoningEffort": "low", "description": "Fast"},
+                         {"reasoningEffort": "medium", "description": "Balanced"}]},
+                    {"id": "gpt-6-luna", "model": "gpt-6-luna", "displayName": "GPT-6-Luna",
+                     "description": "Light", "hidden": false, "isDefault": false,
+                     "supportedReasoningEfforts": []}
+                ], "nextCursor": null}),
+            ),
             _ => {
                 if let Some(id) = id {
                     send(

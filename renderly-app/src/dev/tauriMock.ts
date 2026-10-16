@@ -725,9 +725,47 @@ const MOCK_AGENTS = [
     signIn: "unknown",
     signInCommand: "codex login",
     installHint: "Install the Codex CLI from OpenAI, then run `codex login`.",
-    note: "Codex support is untested against the real CLI.",
+    note: "Codex: the handshake and model list were checked against codex-cli 0.163.0. A full turn is not yet verified.",
+  },
+  {
+    id: "ollama",
+    name: "Ollama (local)",
+    installed: true,
+    version: null,
+    signIn: "unknown",
+    signInCommand: null,
+    installHint: "Install Ollama from https://ollama.com, start it, then pull a model with tool support.",
+    note: "not running — start Ollama",
   },
 ];
+
+/** Mock model lists, shaped like the backend's `agent_models` reply. */
+const MOCK_MODELS: Record<string, unknown> = {
+  "claude-code": {
+    agentId: "claude-code",
+    status: "ready",
+    models: [
+      { id: "default", label: "Default (recommended)", description: null, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: null, contextLength: null, vision: false, thinking: false },
+      { id: "sonnet", label: "Sonnet 5.5", description: null, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: null, contextLength: null, vision: false, thinking: false },
+    ],
+    defaultModel: "default",
+    message: null,
+  },
+  codex: {
+    agentId: "codex",
+    status: "not_installed",
+    models: [],
+    defaultModel: null,
+    message: "Install the Codex CLI from OpenAI, then run `codex login`.",
+  },
+  ollama: {
+    agentId: "ollama",
+    status: "not_running",
+    models: [],
+    defaultModel: null,
+    message: "Ollama is not running at http://127.0.0.1:11434. Start Ollama, then refresh.",
+  },
+};
 
 function agentEmit(event: Record<string, unknown>): void {
   if (mockAgent.sessionId) emit("agent:event", { session_id: mockAgent.sessionId, ...event });
@@ -973,9 +1011,14 @@ export function invoke<T = unknown>(cmd: string, args?: any): Promise<T> {
       return reply(null);
     case "agent_list":
       return reply(MOCK_AGENTS);
+    case "agent_models":
+      return reply(MOCK_MODELS[String(args?.agentId)] ?? null);
     case "agent_start": {
       if (args?.agentId === "codex") {
         return Promise.reject("Codex is not installed (mock). Install it, then start again.");
+      }
+      if (args?.agentId === "ollama") {
+        return Promise.reject("Ollama is not running (mock). Start Ollama, then try again.");
       }
       mockAgent.sessionId = `mock-session-${Date.now()}`;
       mockAgent.turn = 0;

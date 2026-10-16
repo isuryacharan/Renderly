@@ -21,6 +21,12 @@ const RENDERLY_PREFIX: &str = "mcp__renderly__";
 
 /// Read-only Renderly tools: never prompt.
 const PERCEPTION: &[&str] = &[
+    // The in-app tool set (tools.rs) and the Ollama help tool: all read-only.
+    "timeline",
+    "look",
+    "find_media",
+    "assets",
+    "edit_help",
     "get_project",
     "get_editor_status",
     "render_frame",
@@ -61,6 +67,19 @@ pub fn classify(tool_name: &str, input: &Value) -> ToolClass {
         return ToolClass::Perception;
     }
     match name {
+        // `edit` is the in-app tool; its input is {commands: [...]}, the same as apply_commands.
+        "edit" => {
+            let list = input
+                .get("commands")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            if list.iter().any(is_file_command) {
+                ToolClass::FileWrite
+            } else {
+                ToolClass::Edit
+            }
+        }
         "apply_command" => {
             if input.get("command").is_some_and(is_file_command) {
                 ToolClass::FileWrite

@@ -51,6 +51,17 @@ pub fn resolve_program(name: &str) -> Option<PathBuf> {
 /// Windows) are run through `cmd /C`, because Rust refuses to pass arbitrary arguments to batch
 /// files directly.
 pub fn spawn(program: &Path, args: &[String], cwd: &Path) -> std::io::Result<Child> {
+    spawn_with_env(program, args, cwd, &[])
+}
+
+/// [`spawn`] with extra environment variables for the child only. Used to pass a session's
+/// bearer token, which must not appear in argv.
+pub fn spawn_with_env(
+    program: &Path,
+    args: &[String],
+    cwd: &Path,
+    env: &[(String, String)],
+) -> std::io::Result<Child> {
     let is_batch = program
         .extension()
         .and_then(|e| e.to_str())
@@ -63,6 +74,7 @@ pub fn spawn(program: &Path, args: &[String], cwd: &Path) -> std::io::Result<Chi
         command(program)
     };
     cmd.args(args)
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

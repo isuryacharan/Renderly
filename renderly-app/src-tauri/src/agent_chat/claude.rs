@@ -130,6 +130,91 @@ fn write_mcp_config(cfg: &SessionConfig) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// The request id of the model-list probe, so its reply is told apart from other output.
+const INIT_REQUEST_ID: &str = "renderly-init";
+
+/// Read the models Claude Code offers, with no prompt and no model call.
+///
+/// Sources: the Agent SDK's control protocol (`control_request` with `request.subtype` of
+/// `initialize`, sent on stdin in stream-json mode). Probed against `claude` 2.1.301 on
+/// 2026-10-16: the `control_response` is `{"type":"control_response","response":{"subtype":
+/// "success","request_id":…,"response":{…,"models":[{value, resolvedModel, displayName,
+/// description, supportsEffort, supportedEffortLevels, …}],"account":{…}}}}`. Without an
+/// `account` object the CLI is not signed in (see `models::parse_claude_models`).
+pub fn fetch_claude_models(program: &Path, scratch: &Path) -> super::models::AgentModels {
+    use super::models::{parse_claude_models, AgentModels, ModelStatus};
+    let args: Vec<String> = [
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--setting-sources",
+        "",
+        "--disable-slash-commands",
+        "--tools",
+        "Read,Grep,Glob",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    if let Err(e) = std::fs::create_dir_all(scratch) {
+        return AgentModels::failed(
+            AgentId::ClaudeCode,
+            ModelStatus::Error,
+            format!("scratch dir: {e}"),
+        );
+    }
+    let mut child = match process::spawn(program, &args, scratch) {
+        Ok(c) => c,
+        Err(e) => {
+            return AgentModels::failed(
+                AgentId::ClaudeCode,
+                ModelStatus::Error,
+                format!("could not start claude: {e}"),
+            )
+        }
+    };
+    let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        process::kill_tree(&mut child);
+        return AgentModels::failed(
+            AgentId::ClaudeCode,
+            ModelStatus::Error,
+            "claude pipes unavailable",
+        );
+    };
+    let request = json!({
+        "type": "control_request",
+        "request_id": INIT_REQUEST_ID,
+        "request": { "subtype": "initialize" },
+    });
+    use std::io::Write;
+    let sent = stdin
+        .write_all(json_line(&request).as_bytes())
+        .and_then(|_| stdin.flush());
+    let reply = match sent {
+        Ok(()) => super::models::await_reply(stdout, std::time::Duration::from_secs(30), |v| {
+            v.get("type").and_then(Value::as_str) == Some("control_response")
+                && v.get("response")
+                    .and_then(|r| r.get("request_id"))
+                    .and_then(Value::as_str)
+                    == Some(INIT_REQUEST_ID)
+        }),
+        Err(_) => None,
+    };
+    process::kill_tree(&mut child);
+    match reply {
+        Some(v) => parse_claude_models(&v)
+            .unwrap_or_else(|e| AgentModels::failed(AgentId::ClaudeCode, ModelStatus::Error, e)),
+        None => AgentModels::failed(
+            AgentId::ClaudeCode,
+            ModelStatus::Error,
+            "Claude Code did not answer the model request in time.",
+        ),
+    }
+}
+
 /// Inputs for one `claude` launch. Borrowed so the argv builder stays a pure function.
 pub struct ClaudeLaunch<'a> {
     pub session_id: &'a str,
@@ -172,11 +257,17 @@ pub fn claude_args(launch: &ClaudeLaunch) -> Vec<String> {
         PERMISSION_PROMPT_TOOL.into(),
         "--system-prompt-file".into(),
         launch.system_prompt_file.to_string_lossy().into_owned(),
-        "--model".into(),
-        launch.options.model.clone(),
-        "--effort".into(),
-        launch.options.effort.clone(),
     ];
+    // Model and effort are passed only when the user chose one; otherwise Claude Code's own
+    // defaults apply. Both values come from the list Claude Code reported (see `models.rs`).
+    if let Some(model) = &launch.options.model {
+        args.push("--model".into());
+        args.push(model.clone());
+    }
+    if let Some(effort) = &launch.options.effort {
+        args.push("--effort".into());
+        args.push(effort.clone());
+    }
     if launch.resume {
         args.push("--resume".into());
         args.push(launch.session_id.into());
@@ -514,8 +605,9 @@ mod tests {
             value_after(&args, "--permission-prompt-tool"),
             PERMISSION_PROMPT_TOOL
         );
-        assert_eq!(value_after(&args, "--model"), "sonnet");
-        assert_eq!(value_after(&args, "--effort"), "low");
+        // No model or effort chosen: neither flag is passed, so Claude Code's defaults apply.
+        assert!(!args.iter().any(|a| a == "--model"));
+        assert!(!args.iter().any(|a| a == "--effort"));
         assert_eq!(value_after(&args, "--system-prompt-file"), "/tmp/sys.txt");
         let allowed = args.last().unwrap();
         assert!(allowed.contains("mcp__renderly__edit"));
@@ -548,9 +640,10 @@ mod tests {
     #[test]
     fn model_and_effort_are_passed_through() {
         let options = LaunchOptions {
-            model: "opus".into(),
-            effort: "high".into(),
+            model: Some("opus".into()),
+            effort: Some("high".into()),
             native_tools: false,
+            ollama_host: None,
         };
         let args = launch(&options, false);
         assert_eq!(value_after(&args, "--model"), "opus");
@@ -558,14 +651,20 @@ mod tests {
     }
 
     #[test]
-    fn invalid_model_or_effort_is_rejected_before_launch() {
+    fn option_values_are_shape_checked_not_list_checked() {
+        // A value the list did not name is still a valid shape: the list check happens at start.
+        let new_model = LaunchOptions {
+            model: Some("claude-future-5-0".into()),
+            ..LaunchOptions::default()
+        };
+        assert!(new_model.validated().is_ok());
         let bad_model = LaunchOptions {
-            model: "sonnet --dangerously-skip".into(),
+            model: Some("sonnet --dangerously-skip".into()),
             ..LaunchOptions::default()
         };
         assert!(bad_model.validated().is_err());
         let bad_effort = LaunchOptions {
-            effort: "ultra".into(),
+            effort: Some("high;rm".into()),
             ..LaunchOptions::default()
         };
         assert!(bad_effort.validated().is_err());

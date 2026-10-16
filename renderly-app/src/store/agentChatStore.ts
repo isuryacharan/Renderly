@@ -5,20 +5,23 @@
 import { create } from "zustand";
 import * as ipc from "../lib/ipc";
 import {
-  DEFAULT_LAUNCH_OPTIONS,
+  DEFAULT_LAUNCH_PREFS,
   EMPTY_AGENT_CHAT,
   clipIdsTouchedByEdit,
   isEditTool,
   parseEditOutput,
+  parseLaunchPrefs,
   reduceAgentEvent,
   reducePermissionAnswered,
   reduceUserSent,
+  resolveLaunchOptions,
   type AgentChatState,
   type AgentEnvelope,
   type AgentId,
   type AgentInfo,
+  type AgentModels,
   type ChatContext,
-  type LaunchOptions,
+  type LaunchPrefs,
 } from "../lib/agentChat";
 import { useEditorStore } from "./editorStore";
 
@@ -28,23 +31,27 @@ export type ChipKey = "selection";
 
 /** How long timeline clips stay highlighted after an agent edit touches them. */
 export const HIGHLIGHT_MS = 2400;
-const LAUNCH_KEY = "renderly.agent.launch";
+const LAUNCH_KEY = "renderly.agent.launch.v2";
 
-/** Launch options remembered per user (a viewer preference, so localStorage is enough). */
-export function loadLaunchOptions(): LaunchOptions {
+/** Display names, for notices. The backend's `AgentInfo.name` is the source for the panel. */
+export const AGENT_NAMES: Record<AgentId, string> = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+  ollama: "Ollama (local)",
+};
+
+/** Preferences remembered per user (a viewer preference, so localStorage is enough). */
+export function loadLaunchPrefs(): LaunchPrefs {
   try {
-    const raw = globalThis.localStorage?.getItem(LAUNCH_KEY);
-    if (!raw) return DEFAULT_LAUNCH_OPTIONS;
-    const parsed = JSON.parse(raw) as Partial<LaunchOptions>;
-    return { ...DEFAULT_LAUNCH_OPTIONS, ...parsed };
+    return parseLaunchPrefs(globalThis.localStorage?.getItem(LAUNCH_KEY) ?? null);
   } catch {
-    return DEFAULT_LAUNCH_OPTIONS;
+    return DEFAULT_LAUNCH_PREFS;
   }
 }
 
-function saveLaunchOptions(options: LaunchOptions): void {
+function saveLaunchPrefs(prefs: LaunchPrefs): void {
   try {
-    globalThis.localStorage?.setItem(LAUNCH_KEY, JSON.stringify(options));
+    globalThis.localStorage?.setItem(LAUNCH_KEY, JSON.stringify(prefs));
   } catch {
     // Storage can be blocked; the choice then lasts for this run only.
   }
@@ -59,8 +66,15 @@ interface AgentChatStore {
   agents: AgentInfo[] | null;
   agentsError: string | null;
   chat: AgentChatState;
-  /** Model, effort and the built-in tools switch for the next session. */
-  launch: LaunchOptions;
+  /** The user's remembered model, effort and tools choices, per agent. */
+  launchPrefs: LaunchPrefs;
+  /** Each agent's model list as the agent reported it, fetched lazily and kept per app session. */
+  agentModels: Partial<Record<AgentId, AgentModels>>;
+  modelsLoading: Partial<Record<AgentId, boolean>>;
+  /** A line about a saved choice that was replaced when the session started. */
+  modelNotice: Partial<Record<AgentId, string>>;
+  /** The agent the settings popover and the picker's model list describe. */
+  settingsAgent: AgentId;
   /** Full clip ids the last agent edit touched; the timeline highlights them briefly. */
   highlightClipIds: string[];
   removedChips: ChipKey[];
@@ -77,7 +91,12 @@ interface AgentChatStore {
   sendPrompt(): Promise<void>;
   cancelTurn(): Promise<void>;
   answerPermission(requestId: string, optionId: string): Promise<void>;
-  setLaunch(patch: Partial<LaunchOptions>): void;
+  loadModels(agentId: AgentId, refresh?: boolean): Promise<void>;
+  setSettingsAgent(agentId: AgentId): void;
+  setModelChoice(agentId: AgentId, model: string): void;
+  setEffortChoice(agentId: AgentId, effort: string | null): void;
+  setNativeTools(enabled: boolean): void;
+  setOllamaHost(host: string | null): void;
   toggleChip(key: ChipKey): void;
   setDraft(text: string): void;
   onEvent(env: AgentEnvelope): void;
@@ -107,7 +126,11 @@ export const useAgentChatStore = create<AgentChatStore>((set, get) => ({
   agents: null,
   agentsError: null,
   chat: EMPTY_AGENT_CHAT,
-  launch: loadLaunchOptions(),
+  launchPrefs: loadLaunchPrefs(),
+  agentModels: {},
+  modelsLoading: {},
+  modelNotice: {},
+  settingsAgent: "claude-code",
   highlightClipIds: [],
   removedChips: [],
   draft: "",
@@ -142,7 +165,18 @@ export const useAgentChatStore = create<AgentChatStore>((set, get) => ({
       lastStoppedSessionId: null,
     });
     try {
-      const sessionId = await ipc.agentStart(agentId, get().launch);
+      if (!get().agentModels[agentId]) await get().loadModels(agentId);
+      const name = get().agents?.find((a) => a.id === agentId)?.name ?? AGENT_NAMES[agentId];
+      const { options, notice } = resolveLaunchOptions(
+        agentId,
+        name,
+        get().agentModels[agentId] ?? null,
+        get().launchPrefs,
+      );
+      if (notice) {
+        set((st) => ({ modelNotice: { ...st.modelNotice, [agentId]: notice } }));
+      }
+      const sessionId = await ipc.agentStart(agentId, options);
       const cur = get().chat;
       // Events that arrived during start may already have adopted this id.
       set({ chat: { ...cur, sessionId: cur.sessionId ?? sessionId } });
@@ -220,10 +254,63 @@ export const useAgentChatStore = create<AgentChatStore>((set, get) => ({
     }
   },
 
-  setLaunch(patch) {
-    const next = { ...get().launch, ...patch };
-    saveLaunchOptions(next);
-    set({ launch: next });
+  async loadModels(agentId, refresh = false) {
+    if (get().modelsLoading[agentId]) return;
+    set((st) => ({ modelsLoading: { ...st.modelsLoading, [agentId]: true } }));
+    const host = get().launchPrefs.ollamaHost;
+    try {
+      const list = await ipc.agentModels(agentId, agentId === "ollama" ? host : null, refresh);
+      set((st) => ({ agentModels: { ...st.agentModels, [agentId]: list } }));
+    } catch (e) {
+      // Shown as the agent's status line; the list stays as it was.
+      const failed: AgentModels = {
+        agentId,
+        status: "error",
+        models: [],
+        defaultModel: null,
+        message: errorText(e),
+      };
+      set((st) => ({ agentModels: { ...st.agentModels, [agentId]: failed } }));
+    } finally {
+      set((st) => ({ modelsLoading: { ...st.modelsLoading, [agentId]: false } }));
+    }
+  },
+
+  setSettingsAgent(agentId) {
+    set({ settingsAgent: agentId });
+  },
+
+  setModelChoice(agentId, model) {
+    const prefs = { ...get().launchPrefs, models: { ...get().launchPrefs.models, [agentId]: model } };
+    saveLaunchPrefs(prefs);
+    set((st) => ({
+      launchPrefs: prefs,
+      modelNotice: { ...st.modelNotice, [agentId]: undefined },
+    }));
+  },
+
+  setEffortChoice(agentId, effort) {
+    const efforts = { ...get().launchPrefs.efforts };
+    if (effort) efforts[agentId] = effort;
+    else delete efforts[agentId];
+    const prefs = { ...get().launchPrefs, efforts };
+    saveLaunchPrefs(prefs);
+    set({ launchPrefs: prefs });
+  },
+
+  setNativeTools(enabled) {
+    const prefs = { ...get().launchPrefs, nativeTools: enabled };
+    saveLaunchPrefs(prefs);
+    set({ launchPrefs: prefs });
+  },
+
+  setOllamaHost(host) {
+    const trimmed = host?.trim() ? host.trim() : null;
+    const prefs = { ...get().launchPrefs, ollamaHost: trimmed };
+    saveLaunchPrefs(prefs);
+    set({ launchPrefs: prefs });
+    // The list depends on the server, so it is read again from the new address.
+    void get().loadModels("ollama", true);
   },
 
   toggleChip(key) {
