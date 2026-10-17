@@ -6,8 +6,10 @@
 //! Schema v7 adds adjustment-layer steps and nested sequences rendered offscreen
 //! (see [`SceneStep`] / [`SequenceScene`]).
 
+pub mod builtins;
 pub mod effects;
 pub mod eval;
+pub mod runtime;
 mod transition;
 
 pub use effects::{builtin_effect_ids, default_params, BUILTIN_EFFECT_IDS};

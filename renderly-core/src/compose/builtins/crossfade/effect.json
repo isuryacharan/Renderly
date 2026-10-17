@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "id": "crossfade",
+  "version": 1,
+  "kind": "transition",
+  "label": "Crossfade",
+  "category": "dissolve",
+  "default_duration_ms": 500,
+  "overlap": true,
+  "easing": "linear",
+  "passes": [
+    { "type": "fragment", "shader": "crossfade.wgsl", "inputs": ["from", "to"], "output": "out" }
+  ]
+}

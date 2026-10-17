@@ -1,0 +1,22 @@
+{
+  "format": 1,
+  "id": "blur",
+  "version": 1,
+  "kind": "effect",
+  "label": "Blur",
+  "category": "blur",
+  "params": [
+    { "key": "radius", "type": "float", "label": "Radius", "min": 0, "max": 64, "default": 0 }
+  ],
+  "derived": [
+    { "name": "inv_w", "type": "float", "expr": "1.0 / width" },
+    { "name": "inv_h", "type": "float", "expr": "1.0 / height" }
+  ],
+  "targets": [
+    { "name": "blurred", "scale": 1.0, "format": "rgba8" }
+  ],
+  "passes": [
+    { "type": "fragment", "shader": "blur_h.wgsl", "inputs": ["src"], "output": "blurred" },
+    { "type": "fragment", "shader": "blur_v.wgsl", "inputs": ["blurred"], "output": "out" }
+  ]
+}

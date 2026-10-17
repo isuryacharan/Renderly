@@ -22,6 +22,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 wgpu = "30.0.0"
+# Same version wgpu 30 builds against (already in Cargo.lock). Used to validate effect-pack
+# WGSL at load time on every target; `wgsl-in` is what the wasm32 build lacks through wgpu.
+naga = { version = "30.0.0", features = ["wgsl-in"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Optional in-process libav backend; only pulled in by the `linked-ffmpeg` feature.

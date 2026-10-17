@@ -86,6 +86,53 @@ layer. Targets are pooled per size and reused across frames; a project with neit
 runs exactly the same passes as before. Audio expands nested audio clips recursively into leaf
 mix pieces (`export::collect_audio_clips`).
 
+## Effect runtime (pack format 2, step 1)
+
+Status: the runtime exists and is tested; the live pipeline does not use it yet. Design:
+[effect-pack-format.md](effect-pack-format.md) (the normative parts move here and into
+asset-pack.md when the format ships).
+
+`renderly-core/src/compose/runtime/` runs an effect, filter or transition described by an
+`effect.json` manifest plus WGSL passes. It is cross-target and touches no filesystem: the
+manifest, shader text, decoded textures and LUTs arrive as data.
+
+- `manifest.rs`: `EffectManifest::parse` reads format 1. Unknown item kinds, `requires`
+  features, pass types, pass inputs, param types and derived types yield
+  `ManifestError::NeedsNewer` (the item is installed but disabled). Everything else is
+  validated: identifiers, WGSL reserved words, ranges and defaults, expressions, pass wiring
+  (a target must be written before it is read, the last pass writes `out`) and the limits
+  (32 params, 16 passes, 8 targets, 8 textures, 2 LUTs). Unknown optional fields are ignored.
+- `expr.rs`: the `expr.v1` shaping language: `+ - * / %`, comparisons, `&& || !`, `?:`, and
+  the built-ins in the design. Types are `num` and `bool`; a bool coerces to 0/1 in numeric
+  positions, a number is never a condition. Division by zero and non-finite results are
+  evaluation errors. At most 256 nodes.
+- `prelude.rs`: generates each pass's WGSL prelude (`Host`, `Params`, the group 0 uniforms and
+  clamp samplers, one binding per input at group 1, one sampler per file texture at group 2,
+  and a fullscreen `vs_main`). `UniformLayout` lays out `Params` with WGSL alignment and
+  padding fields `_padN`; the host block is fixed at 40 bytes. An input named after a WGSL
+  reserved word (`from`, `filter`, `target`, ...) is bound as `in_<name>`.
+- `executor.rs`: `CompiledEffect::load(json, shaders, textures)` validates the manifest and
+  checks each pass's prelude + author code with naga (`wgsl-in`, the validator, and a fragment
+  entry point), so a broken item fails at load. `EffectExecutor::run` encodes the passes on a
+  caller's device and encoder, clears each target to transparent, binds inputs by name
+  (`src`, `from`, `to`, LUT keys, targets, `prev`, file textures) and returns an
+  `EffectOutput`. Targets and outputs come from a pool keyed by size and format;
+  `recycle` returns an output. Pipelines and file textures are cached per item content hash.
+  No state is kept between runs, so frame N is the same cold or after frames 0..N-1.
+- `lut.rs`: `.cube` LUTs as `texture_3d` in `Rgba8Unorm`, using the same bytes as the pack LUT
+  path. PNG LUT layouts (grid, strip, Hald) are not read yet.
+- `compose/builtins/`: format-2 sources for `blur` (two passes, a `blurred` target, `radius`)
+  and `crossfade` (transition), embedded with `include_str!`. `tests/effect_runtime.rs` checks
+  both against the committed golden frames (`fx_blur_t0500ms`,
+  `transition_crossfade_t{1250,1500,1750}ms`) bit for bit, and checks seek purity.
+
+Not yet: the builtin dispatch in `compose/effects` and `compose/transition.rs` still runs the
+hard-coded passes, and the other four effects and eight transitions are not ported. Items
+are not yet loaded from packs (no `pack.json` format 2, library or store), there is no
+`describe_*` output, no hash-based ref resolution, and no importer. Compute passes, meshes,
+feedback and AI inputs are reserved features and are rejected as `NeedsNewer` today. The
+naga dependency is direct (`renderly-core/Cargo.toml`) at the version wgpu already uses.
+
 ## `renderly-cli`
 
 Thin binary. Subcommands operate on a project JSON file on disk:
