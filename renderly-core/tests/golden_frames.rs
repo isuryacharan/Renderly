@@ -74,7 +74,8 @@ use renderly_core::captions::render_caption;
 use renderly_core::commands::ExportPreset;
 use renderly_core::compose::{
     build_scene, eval, upload_layer_pixels, ActiveLayer, ComposeError, ComposeLayer, Compositor,
-    LayerSource, SceneError, SceneHost, SceneStep, BUILTIN_EFFECT_IDS,
+    LayerSource, PreviewOverride, PreviewOverrides, SceneError, SceneHost, SceneStep,
+    BUILTIN_EFFECT_IDS,
 };
 use renderly_core::export::{DecodeOptions, ExportSettings, FrameRenderer};
 use renderly_core::mask::project_matte_requests;
@@ -1505,6 +1506,8 @@ struct PreviewPipeline {
     pack_luts: BTreeMap<String, BTreeMap<String, CubeLut>>,
     /// `pack_luts` as `LoadedPack`s, as `WasmCompositor::packs`.
     packs: Vec<LoadedPack>,
+    /// Render-only overrides, as `WasmCompositor::overrides`.
+    overrides: PreviewOverrides,
 }
 
 impl PreviewPipeline {
@@ -1545,7 +1548,13 @@ impl PreviewPipeline {
             mattes: HashSet::new(),
             pack_luts: BTreeMap::new(),
             packs: Vec::new(),
+            overrides: PreviewOverrides::new(),
         })
+    }
+
+    /// Replace the render-only overrides (`WasmCompositor::set_preview_override` and friends).
+    fn set_overrides(&mut self, overrides: PreviewOverrides) {
+        self.overrides = overrides;
     }
 
     /// The webview-side half of the wasm flow (`previewAssets.ts` + the Tauri commands),
@@ -1640,6 +1649,9 @@ impl PreviewPipeline {
     }
 
     fn render(&mut self, project: &Project, t: f64, images: &HashMap<Uuid, RgbaImage>) -> Vec<u8> {
+        // The projected view the wasm compositor evaluates (`refresh_view`).
+        let view = self.overrides.apply(project);
+        let project: &Project = &view;
         self.sync_assets(project);
         let steps = eval::active_steps(project, t).expect("active_steps");
         let captions = eval::active_captions(project, t);
@@ -2265,4 +2277,69 @@ fn caption_box_is_semi_transparent_over_video() {
         mean_r > 20.0,
         "caption box over the stripes is opaque black (mean R {mean_r:.1}); video should show through"
     );
+}
+
+/// Preview overrides (docs/architecture.md "History, transactions and preview overrides"): an
+/// override in the preview stand-in renders the same pixels as the saved change does in export,
+/// clearing it restores the exact original preview bytes, and the project itself never changes.
+#[test]
+fn preview_override_matches_export_of_the_saved_change() {
+    let Some(env) = env() else { return };
+    let Some(mut preview) = PreviewPipeline::new() else {
+        return;
+    };
+    let mut base = new_project();
+    ensure_media(&mut base, Src::Bars, MediaKind::Video);
+    let mut track = Track::new(TrackKind::Video, "V");
+    track
+        .clips
+        .push(Clip::Video(Layer::new(Src::Bars, 0.0, 3.0).clip));
+    base.tracks.push(track);
+    let clip_id = base.tracks[0].clips[0].id();
+
+    let blur = EffectInstance {
+        id: Uuid::new_v4(),
+        effect_id: "builtin:blur".into(),
+        enabled: true,
+        params: [("radius".to_string(), 6.0)].into_iter().collect(),
+    };
+    let mut saved = base.clone();
+    if let Clip::Video(m) = &mut saved.tracks[0].clips[0] {
+        m.effects = vec![blur.clone()];
+    }
+    let mut overrides = PreviewOverrides::new();
+    overrides.set(
+        clip_id,
+        PreviewOverride {
+            effects: Some(vec![blur]),
+            ..Default::default()
+        },
+    );
+
+    let t = 1.0;
+    let before = preview.render(&base, t, env.images);
+    preview.set_overrides(overrides);
+    let overridden = preview.render(&base, t, env.images);
+    assert_ne!(overridden, before, "the override changes the preview frame");
+
+    let exported = export_renderer()
+        .render(&saved, t)
+        .expect("export render of the saved change");
+    let m = compare(&overridden, &exported, &PARITY_TOL);
+    assert!(
+        within(&m, &PARITY_TOL),
+        "override preview differs from export of the saved change: {}",
+        describe(&m, &PARITY_TOL)
+    );
+
+    preview.set_overrides(PreviewOverrides::new());
+    let cleared = preview.render(&base, t, env.images);
+    assert!(
+        cleared == before,
+        "clearing the override restores the exact original preview pixels"
+    );
+    match &base.tracks[0].clips[0] {
+        Clip::Video(m) => assert!(m.effects.is_empty(), "overrides never reach the project"),
+        _ => panic!("expected a media clip"),
+    }
 }

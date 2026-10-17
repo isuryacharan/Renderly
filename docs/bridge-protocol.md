@@ -65,8 +65,14 @@ or
 | Method | Params | Result |
 |---|---|---|
 | `get_project` | _(token only)_ | `{ project, revision }` |
-| `apply_command` | `command` | `{ revision, patch, outcome }` — RFC-6902 patch; shared undo; emits `project:changed` **without** `mutation_id` so the GUI refetches |
+| `apply_command` | `command`, `merge_key?` | `{ revision, patch, outcome }` — RFC-6902 patch; shared undo; `merge_key` coalesces consecutive changes into one undo record (command-api.md "History, transactions, coalescing and preview overrides"); emits `project:changed` **without** `mutation_id` so the GUI refetches |
 | `apply_commands` | `commands[]` | `{ revision, patch, outcomes }` |
+| `end_gesture` | _(token only)_ | `{ can_undo, can_redo }`. Closes the top record's merge gesture |
+| `begin_transaction` | `label` | `{ can_undo, can_redo }`. Opens an undo transaction (nests by depth) |
+| `commit_transaction` | _(token only)_ | `{ can_undo, can_redo }`. Commits the outermost transaction as one record |
+| `rollback_transaction` | _(token only)_ | `{ can_undo, can_redo, revision, patch }`. Restores the pre-transaction state |
+| `set_preview_override` | `target`, `override` (`{ transform?, opacity?, effects? }`) | `{ ok }`. Temporary render-only override; never saved or in undo |
+| `clear_preview_override` | `target` | `{ ok }` |
 | `undo` / `redo` | _(token only)_ | `{ can_undo, can_redo, revision, patch }` |
 | `play` | optional `time_secs` | `{ ok }` |
 | `pause` | | `{ time_secs }` |

@@ -5,7 +5,7 @@ import * as ipc from "../../lib/ipc";
 import type { ExtensionCatalog } from "../../lib/ipc";
 import type { EffectInstance, MediaClip } from "../../lib/types";
 import { activeTracks } from "../../lib/container";
-import { useEditorStore } from "../../store/editorStore";
+import { useEditorStore, type DispatchOptions } from "../../store/editorStore";
 import { EffectList } from "./EffectsPanel";
 
 const BUILTIN_LUTS: { id: string; label: string }[] = [
@@ -66,8 +66,8 @@ export function FiltersPanel() {
 
   const effects = mediaClip.effects ?? [];
 
-  async function commit(next: EffectInstance[]) {
-    await dispatch(setClipEffects(track!.id, mediaClip!.id, next));
+  async function commit(next: EffectInstance[], opts?: DispatchOptions) {
+    await dispatch(setClipEffects(track!.id, mediaClip!.id, next), false, opts);
   }
 
   function addFilter(effectId: string) {

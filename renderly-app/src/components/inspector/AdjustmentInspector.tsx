@@ -16,6 +16,9 @@ export function AdjustmentInspector({ track, clip }: { track: Track; clip: Adjus
   const dispatch = useEditorStore((s) => s.dispatch);
   const select = useEditorStore((s) => s.select);
   const setLeftTab = useEditorStore((s) => s.setLeftTab);
+  const setPreviewOverride = useEditorStore((s) => s.setPreviewOverride);
+  const clearPreviewOverride = useEditorStore((s) => s.clearPreviewOverride);
+  const endGesture = useEditorStore((s) => s.endGesture);
 
   const opacityNow = clip.opacity ?? 1;
   const [opacity, setOpacity] = useState(opacityNow);
@@ -29,8 +32,16 @@ export function AdjustmentInspector({ track, clip }: { track: Track; clip: Adjus
   }, [clip.id, clip.opacity, clip.position_secs, clip.duration_secs]);
 
   const hasOpacityKeys = (clip.keyframes ?? []).some((k) => k.property === "opacity" && k.keys.length > 0);
-  const commitOpacity = (v: number) =>
-    void dispatch(setAdjustmentLayer(track.id, clip.id, { opacity: v }));
+  // Release commits one undo step; the drag itself is a render-only override (no command).
+  const commitOpacity = async (v: number) => {
+    if (v !== opacityNow) {
+      await dispatch(setAdjustmentLayer(track.id, clip.id, { opacity: v }), false, {
+        mergeKey: `opacity:${clip.id}`,
+      });
+    }
+    clearPreviewOverride(clip.id);
+    endGesture();
+  };
 
   return (
     <div className="inspector">
@@ -105,7 +116,11 @@ export function AdjustmentInspector({ track, clip }: { track: Track; clip: Adjus
             value={opacity}
             disabled={track.locked}
             aria-label="Adjustment opacity"
-            onChange={(e) => setOpacity(parseFloat(e.target.value))}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              setOpacity(v);
+              setPreviewOverride(clip.id, { opacity: v });
+            }}
             onMouseUp={(e) => commitOpacity(parseFloat((e.target as HTMLInputElement).value))}
             onTouchEnd={(e) => commitOpacity(parseFloat((e.target as HTMLInputElement).value))}
             onKeyUp={(e) => commitOpacity(parseFloat((e.target as HTMLInputElement).value))}

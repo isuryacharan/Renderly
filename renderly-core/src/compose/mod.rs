@@ -9,6 +9,7 @@
 pub mod builtins;
 pub mod effects;
 pub mod eval;
+pub mod preview_overrides;
 pub mod runtime;
 mod transition;
 
@@ -17,6 +18,7 @@ pub use eval::{
     active_captions, active_steps, leaf_media_layers, sequence_steps, ActiveCaption, ActiveLayer,
     ActiveSource, ComposeStep, EvalError, InstanceKey,
 };
+pub use preview_overrides::{PreviewOverride, PreviewOverrideEntry, PreviewOverrides};
 
 use crate::frame::RgbaFrame;
 use crate::packs::LoadedPack;

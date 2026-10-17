@@ -8,6 +8,8 @@ use crate::AppState;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use rand::RngCore;
+use renderly_core::compose::PreviewOverride;
+use renderly_core::project::Id;
 use renderly_core::{
     commands::ExportPreset, export_project_with_settings, ExportError, ExportSettings,
 };
@@ -128,6 +130,24 @@ fn random_token() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// A non-empty string param, or `None` when absent or empty.
+fn optional_string(params: &Value, key: &str) -> Option<String> {
+    params
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// A required param deserialized into `T`, with the param name in the error.
+fn param_value<T: serde::de::DeserializeOwned>(params: &Value, key: &str) -> Result<T, String> {
+    let raw = params
+        .get(key)
+        .cloned()
+        .ok_or_else(|| format!("params.{key} required"))?;
+    serde_json::from_value(raw).map_err(|e| format!("params.{key} invalid: {e}"))
+}
+
 fn check_token(expected: &str, params: &Value) -> Result<(), String> {
     let got = params
         .get("token")
@@ -161,8 +181,11 @@ async fn dispatch(
                 .get("command")
                 .cloned()
                 .ok_or_else(|| "params.command required".to_string())?;
+            let merge_key = optional_string(&params, "merge_key");
             // No mutation_id — GUI must refetch on project:changed (external edit).
-            let result = state.apply_command_inner(app, command, None).await?;
+            let result = state
+                .apply_command_inner(app, command, None, merge_key)
+                .await?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "apply_commands" => {
@@ -172,7 +195,10 @@ async fn dispatch(
                 .ok_or_else(|| "params.commands required".to_string())?;
             let commands: Vec<Value> = serde_json::from_value(commands)
                 .map_err(|e| format!("params.commands must be an array: {e}"))?;
-            let result = state.apply_commands_inner(app, commands, None).await?;
+            let merge_key = optional_string(&params, "merge_key");
+            let result = state
+                .apply_commands_inner(app, commands, None, merge_key)
+                .await?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "undo" => {
@@ -182,6 +208,29 @@ async fn dispatch(
         "redo" => {
             let status = state.redo_inner(app, None).await?;
             serde_json::to_value(status).map_err(|e| e.to_string())
+        }
+        "begin_transaction" => {
+            let label = optional_string(&params, "label").unwrap_or_else(|| "Agent edit".into());
+            serde_json::to_value(state.begin_transaction(&label)).map_err(|e| e.to_string())
+        }
+        "commit_transaction" => {
+            serde_json::to_value(state.commit_transaction_announced(app)).map_err(|e| e.to_string())
+        }
+        "rollback_transaction" => {
+            let status = state.rollback_transaction_inner(app, None).await?;
+            serde_json::to_value(status).map_err(|e| e.to_string())
+        }
+        "end_gesture" => serde_json::to_value(state.end_gesture()).map_err(|e| e.to_string()),
+        "set_preview_override" => {
+            let target: Id = param_value(&params, "target")?;
+            let over: PreviewOverride = param_value(&params, "override")?;
+            state.set_preview_override(target, over);
+            Ok(json!({ "ok": true }))
+        }
+        "clear_preview_override" => {
+            let target: Id = param_value(&params, "target")?;
+            state.clear_preview_override(target);
+            Ok(json!({ "ok": true }))
         }
         "play" => {
             let time = params

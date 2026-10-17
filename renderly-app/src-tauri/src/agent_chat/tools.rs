@@ -80,7 +80,9 @@ impl ToolHost for AppToolHost {
         let app = self.app.clone();
         Box::pin(async move {
             let state = app.state::<AppState>();
-            let result = state.apply_commands_inner(&app, commands, None).await?;
+            let result = state
+                .apply_commands_inner(&app, commands, None, None)
+                .await?;
             Ok(result.typed_outcomes)
         })
     }

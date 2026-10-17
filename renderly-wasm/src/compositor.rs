@@ -66,8 +66,8 @@ use std::sync::Arc;
 use std::collections::BTreeMap;
 
 use renderly_core::compose::{
-    build_scene, eval, upload_layer_pixels, ComposeLayer, Compositor, LayerSource, SceneError,
-    SceneHost, SceneStep,
+    build_scene, eval, upload_layer_pixels, ComposeLayer, Compositor, LayerSource,
+    PreviewOverrideEntry, PreviewOverrides, SceneError, SceneHost, SceneStep,
 };
 use renderly_core::mask::{luma_from_rgba, project_matte_requests};
 use renderly_core::packs::{parse_cube_text, referenced_pack_luts, CubeLut, LoadedPack};
@@ -315,8 +315,12 @@ pub struct WasmCompositor {
     /// the shared evaluation code. Cleared by `set_active_sequence(None)`; an id that no
     /// longer exists in the project falls back to the root.
     active_sequence: Option<Id>,
-    /// What `render` evaluates: `root_project`, or its open-sequence view.
+    /// What `render` evaluates: `root_project`, or its open-sequence view, with the render-only
+    /// preview overrides applied (`refresh_view`). Never saved; the project is untouched.
     project: Option<Project>,
+    /// Render-only per-clip overrides (hover preview, live drags). Applied to `project` by
+    /// `refresh_view`, the same projection the native `FrameRenderer` applies.
+    overrides: PreviewOverrides,
     /// matte cache key -> (width, height, luma8) registered by the host; re-uploaded into a
     /// rebuilt `Compositor` (its matte cache starts empty).
     mattes: HashMap<String, (u32, u32, Vec<u8>)>,
@@ -462,6 +466,7 @@ impl WasmCompositor {
             canvas,
             compositor: None,
             root_project: None,
+            overrides: PreviewOverrides::new(),
             active_sequence: None,
             project: None,
             mattes: HashMap::new(),
@@ -482,6 +487,31 @@ impl WasmCompositor {
         let project: Project =
             serde_json::from_str(json).map_err(|e| js_err("set_project parse", e))?;
         self.root_project = Some(project);
+        self.refresh_view()
+    }
+
+    /// Set (or replace) a render-only override for one clip. `json` is a core
+    /// `PreviewOverrideEntry`: `{"target": "<clip id>", "transform"?, "opacity"?, "effects"?}`.
+    /// Nothing is saved and nothing enters undo; the next `render` shows it.
+    pub fn set_preview_override(&mut self, json: &str) -> Result<(), JsValue> {
+        let entry: PreviewOverrideEntry =
+            serde_json::from_str(json).map_err(|e| js_err("set_preview_override parse", e))?;
+        self.overrides.set_entry(entry);
+        self.refresh_view()
+    }
+
+    /// Clear the render-only override for one clip. Clearing a clip with no override is a no-op.
+    pub fn clear_preview_override(&mut self, target: &str) -> Result<(), JsValue> {
+        let id = target
+            .parse::<Id>()
+            .map_err(|e| js_err("clear_preview_override parse", e))?;
+        self.overrides.clear(id);
+        self.refresh_view()
+    }
+
+    /// Clear every render-only override.
+    pub fn clear_all_preview_overrides(&mut self) -> Result<(), JsValue> {
+        self.overrides.clear_all();
         self.refresh_view()
     }
 
@@ -841,10 +871,17 @@ impl WasmCompositor {
     /// compositor when the view's output size differs from it (the open sequence may have its
     /// own size). Matte and pack-LUT state is re-registered on a rebuild.
     fn refresh_view(&mut self) -> Result<(), JsValue> {
+        let overrides = &self.overrides;
         self.project = self.root_project.as_ref().map(|root| {
-            self.active_sequence
+            let view = self
+                .active_sequence
                 .and_then(|id| root.with_sequence_as_root(id))
-                .unwrap_or_else(|| root.clone())
+                .unwrap_or_else(|| root.clone());
+            if overrides.is_empty() {
+                view
+            } else {
+                overrides.apply(&view).into_owned()
+            }
         });
         let Some((w, h)) = self
             .project

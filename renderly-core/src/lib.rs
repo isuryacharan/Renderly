@@ -20,6 +20,7 @@ pub mod compose;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod export;
 pub mod frame;
+pub mod history;
 pub mod mask;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod media;

@@ -204,9 +204,40 @@ function mockModelStatus(id: string) {
 // than throwing, so an unhandled command degrades to "nothing visibly changed" instead of
 // breaking the mock's other commands or hanging the promise.
 let currentProject: Project = structuredClone(sampleProject);
-// Project snapshots for the mock's undo/redo (history is global, across every container).
-const undoStack: Project[] = [];
-const redoStack: Project[] = [];
+// Undo/redo for the mock, mirroring renderly_core::history: records hold the pre-change project,
+// consecutive changes with the same merge key within 1 s amend the top record, and an open
+// transaction folds its changes into one record (docs/architecture.md "History, transactions").
+interface MockRecord {
+  before: Project;
+  key: string | null;
+  touched: number | null;
+}
+const MOCK_HISTORY_CAP = 100;
+const MOCK_COALESCE_MS = 1000;
+const undoStack: MockRecord[] = [];
+const redoStack: MockRecord[] = [];
+let mockTx: { depth: number; base: Project | null } | null = null;
+
+function recordMock(before: Project, mergeKey: unknown): void {
+  if (mockTx) {
+    if (!mockTx.base) mockTx.base = before;
+    return;
+  }
+  redoStack.length = 0;
+  const key = typeof mergeKey === "string" && mergeKey.length > 0 ? mergeKey : null;
+  const now = Date.now();
+  const top = undoStack[undoStack.length - 1];
+  if (key && top && top.key === key && top.touched !== null && now - top.touched <= MOCK_COALESCE_MS) {
+    top.touched = now;
+    return;
+  }
+  undoStack.push({ before, key, touched: key ? now : null });
+  if (undoStack.length > MOCK_HISTORY_CAP) undoStack.shift();
+}
+
+function mockHistoryFlags() {
+  return { can_undo: undoStack.length > 0, can_redo: redoStack.length > 0 };
+}
 
 // Track ids are globally unique across the root timeline and every sequence (as in the
 // engine), so commands address a track with no container parameter.
@@ -903,6 +934,7 @@ export function invoke<T = unknown>(cmd: string, args?: any): Promise<T> {
       currentProject = structuredClone(sampleProject);
       undoStack.length = 0;
       redoStack.length = 0;
+      mockTx = null;
       revision = 1;
       return reply("C:/proj/ep12.renderly.json");
     // OpenTimelineIO interop: export is a no-op; import "creates" the sample project file and
@@ -937,10 +969,7 @@ export function invoke<T = unknown>(cmd: string, args?: any): Promise<T> {
       // inserts `add` values by reference - the store would then share clip objects with the
       // mock and later mock mutations would corrupt (double-apply to) the store's project.
       const patch = structuredClone(compare(before as unknown as object, currentProject as unknown as object));
-      if (patch.length > 0) {
-        undoStack.push(before);
-        redoStack.length = 0;
-      }
+      recordMock(before, args?.mergeKey);
       revision += 1;
       emit("project:changed", {
         revision,
@@ -954,25 +983,72 @@ export function invoke<T = unknown>(cmd: string, args?: any): Promise<T> {
           : { revision, patch, outcomes: cmds.map(() => "ok") },
       );
     }
+    case "begin_transaction": {
+      if (mockTx) mockTx.depth += 1;
+      else mockTx = { depth: 1, base: null };
+      return reply(mockHistoryFlags());
+    }
+    case "commit_transaction": {
+      if (mockTx && mockTx.depth > 1) {
+        mockTx.depth -= 1;
+      } else if (mockTx) {
+        const tx = mockTx;
+        mockTx = null;
+        if (tx.base) {
+          redoStack.length = 0;
+          undoStack.push({ before: tx.base, key: null, touched: null });
+        }
+      }
+      return reply(mockHistoryFlags());
+    }
+    case "rollback_transaction": {
+      const base = mockTx?.base ?? null;
+      mockTx = null;
+      let patch: ReturnType<typeof compare> = [];
+      if (base) {
+        patch = structuredClone(compare(currentProject as unknown as object, base as unknown as object));
+        currentProject = base;
+        revision += 1;
+        emit("project:changed", { revision, mutation_id: args?.mutationId, ...mockHistoryFlags() });
+      }
+      return reply({ ...mockHistoryFlags(), revision, patch });
+    }
+    case "end_gesture": {
+      const top = undoStack[undoStack.length - 1];
+      if (top) top.key = null;
+      return reply(mockHistoryFlags());
+    }
+    case "set_preview_override":
+    case "clear_preview_override":
+      // Render-only in the app; the browser harness has no compositor to show it.
+      return reply({ ok: true });
     case "undo":
     case "redo": {
+      // An open transaction is committed first, as the core does.
+      if (mockTx) {
+        const tx = mockTx;
+        mockTx = null;
+        if (tx.base) {
+          redoStack.length = 0;
+          undoStack.push({ before: tx.base, key: null, touched: null });
+        }
+      }
       const from = cmd === "undo" ? undoStack : redoStack;
       const to = cmd === "undo" ? redoStack : undoStack;
       const target = from.pop();
       let patch: ReturnType<typeof compare> = [];
       if (target) {
-        to.push(structuredClone(currentProject));
-        patch = structuredClone(compare(currentProject as unknown as object, target as unknown as object));
-        currentProject = target;
+        to.push({ before: structuredClone(currentProject), key: null, touched: null });
+        patch = structuredClone(compare(currentProject as unknown as object, target.before as unknown as object));
+        currentProject = target.before;
       }
       revision += 1;
       emit("project:changed", {
         revision,
         mutation_id: args?.mutationId,
-        can_undo: undoStack.length > 0,
-        can_redo: redoStack.length > 0,
+        ...mockHistoryFlags(),
       });
-      return reply({ can_undo: undoStack.length > 0, can_redo: redoStack.length > 0, revision, patch });
+      return reply({ ...mockHistoryFlags(), revision, patch });
     }
     case "get_media_assets":
       return reply({});

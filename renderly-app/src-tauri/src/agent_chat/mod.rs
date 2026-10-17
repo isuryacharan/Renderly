@@ -109,7 +109,7 @@ fn sink_for(app: &AppHandle) -> EventSink {
     Arc::new(move |env: AgentEnvelope| {
         // A finished turn closes its undo group, so the user's own edits are separate steps.
         if matches!(env.event, AgentEvent::TurnFinished { .. }) {
-            app.state::<AppState>().end_agent_group();
+            app.state::<AppState>().commit_transaction_announced(&app);
         }
         let _ = app.emit(EVENT_NAME, env);
     })
@@ -362,10 +362,10 @@ pub async fn agent_send(
         context.as_ref(),
     );
     // Every edit this turn makes becomes one undo step; the group closes on TurnFinished.
-    state.begin_agent_group();
+    state.begin_transaction("Agent turn");
     let sent = with_active(&hub, &session_id, |a| a.session.send_turn(&prompt));
     if sent.is_err() {
-        state.end_agent_group();
+        state.commit_transaction();
     }
     sent
 }

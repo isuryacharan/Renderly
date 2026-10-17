@@ -14,12 +14,7 @@ import {
 } from "../../lib/previewMath";
 import type { ClipTransform, MediaClip } from "../../lib/types";
 import { clipDurationSecs } from "../../lib/types";
-import {
-  activeContainerSize,
-  activeTracks,
-  findTrackAnywhere,
-  updateClip,
-} from "../../lib/container";
+import { activeContainerSize, activeTracks } from "../../lib/container";
 import { useEditorStore } from "../../store/editorStore";
 
 type ContentBounds = { left: number; top: number; width: number; height: number };
@@ -59,21 +54,13 @@ function activeVideoSelection(
   return { trackId: track.id, clip, locked: track.locked };
 }
 
-function patchClipTransform(trackId: string, clipId: string, transform: ClipTransform) {
-  const project = useEditorStore.getState().project;
-  if (!project) return;
-  useEditorStore.setState({
-    project: updateClip(project, trackId, clipId, (c) =>
-      c.type !== "caption" && c.type !== "adjustment" ? { ...c, transform } : c,
-    ),
-  });
-}
-
 type DragRef = {
   kind: HandleKind;
   trackId: string;
   clipId: string;
   startTransform: ClipTransform;
+  /** The transform as of the last mouse move; committed on release. */
+  latest: ClipTransform;
   startNdc: { x: number; y: number };
   moved: boolean;
 };
@@ -114,6 +101,9 @@ export function PreviewHandlesOverlay({
   const toolMode = useEditorStore((s) => s.toolMode);
   const dispatch = useEditorStore((s) => s.dispatch);
   const setDragging = useEditorStore((s) => s.setDragging);
+  const setPreviewOverride = useEditorStore((s) => s.setPreviewOverride);
+  const clearPreviewOverride = useEditorStore((s) => s.clearPreviewOverride);
+  const endGesture = useEditorStore((s) => s.endGesture);
 
   const [bounds, setBounds] = useState<ContentBounds | null>(null);
   const [guides, setGuides] = useState<Guides>({ v: false, h: false });
@@ -128,7 +118,11 @@ export function PreviewHandlesOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- selection/project drive refresh
   }, [playhead, playing, project, selection, toolMode]);
 
-  const transform = resolveTransform(active?.clip.transform);
+  // The drag's render-only override (see endDrag): the box follows it while dragging.
+  const liveTransform = useEditorStore((s) =>
+    active ? s.previewOverrides[active.clip.id]?.transform : undefined,
+  );
+  const transform = resolveTransform(liveTransform ?? active?.clip.transform);
   // The open container's output size (a sequence may have its own).
   const outSize = project ? activeContainerSize(project, activeSequenceId) : null;
   const projW = outSize?.width ?? 1920;
@@ -153,21 +147,22 @@ export function PreviewHandlesOverlay({
       setGuides({ v: false, h: false });
       setReadout(null);
       if (cancel || !drag.moved) {
-        // Restore the pre-drag state; nothing to commit.
-        patchClipTransform(drag.trackId, drag.clipId, drag.startTransform);
+        // Nothing to commit: dropping the override restores the saved transform.
+        clearPreviewOverride(drag.clipId);
         return;
       }
-      const projectNow = useEditorStore.getState().project;
-      const clip = (projectNow ? findTrackAnywhere(projectNow, drag.trackId) : undefined)?.clips.find(
-        (c) => c.id === drag.clipId,
-      );
-      const t =
-        clip && (clip.type === "video" || clip.type === "audio")
-          ? resolveTransform(clip.transform)
-          : drag.startTransform;
-      void dispatch(setClipTransform(drag.trackId, drag.clipId, t));
+      // One command on release, with a merge key so back-to-back handle drags on the same clip
+      // coalesce. The override is cleared only once the project holds the committed value, so
+      // the box does not flicker back to the pre-drag transform.
+      void (async () => {
+        await dispatch(setClipTransform(drag.trackId, drag.clipId, drag.latest), false, {
+          mergeKey: `transform:${drag.clipId}`,
+        });
+        clearPreviewOverride(drag.clipId);
+        endGesture();
+      })();
     },
-    [dispatch, setDragging],
+    [dispatch, setDragging, clearPreviewOverride, endGesture],
   );
 
   useEffect(() => {
@@ -181,9 +176,10 @@ export function PreviewHandlesOverlay({
       const mods: DragMods = { shift: ev.shiftKey, alt: ev.altKey };
       const outcome = applyHandleDrag(drag.kind, drag.startTransform, drag.startNdc, curNdc, mods);
       drag.moved = true;
+      drag.latest = outcome.transform;
       setGuides({ v: outcome.guideV, h: outcome.guideH });
       setReadout(readoutText(drag.kind, outcome.transform, projW, projH));
-      patchClipTransform(drag.trackId, drag.clipId, outcome.transform);
+      setPreviewOverride(drag.clipId, { transform: outcome.transform });
     };
 
     const onUp = () => endDrag(false);
@@ -202,7 +198,7 @@ export function PreviewHandlesOverlay({
       window.removeEventListener("mouseup", onUp);
       window.removeEventListener("keydown", onKey, true);
     };
-  }, [endDrag, projW, projH]);
+  }, [endDrag, projW, projH, setPreviewOverride]);
 
   if (!active || !bounds || active.locked || bounds.width < 8) return null;
 
@@ -253,6 +249,7 @@ export function PreviewHandlesOverlay({
       trackId: active.trackId,
       clipId: active.clip.id,
       startTransform: { ...transform },
+      latest: { ...transform },
       startNdc: pxToNdc(local, w, h),
       moved: false,
     };

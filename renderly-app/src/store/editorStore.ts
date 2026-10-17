@@ -23,6 +23,7 @@ import {
   mediaDurationSecs,
   sequenceMediaName,
   type Clip,
+  type EffectInstance,
   type MediaKind,
   type Project,
   type Selection,
@@ -59,6 +60,15 @@ let nextToastId = 1;
 /// means some other writer changed the project — MCP, another window — and must still
 /// trigger the listener's refetch. Plain module-level `Set`, not store state.
 const selfMutationIds = new Set<string>();
+
+/** Clips currently showing a hover-preview effect (see `previewEffectOnSelection`). */
+let effectPreviewTargets: string[] = [];
+
+/** Options for `dispatch`/`dispatchBatch`. `mergeKey` coalesces consecutive edits with the
+ *  same key into one undo step (docs/architecture.md "Coalescing"). */
+export interface DispatchOptions {
+  mergeKey?: string;
+}
 
 /// Apply an RFC-6902 patch from a mutation result onto the current store project.
 /// Returns false (and leaves state untouched) on failure so the caller can fall back to
@@ -242,11 +252,25 @@ export interface EditorStore {
   createNewProject(path: string, name: string): Promise<void>;
   saveProject(): Promise<void>;
   closeProject(): Promise<void>;
-  dispatch(command: Record<string, unknown>, quiet?: boolean): Promise<boolean>;
-  dispatchBatch(commands: Record<string, unknown>[], quiet?: boolean): Promise<boolean>;
+  dispatch(command: Record<string, unknown>, quiet?: boolean, opts?: DispatchOptions): Promise<boolean>;
+  dispatchBatch(
+    commands: Record<string, unknown>[],
+    quiet?: boolean,
+    opts?: DispatchOptions,
+  ): Promise<boolean>;
   undo(): Promise<void>;
   redo(): Promise<void>;
   pruneStaleSelection(): void;
+  /** Render-only overrides by clip id (live drags, hover preview). Mirrors the backend's set;
+   *  never saved and never in undo. See docs/architecture.md "Preview overrides". */
+  previewOverrides: Record<string, ipc.PreviewOverride>;
+  setPreviewOverride(clipId: string, over: ipc.PreviewOverride): void;
+  clearPreviewOverride(clipId: string): void;
+  /** Hover preview: show `effectId` on the selected clips without a command or undo record. */
+  previewEffectOnSelection(effectId: string, params: Record<string, number>): void;
+  clearEffectPreview(): void;
+  /** Close the backend's merge gesture (call on mouse-up or key-up after a live edit). */
+  endGesture(): void;
 
   copySelection(): void;
   pasteAtPlayhead(): Promise<void>;
@@ -305,6 +329,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   contextMenu: null,
   snapGuideSecs: null,
   isDragging: false,
+  previewOverrides: {},
   mediaAssets: {},
   perfSample: null,
   perfHudVisible: false,
@@ -575,6 +600,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         selections: [],
         canUndo: false,
         canRedo: false,
+        previewOverrides: {},
         mediaAssets: {},
       });
       void ipc.setEditorSelection(null);
@@ -638,6 +664,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         selections: [],
         canUndo: false,
         canRedo: false,
+        previewOverrides: {},
         mediaAssets: {},
         saveStatus: null,
         clipboard: null,
@@ -647,7 +674,54 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }
   },
 
-  async dispatch(command, quiet = false) {
+  setPreviewOverride(clipId, over) {
+    set((s) => ({ previewOverrides: { ...s.previewOverrides, [clipId]: over } }));
+    void ipc.setPreviewOverride(clipId, over).catch(() => {});
+  },
+
+  clearPreviewOverride(clipId) {
+    if (!(clipId in get().previewOverrides)) return;
+    set((s) => {
+      const next = { ...s.previewOverrides };
+      delete next[clipId];
+      return { previewOverrides: next };
+    });
+    void ipc.clearPreviewOverride(clipId).catch(() => {});
+  },
+
+  previewEffectOnSelection(effectId, params) {
+    const { project, selections, activeSequenceId } = get();
+    if (!project) return;
+    const tracks = activeTracks(project, activeSequenceId);
+    const targets: string[] = [];
+    for (const sel of selections) {
+      const clip = tracks.find((t) => t.id === sel.trackId)?.clips.find((c) => c.id === sel.clipId);
+      if (!clip || clip.type === "caption") continue;
+      const instance: EffectInstance = {
+        id: crypto.randomUUID(),
+        effect_id: effectId,
+        enabled: true,
+        params: { ...params },
+      };
+      get().setPreviewOverride(clip.id, { effects: [...(clip.effects ?? []), instance] });
+      targets.push(clip.id);
+    }
+    for (const id of effectPreviewTargets) {
+      if (!targets.includes(id)) get().clearPreviewOverride(id);
+    }
+    effectPreviewTargets = targets;
+  },
+
+  clearEffectPreview() {
+    for (const id of effectPreviewTargets) get().clearPreviewOverride(id);
+    effectPreviewTargets = [];
+  },
+
+  endGesture() {
+    void ipc.endGesture().catch(() => {});
+  },
+
+  async dispatch(command, quiet = false, opts = {}) {
     if (!get().project) {
       get().toast("Create or open a project first.", "error");
       return false;
@@ -659,7 +733,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const mutationId = crypto.randomUUID();
     selfMutationIds.add(mutationId);
     try {
-      const result = await ipc.applyCommand(command, mutationId);
+      const result = await ipc.applyCommand(command, mutationId, opts.mergeKey);
       if (!applyProjectPatch(get, set, result.revision, result.patch)) {
         await get().refetchProject();
       }
@@ -678,7 +752,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }
   },
 
-  async dispatchBatch(commands, quiet = false) {
+  async dispatchBatch(commands, quiet = false, opts = {}) {
     if (!get().project) {
       get().toast("Create or open a project first.", "error");
       return false;
@@ -686,7 +760,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const mutationId = crypto.randomUUID();
     selfMutationIds.add(mutationId);
     try {
-      const result = await ipc.applyCommands(commands, mutationId);
+      const result = await ipc.applyCommands(commands, mutationId, opts.mergeKey);
       if (!applyProjectPatch(get, set, result.revision, result.patch)) {
         await get().refetchProject();
       }

@@ -25,6 +25,10 @@ import type { PreviewAssetBackend } from "./previewAssets";
 /// gitignored generated pkg, so we don't import its types at build time).
 interface WasmCompositorLike {
   set_project(json: string): void;
+  /// Render-only per-clip overrides (live drags, hover preview). Absent on a wasm package built
+  /// before the override API; the engine then previews the saved project only.
+  set_preview_override?(json: string): void;
+  clear_all_preview_overrides?(): void;
   /// Open a nested sequence for preview (`undefined`/null = root timeline). Absent on a wasm
   /// package built before the sequences UI - the engine then simply keeps showing the root.
   set_active_sequence?(sequenceId: string | undefined): void;
@@ -308,6 +312,8 @@ export class WebviewPreviewEngine {
   /// or a "webgpu" context, never both, so the mode decision in init() must come first).
   private ctx: CanvasRenderingContext2D | null = null;
   private gpu: WasmCompositorLike | null = null;
+  /// The store's render-only overrides, by clip id (see `setPreviewOverrides`).
+  private overrides: Record<string, object> = {};
   private modeValue: PreviewMode = "canvas2d";
   private ready = false;
   private gpuRenderErrorLogged = false;
@@ -553,11 +559,36 @@ export class WebviewPreviewEngine {
         this.gpu.set_project(JSON.stringify(project));
         // Mattes / pack LUTs the new project references (no-op unless one changed).
         void this.assets?.sync();
+        // Overrides survive `set_project` on the wasm side; they are only pushed here when the
+        // compositor was created after they were set (the mode ladder resolves asynchronously).
+        if (Object.keys(this.overrides).length > 0) this.pushPreviewOverrides();
       } catch (err) {
         console.error("[preview] set_project failed:", err);
       }
     }
     this.drawFrame(this.currentTimeSecs());
+  }
+
+  /// Render-only per-clip overrides (live drags, hover preview): the store's full set. Never
+  /// saved; the next frame shows them. Pushing the whole set keeps the wasm side equal to the
+  /// store after any single change.
+  setPreviewOverrides(overrides: Record<string, object>): void {
+    this.overrides = overrides;
+    this.pushPreviewOverrides();
+    this.drawFrame(this.currentTimeSecs());
+  }
+
+  private pushPreviewOverrides(): void {
+    const gpu = this.gpu;
+    if (!gpu?.set_preview_override || !gpu.clear_all_preview_overrides) return;
+    try {
+      gpu.clear_all_preview_overrides();
+      for (const [target, over] of Object.entries(this.overrides)) {
+        gpu.set_preview_override(JSON.stringify({ target, ...over }));
+      }
+    } catch (err) {
+      console.error("[preview] set_preview_override failed:", err);
+    }
   }
 
   private reconcileMediaElements(): void {

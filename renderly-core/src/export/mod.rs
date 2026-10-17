@@ -3,6 +3,7 @@
 use crate::captions::CaptionError;
 use crate::commands::ExportPreset;
 use crate::compose::eval::{self, ActiveLayer, EvalError, InstanceKey};
+use crate::compose::preview_overrides::PreviewOverrides;
 use crate::compose::{
     build_scene, ComposeError, ComposeLayer, Compositor, LayerSource, SceneError, SceneHost,
     SceneStep,
@@ -274,9 +275,18 @@ pub struct FrameRenderer {
     /// `(frame index, sequence stamp)` per matte key, so an unchanged frame is not re-read and
     /// re-uploaded.
     frame_mattes: HashMap<String, (u32, u64)>,
+    /// Render-only overrides (see [`PreviewOverrides`]). Empty for export; the live app sets
+    /// them so `render_frame` and the MCP `look` show what the preview shows. Never saved.
+    overrides: PreviewOverrides,
 }
 
 impl FrameRenderer {
+    /// Render with these preview overrides applied (replaces any previous set). Export never
+    /// calls this, so exported files always match the saved project.
+    pub fn set_preview_overrides(&mut self, overrides: PreviewOverrides) {
+        self.overrides = overrides;
+    }
+
     pub fn new(settings: ExportSettings, decode_opts: DecodeOptions) -> Result<Self, ExportError> {
         let compositor = Compositor::new(settings.width, settings.height)?;
         Ok(Self {
@@ -285,6 +295,7 @@ impl FrameRenderer {
             compositor,
             decoders: HashMap::new(),
             frame_mattes: HashMap::new(),
+            overrides: PreviewOverrides::new(),
         })
     }
 
@@ -303,6 +314,7 @@ impl FrameRenderer {
             compositor,
             decoders: HashMap::new(),
             frame_mattes: HashMap::new(),
+            overrides: PreviewOverrides::new(),
         })
     }
 
@@ -392,6 +404,10 @@ impl FrameRenderer {
         time_secs: f64,
         readback: bool,
     ) -> Result<(Option<Vec<u8>>, FrameTiming), ExportError> {
+        // Same projected view the wasm preview builds (compose::preview_overrides): overrides
+        // are applied before evaluation, so both paths render an override identically.
+        let view = self.overrides.apply(project);
+        let project: &Project = &view;
         let steps = eval::active_steps(project, time_secs)?;
         let packs = crate::packs::load_project_packs(project);
         let plugin_host = crate::plugins::PluginHost::for_project(project).ok();

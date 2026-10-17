@@ -327,24 +327,28 @@ docs/preview-webview.md's Architecture section for the webview side of this).
 
 ### Undo/redo
 
-`renderly-app/src-tauri/src/lib.rs::History` is a bounded (100-entry) stack of full
-`Project` snapshots — `undo: Vec<Project>`, `redo: Vec<Project>` — held in `AppState`
-alongside the session, not in `renderly-core`. `apply_command` pushes the *pre-mutation*
-project onto `undo` (and clears `redo`, as any new edit invalidates the old redo branch)
-only after the command has actually succeeded; `undo`/`redo` pop a snapshot, push the
-current project onto the other stack, and install the popped one as the session's project.
+Undo/redo history lives in `renderly-core` (`renderly_core::history`, UI-free), so the app,
+the live bridge, the MCP server and the CLI share one model. The full design (records,
+transactions, coalescing, preview overrides and the memory bound) is in
+"History, transactions and preview overrides" below. In short: `renderly_core::history::History<S>`
+is a bounded stack of state snapshots, and the app instantiates it with `Arc<Project>`.
+Each record holds the state *before* its change, so undo and redo are the same swap between
+two stacks.
 
-This does **not** violate AGENTS.md's "every edit through `apply_command`" rule: every
-entry in the stack is a `Project` value that only ever came from a successful
-`apply_command` call (or a previous undo/redo) — restoring one doesn't construct or mutate
-project state through any path other than that. It's app-session-layer state management
-(what to show right now), not a second way to edit a project. The command-log-based
-undo/redo `renderly-core` eventually wants (see command-api.md's `Export` note on
-serializable commands) is a different, more powerful mechanism (replay/audit/collab) that
-can replace this later without changing the contract GUI/CLI/MCP see.
+`renderly-app/src-tauri/src/lib.rs` keeps one `History` in `AppState`. `apply_command`
+records the *pre-mutation* project only after the command has actually succeeded, so a
+rejected command leaves no record. `undo`/`redo` swap the session's project with the
+recorded snapshot.
 
-`quick_start_project`/`new_project`/`open_project` all clear history — undoing past a
-project switch would try to restore a snapshot from a different project entirely.
+This does **not** violate AGENTS.md's "every edit through `apply_command`" rule. Every
+snapshot in the stack is a `Project` value that only ever came from a successful
+`apply_command` call (or a previous undo/redo). Restoring one does not construct or mutate
+project state through any other path, so this is history storage, not a second edit path.
+The command-log undo that `renderly-core` may adopt later (see command-api.md's `Export`
+note) can replace the storage without changing the contract that GUI, CLI and MCP see.
+
+`quick_start_project`/`new_project`/`open_project` all clear history. Undoing past a project
+switch would restore a snapshot from a different project.
 
 **Serialization.** `AppState::edit_lock` (a `tauri::async_runtime::Mutex<()>`, i.e. a
 `tokio` async mutex — needed because it's held across `.await` points, which a
@@ -489,3 +493,128 @@ Registry seed: `examples/registry/README.md` (no in-app browser yet).
 See PLAN.md §2 for the four architectural principles this graph exists to serve — in
 short: one command API keeps AI and human editing paths identical by construction, and the
 core/frontend split keeps the engine testable and the UI swappable.
+
+## History, transactions and preview overrides
+
+Design status: specified here and in [command-api.md](command-api.md), which holds the
+command-facing half. Implemented in `renderly-core::history` and
+`renderly-core::compose::preview_overrides`.
+
+### History in core
+
+`renderly_core::history::History<S>` is generic over the state type `S: Clone`. It holds no
+UI, time source or I/O. The app instantiates it with `Arc<Project>`, so each snapshot is a
+cheap reference-count bump. A **record** holds:
+
+- `label`: the display name (the first command's name, plus `+N` when there are more).
+- `commands`: the command names it applied, bounded (the first 32 are kept, with the true
+  count alongside). Used for agent and MCP display.
+- `merge_key`: optional, see Coalescing.
+- `before`: the state to restore on undo. This is the snapshot model. An inverse is not
+  needed, because a project's state is small enough to hold whole, and snapshotting is the
+  simplest proven mechanism the app already used.
+
+Undo and redo are the same swap. `undo(current)` pops a record from `undo`, pushes a record
+holding `current` onto `redo`, and returns the popped `before` for the caller to install.
+`redo` does the mirror image. Any new record clears `redo`.
+
+**Memory bound.** Each stack holds at most `DEFAULT_CAP = 100` records, and the oldest is
+evicted first. Each record holds one whole-project snapshot, so the worst case is about 100
+project copies. For typical projects that is a few MB each. For very large projects the
+bound is still count-based, and a byte budget is future work.
+
+### Transactions
+
+`begin(label)` ... `commit()` / `rollback()`:
+
+- Everything recorded between `begin` and `commit` is **one** record, labelled with the
+  transaction's label and listing the commands it applied.
+- Transactions nest by depth counting. An inner `begin` folds into the outer transaction, and
+  only the outermost `commit` pushes a record. `commit` returns whether it pushed one.
+- `rollback()` aborts the **outermost** transaction, however deeply nested. It returns the
+  state recorded when the first change in the transaction arrived, so the caller can restore
+  it. Nothing is pushed. A rollback of a transaction that changed nothing returns `None`.
+- A transaction that changed nothing commits nothing.
+- `undo`/`redo` while a transaction is open first commit it, so undo never runs against a
+  half-open group.
+- `clear()` (project open, close or create) also drops any open transaction.
+
+Users of transactions:
+
+- **Agent turns** (app): `begin("Agent turn")` when the turn is sent, and `commit` at
+  `TurnFinished`. This replaces the earlier `begin_group`/`end_group` pair, which kept its own
+  base-index bookkeeping.
+- **Batches** (`apply_commands`): one record per batch. The batch is already atomic, so it is
+  a record rather than a transaction.
+- **Batch "apply to all"** (later, see docs/schema-v8-design.md): one command applying to many
+  targets is one record.
+- **CLI `apply-script`**: one transaction. Any failing command rolls the whole script back.
+
+### Coalescing
+
+A command may carry an optional **merge key**, a string such as `transform:<clip id>`,
+`effects:<clip id>:<effect instance id>` or `opacity:<clip id>`.
+
+- The key is supplied in the request **envelope**, next to the command, as a `merge_key`
+  field (Tauri `apply_command`, bridge `apply_command`). It is never part of the `Command`
+  enum, so the command schema stays clean.
+- If the top record has the same `merge_key`, was last touched within `COALESCE_WINDOW`
+  (1 s by default), and its gesture is still open, the new change **amends** that record. The
+  record keeps its original `before`, so one undo restores the value from before the whole
+  gesture.
+- A keyless command, a different key, an expired window or an ended gesture each start a new
+  record.
+- **Gesture end.** `end_gesture()` (Tauri `end_gesture`, bridge `end_gesture`) closes the top
+  record's gesture by clearing its key, so the next change with that key starts a new record.
+  The UI calls it on mouse-up or key-up. Without an explicit end, the window ends a gesture
+  after one second of inactivity.
+- Transaction records never coalesce. A merge key inside an open transaction is ignored,
+  because the whole transaction is already one record.
+
+Time is passed in by the caller (`record(..., now: Instant)`), so the core never reads a
+clock. Core stays wasm-buildable, and tests use synthetic instants.
+
+### Preview overrides
+
+A **preview override** is a temporary change to what a clip *renders*. It is not a project
+change: it is not saved, not in undo, and not a `Command`.
+
+- Target: a clip id (media or adjustment). An override may set any of these fields:
+  - `transform`: a full `ClipTransform` replacing the clip's static transform. Keyframes on a
+    property still win over it, exactly as they win over the saved static transform.
+  - `opacity`: a value replacing the clip's opacity (adjustment layers use their own `opacity`
+    field; media clips use `transform.opacity`).
+  - `effects`: a full effect stack replacing the clip's `effects`, in `EffectInstance` shape
+    (`{id, effect_id, enabled, params}`). Hover preview sends the current stack plus one
+    temporary instance.
+- API (core): `PreviewOverrides` with `set(target, override)`, `clear(target)`, `clear_all()`,
+  `is_empty()` and `apply(&Project) -> Cow<Project>`. `apply` borrows when there are no
+  overrides, so the common path costs nothing. Unknown targets are ignored.
+- **Where it applies.** `apply` runs at the top of the shared render path, before
+  `eval::active_steps` and `build_scene`. Every consumer of that path honours an override the
+  same way:
+  - the native `FrameRenderer` (used by the app's live `render_frame`, and by the MCP `look`
+    and `render_frame` tools through the bridge);
+  - the wasm `WasmCompositor` (the webview preview), which applies overrides when it rebuilds
+    its project view;
+  - the golden suite's `PreviewPipeline` stand-in, which has a parity case for an override.
+- **Export does not apply overrides.** `export_project` renders the saved project only, so a
+  temporary hover effect or slider position can never reach an exported file. This is a
+  deliberate choice: the override channel is for previews and agent perception, not a second
+  edit path.
+- Overrides never appear in the saved project. `apply` leaves keyframes and static fields
+  unchanged, and the clone it makes is discarded after the frame is rendered.
+
+### How each surface uses it
+
+| Surface | History | Coalescing | Overrides |
+|---|---|---|---|
+| App (Tauri) | `begin_transaction(label)`, `commit_transaction()`, `rollback_transaction()`, `undo`, `redo`. `apply_command` and `apply_commands` take an optional `merge_key` | `apply_command` `merge_key`, `end_gesture()` | `set_preview_override(target, override)`, `clear_preview_override(target)`. These also drive `render_frame` |
+| Bridge | Same methods, mirrored in [bridge-protocol.md](bridge-protocol.md) | Same `merge_key`, `end_gesture` | Same two methods |
+| MCP | Agent turns run in a transaction automatically. `undo`/`redo` tools call the bridge | Passes `merge_key` through `apply_command` | `render_frame` and `look` honour overrides set in the live app |
+| CLI | `apply-script` is one transaction, rolled back on any failure | n/a (one process) | n/a (headless; no live app) |
+| Webview (wasm) | None (reads the project from the store) | The store passes `merge_key` on drags | `set_preview_override(json)`, `clear_preview_override(target)`, `clear_all_preview_overrides()` |
+
+Live drags use this pattern. The UI shows the override on every change, then commits **one**
+command with a merge key on release. Undo after a drag restores the pre-drag value in one
+step. Hover preview uses the same override channel, with no command and no record.

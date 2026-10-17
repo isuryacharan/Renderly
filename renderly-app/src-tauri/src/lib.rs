@@ -8,10 +8,12 @@ mod bridge;
 
 use parking_lot::Mutex;
 use playback::PlaybackEngine;
+use renderly_core::compose::{PreviewOverride, PreviewOverrides};
+use renderly_core::history::{History, HistoryStatus};
 use renderly_core::{
     apply_command as apply_core_command, commands::ExportPreset, encode_rgba_png,
-    export_project_with_settings, project::Project, Command, CommandOutcome, DecodeOptions,
-    ExportError, ExportPhase, ExportProgress, ExportSettings, FrameRenderer,
+    export_project_with_settings, project::Id, project::Project, Command, CommandOutcome,
+    DecodeOptions, ExportError, ExportPhase, ExportProgress, ExportSettings, FrameRenderer,
     VideoEncoderPreference,
 };
 use serde::Serialize;
@@ -57,94 +59,12 @@ struct Session {
     project: Arc<Project>,
 }
 
-/// Undo/redo stack over full `Project` snapshots — session-layer state management, not a
-/// second edit path: every entry is a project state that only ever arose from a successful
+/// Undo/redo history over `Arc<Project>` snapshots: the shared model in
+/// `renderly_core::history` (docs/architecture.md "History, transactions and preview
+/// overrides"). Every entry is a project state that only arose from a successful
 /// `apply_command` call (or a prior undo/redo), so `apply_command` remains the sole way a
-/// project's *contents* change. See docs/architecture.md "Undo/redo" for the full
-/// rationale required by AGENTS.md. Entries are `Arc` so undoing reuses the pre-edit
-/// snapshot without an extra deep clone at push time.
-struct History {
-    undo: Vec<Arc<Project>>,
-    redo: Vec<Arc<Project>>,
-    /// An agent turn is in progress: its edits share one undo entry (see `begin_group`).
-    group_active: bool,
-    /// Index in `undo` of the snapshot that opened the current group, once an edit has run.
-    group_base: Option<usize>,
-}
-
-const HISTORY_CAP: usize = 100;
-
-impl History {
-    fn new() -> Self {
-        Self {
-            undo: Vec::new(),
-            redo: Vec::new(),
-            group_active: false,
-            group_base: None,
-        }
-    }
-
-    /// Open an undo group: every edit until `end_group` is one undo step. The first edit pushes
-    /// the pre-turn snapshot; later edits in the group add nothing, so one undo reverts them all.
-    fn begin_group(&mut self) {
-        self.group_active = true;
-        self.group_base = None;
-    }
-
-    fn end_group(&mut self) {
-        self.group_active = false;
-        self.group_base = None;
-    }
-
-    /// Push onto the bounded undo stack, evicting the oldest entry past `HISTORY_CAP`.
-    fn push_undo_bounded(&mut self, project: Arc<Project>) {
-        self.undo.push(project);
-        if self.undo.len() > HISTORY_CAP {
-            self.undo.remove(0);
-            // The group's base snapshot moved down one slot; if it was evicted the group no
-            // longer owns an entry, so its next edit opens a fresh one.
-            self.group_base = match self.group_base {
-                Some(0) | None => None,
-                Some(i) => Some(i - 1),
-            };
-        }
-    }
-
-    /// Push a pre-mutation snapshot and drop the (now-stale) redo branch — call this for
-    /// a genuinely new edit, not for `redo()`'s own bookkeeping (see `push_undo_bounded`).
-    fn push_undo(&mut self, project: Arc<Project>) {
-        self.redo.clear();
-        if self.group_active {
-            if self.group_base.is_some_and(|i| i < self.undo.len()) {
-                // Already inside this turn's group: its base snapshot covers this edit.
-                return;
-            }
-            self.push_undo_bounded(project);
-            self.group_base = Some(self.undo.len() - 1);
-            return;
-        }
-        self.push_undo_bounded(project);
-    }
-
-    fn clear(&mut self) {
-        self.undo.clear();
-        self.redo.clear();
-        self.end_group();
-    }
-
-    fn status(&self) -> HistoryStatus {
-        HistoryStatus {
-            can_undo: !self.undo.is_empty(),
-            can_redo: !self.redo.is_empty(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, serde::Serialize)]
-pub(crate) struct HistoryStatus {
-    pub can_undo: bool,
-    pub can_redo: bool,
-}
+/// project's contents change.
+type ProjectHistory = History<Arc<Project>>;
 
 /// Result of a single `apply_command` — revision + RFC-6902 patch so the frontend can
 /// update without a full `get_project` round-trip (improvement-plan B3). App IPC only;
@@ -184,6 +104,15 @@ struct ProjectSnapshot {
     revision: u64,
 }
 
+/// The command's `command` tag (the serde discriminant), for history labels.
+fn command_name(command: &serde_json::Value) -> String {
+    command
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("Command")
+        .to_string()
+}
+
 fn empty_patch() -> json_patch::Patch {
     json_patch::Patch(Vec::new())
 }
@@ -209,7 +138,10 @@ struct ProjectChanged {
 pub struct AppState {
     session: Mutex<Option<Session>>,
     pub(crate) playback: PlaybackEngine,
-    history: Mutex<History>,
+    history: Mutex<ProjectHistory>,
+    /// Render-only preview overrides (hover preview, live drags). Never saved, never in undo;
+    /// applied by `render_live_frame_png` (see docs/architecture.md).
+    preview_overrides: Mutex<PreviewOverrides>,
     revision: AtomicU64,
     /// Cooperative cancel flag for the in-flight export (M6). Cleared at export start;
     /// `cancel_export` sets it so the progress callback returns `false`.
@@ -242,7 +174,8 @@ impl AppState {
         Self {
             session: Mutex::new(None),
             playback: PlaybackEngine::new(),
-            history: Mutex::new(History::new()),
+            history: Mutex::new(ProjectHistory::new()),
+            preview_overrides: Mutex::new(PreviewOverrides::new()),
             revision: AtomicU64::new(0),
             export_cancel: Arc::new(AtomicBool::new(false)),
             matte_cancel: Arc::new(AtomicBool::new(false)),
@@ -274,14 +207,66 @@ impl AppState {
         self.revision.load(Ordering::SeqCst)
     }
 
-    /// Start an agent turn's undo group (all its edits become one undo step).
-    pub(crate) fn begin_agent_group(&self) {
-        self.history.lock().begin_group();
+    /// Open an undo transaction: every edit until `commit_transaction` is one undo step. Agent
+    /// turns use this (label "Agent turn"). Nested calls fold into the outer transaction.
+    pub(crate) fn begin_transaction(&self, label: &str) -> HistoryStatus {
+        let mut history = self.history.lock();
+        history.begin(label);
+        history.status()
     }
 
-    /// End the agent turn's undo group. Edits after this are separate undo steps again.
-    pub(crate) fn end_agent_group(&self) {
-        self.history.lock().end_group();
+    /// Commit one transaction level. The outermost commit pushes one undo record if anything
+    /// changed.
+    /// Commit one transaction level. Returns whether an undo record was pushed.
+    pub(crate) fn commit_transaction(&self) -> bool {
+        self.history.lock().commit()
+    }
+
+    /// Commit, and when a record was pushed, emit `project:changed` so the undo/redo buttons
+    /// update: the transaction's edits were announced while it was open, but its record only
+    /// appears now.
+    pub(crate) fn commit_transaction_announced(&self, app: &AppHandle) -> HistoryStatus {
+        if self.commit_transaction() {
+            self.emit_project_changed(app, None);
+        }
+        self.history.lock().status()
+    }
+
+    /// Close the top undo record's gesture, so the next keyed change starts a new step.
+    pub(crate) fn end_gesture(&self) -> HistoryStatus {
+        let mut history = self.history.lock();
+        history.end_gesture();
+        history.status()
+    }
+
+    /// Record one successful change. `before` is the project state the change started from.
+    fn record_change(
+        &self,
+        before: Arc<Project>,
+        commands: impl IntoIterator<Item = String>,
+        merge_key: Option<&str>,
+    ) {
+        self.history
+            .lock()
+            .record(before, commands, merge_key, Instant::now());
+    }
+
+    /// Drop the undo/redo history and any preview overrides. Called when a project is opened,
+    /// created or closed, since undoing or previewing across projects would be wrong.
+    fn reset_history(&self) {
+        self.history.lock().clear();
+        self.preview_overrides.lock().clear_all();
+    }
+
+    /// Set (or replace) the preview override for `target`. Render-only: nothing is saved and
+    /// nothing enters undo.
+    pub(crate) fn set_preview_override(&self, target: Id, over: PreviewOverride) {
+        self.preview_overrides.lock().set(target, over);
+    }
+
+    /// Clear the preview override for `target`, if one is set.
+    pub(crate) fn clear_preview_override(&self, target: Id) {
+        self.preview_overrides.lock().clear(target);
     }
 
     /// E3: render a PNG of the live session project via its own `FrameRenderer` (headless,
@@ -303,6 +288,7 @@ impl AppState {
             output_fps: None,
         };
         let mut renderer = FrameRenderer::new(settings, decode_opts).map_err(|e| e.to_string())?;
+        renderer.set_preview_overrides(self.preview_overrides.lock().clone());
         let rgba = renderer
             .render(&project, time_secs)
             .map_err(|e| e.to_string())?;
@@ -315,7 +301,9 @@ impl AppState {
         app: &AppHandle,
         command: serde_json::Value,
         mutation_id: Option<String>,
+        merge_key: Option<String>,
     ) -> Result<CommandResult, String> {
+        let name = command_name(&command);
         // The in-process `rvm` matte bake takes minutes: run it off the project lock with
         // progress + cancel, and only apply its small result through the edit lock below.
         if let Some((track_id, clip_id)) = ml::rvm_matte_target(self, &command) {
@@ -387,7 +375,7 @@ impl AppState {
 
         let after_json = project_json(&project)?;
         let patch = json_patch::diff(&before_json, &after_json);
-        self.history.lock().push_undo(before_arc);
+        self.record_change(before_arc, [name], merge_key.as_deref());
         self.commit_project(Arc::new(project)).await?;
         let revision = self.emit_project_changed(app, mutation_id);
         Ok(CommandResult {
@@ -402,8 +390,10 @@ impl AppState {
         app: &AppHandle,
         commands: Vec<serde_json::Value>,
         mutation_id: Option<String>,
+        merge_key: Option<String>,
     ) -> Result<CommandsResult, String> {
         let _edit_guard = self.edit_lock.lock().await;
+        let names: Vec<String> = commands.iter().map(command_name).collect();
         let cmds: Vec<Command> = commands
             .into_iter()
             .map(|c| serde_json::from_value(c).map_err(|e| format!("invalid command: {e}")))
@@ -446,7 +436,7 @@ impl AppState {
 
         let after_json = project_json(&project)?;
         let patch = json_patch::diff(&before_json, &after_json);
-        self.history.lock().push_undo(before_arc);
+        self.record_change(before_arc, names, merge_key.as_deref());
         self.commit_project(Arc::new(project)).await?;
         let revision = self.emit_project_changed(app, mutation_id);
         Ok(CommandsResult {
@@ -463,23 +453,47 @@ impl AppState {
         mutation_id: Option<String>,
     ) -> Result<HistoryResult, String> {
         let _edit_guard = self.edit_lock.lock().await;
-        let popped = self.history.lock().undo.pop();
+        let current = self.with_session(|s| Ok(Arc::clone(&s.project)))?;
+        let popped = self.history.lock().undo(Arc::clone(&current));
         let Some(prev) = popped else {
-            let status = self.history.lock().status();
-            return Ok(HistoryResult {
-                can_undo: status.can_undo,
-                can_redo: status.can_redo,
-                revision: self.revision_value(),
-                patch: empty_patch(),
-            });
+            return self.history_result_unchanged();
         };
+        self.install_history_step(app, &current, prev, mutation_id)
+            .await
+    }
 
+    pub(crate) async fn redo_inner(
+        &self,
+        app: &AppHandle,
+        mutation_id: Option<String>,
+    ) -> Result<HistoryResult, String> {
+        let _edit_guard = self.edit_lock.lock().await;
+        let current = self.with_session(|s| Ok(Arc::clone(&s.project)))?;
+        let popped = self.history.lock().redo(Arc::clone(&current));
+        let Some(next) = popped else {
+            return self.history_result_unchanged();
+        };
+        self.install_history_step(app, &current, next, mutation_id)
+            .await
+    }
+
+    /// Abort the open transaction and restore the project state it started from. Nothing is
+    /// pushed to the undo stack.
+    pub(crate) async fn rollback_transaction_inner(
+        &self,
+        app: &AppHandle,
+        mutation_id: Option<String>,
+    ) -> Result<HistoryResult, String> {
+        let _edit_guard = self.edit_lock.lock().await;
+        let base = self.history.lock().rollback();
+        let Some(base) = base else {
+            return self.history_result_unchanged();
+        };
         let current = self.with_session(|s| Ok(Arc::clone(&s.project)))?;
         let before_json = project_json(&current)?;
-        let after_json = project_json(&prev)?;
+        let after_json = project_json(&base)?;
         let patch = json_patch::diff(&before_json, &after_json);
-        self.history.lock().redo.push(current);
-        self.commit_project(prev).await?;
+        self.commit_project(base).await?;
         let revision = self.emit_project_changed(app, mutation_id);
         let status = self.history.lock().status();
         Ok(HistoryResult {
@@ -490,28 +504,28 @@ impl AppState {
         })
     }
 
-    pub(crate) async fn redo_inner(
+    /// The reply when history has nothing to do: current flags, no patch.
+    fn history_result_unchanged(&self) -> Result<HistoryResult, String> {
+        let status = self.history.lock().status();
+        Ok(HistoryResult {
+            can_undo: status.can_undo,
+            can_redo: status.can_redo,
+            revision: self.revision_value(),
+            patch: empty_patch(),
+        })
+    }
+
+    /// Install a history step: `next` replaces `current` as the session project.
+    async fn install_history_step(
         &self,
         app: &AppHandle,
+        current: &Arc<Project>,
+        next: Arc<Project>,
         mutation_id: Option<String>,
     ) -> Result<HistoryResult, String> {
-        let _edit_guard = self.edit_lock.lock().await;
-        let popped = self.history.lock().redo.pop();
-        let Some(next) = popped else {
-            let status = self.history.lock().status();
-            return Ok(HistoryResult {
-                can_undo: status.can_undo,
-                can_redo: status.can_redo,
-                revision: self.revision_value(),
-                patch: empty_patch(),
-            });
-        };
-
-        let current = self.with_session(|s| Ok(Arc::clone(&s.project)))?;
-        let before_json = project_json(&current)?;
+        let before_json = project_json(current)?;
         let after_json = project_json(&next)?;
         let patch = json_patch::diff(&before_json, &after_json);
-        self.history.lock().push_undo_bounded(current);
         self.commit_project(next).await?;
         let revision = self.emit_project_changed(app, mutation_id);
         let status = self.history.lock().status();
@@ -719,7 +733,7 @@ async fn quick_start_project(app: AppHandle, state: State<'_, AppState>) -> Resu
         path: path_buf.clone(),
         project: Arc::new(project),
     });
-    state.history.lock().clear();
+    state.reset_history();
     state.reset_revision();
     state.emit_project_changed(&app, None);
     bridge::sync_discovery_project(&app, Some(path_buf.clone()));
@@ -767,7 +781,7 @@ async fn new_project(
         path: path_buf.clone(),
         project: Arc::new(project),
     });
-    state.history.lock().clear();
+    state.reset_history();
     state.reset_revision();
     state.emit_project_changed(&app, None);
     bridge::sync_discovery_project(&app, Some(path_buf));
@@ -822,7 +836,7 @@ async fn open_project(
         path: path_buf.clone(),
         project: Arc::new(project),
     });
-    state.history.lock().clear();
+    state.reset_history();
     state.reset_revision();
     state.emit_project_changed(&app, None);
     bridge::sync_discovery_project(&app, Some(path_buf));
@@ -1107,7 +1121,7 @@ async fn close_project(app: AppHandle, state: State<'_, AppState>) -> Result<(),
     stop_playback_blocking(&app).await;
     agent_chat::stop_active(&app, "project closed");
     *state.session.lock() = None;
-    state.history.lock().clear();
+    state.reset_history();
     state.reset_revision();
     state.set_selection_json(None);
     state.set_playhead_secs(0.0);
@@ -1369,8 +1383,11 @@ async fn apply_command(
     state: State<'_, AppState>,
     command: serde_json::Value,
     mutation_id: Option<String>,
+    merge_key: Option<String>,
 ) -> Result<CommandResult, String> {
-    state.apply_command_inner(&app, command, mutation_id).await
+    state
+        .apply_command_inner(&app, command, mutation_id, merge_key)
+        .await
 }
 
 /// Apply a batch of commands atomically: all-or-nothing against a single project clone,
@@ -1383,10 +1400,51 @@ async fn apply_commands(
     state: State<'_, AppState>,
     commands: Vec<serde_json::Value>,
     mutation_id: Option<String>,
+    merge_key: Option<String>,
 ) -> Result<CommandsResult, String> {
     state
-        .apply_commands_inner(&app, commands, mutation_id)
+        .apply_commands_inner(&app, commands, mutation_id, merge_key)
         .await
+}
+
+/// Open an undo transaction: every edit until `commit_transaction` is one undo step.
+#[tauri::command]
+fn begin_transaction(state: State<'_, AppState>, label: String) -> HistoryStatus {
+    state.begin_transaction(&label)
+}
+
+/// Commit the outermost open transaction as one undo step (nothing is pushed if unchanged).
+#[tauri::command]
+fn commit_transaction(app: AppHandle, state: State<'_, AppState>) -> HistoryStatus {
+    state.commit_transaction_announced(&app)
+}
+
+/// Abort the open transaction and restore the project state it started from.
+#[tauri::command]
+async fn rollback_transaction(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    mutation_id: Option<String>,
+) -> Result<HistoryResult, String> {
+    state.rollback_transaction_inner(&app, mutation_id).await
+}
+
+/// Close the top undo record's merge gesture (mouse-up or key-up after a live drag).
+#[tauri::command]
+fn end_gesture(state: State<'_, AppState>) -> HistoryStatus {
+    state.end_gesture()
+}
+
+/// Show a temporary render-only override for a clip. Never saved, never in undo.
+#[tauri::command]
+fn set_preview_override(state: State<'_, AppState>, target: Id, over: PreviewOverride) {
+    state.set_preview_override(target, over);
+}
+
+/// Clear the preview override for a clip.
+#[tauri::command]
+fn clear_preview_override(state: State<'_, AppState>, target: Id) {
+    state.clear_preview_override(target);
 }
 
 /// Restore the previous project snapshot, moving the current one onto the redo stack.
@@ -1705,6 +1763,12 @@ pub fn run() {
             apply_commands,
             undo,
             redo,
+            begin_transaction,
+            commit_transaction,
+            rollback_transaction,
+            end_gesture,
+            set_preview_override,
+            clear_preview_override,
             export_project,
             cancel_export,
             play,
@@ -1742,130 +1806,6 @@ pub fn run() {
                 agent_chat::stop_active(app, "app exited");
             }
         });
-}
-
-#[cfg(test)]
-mod history_tests {
-    use super::*;
-    use renderly_core::project::Settings;
-
-    fn dummy_project(tag: &str) -> Arc<Project> {
-        Arc::new(Project::new(tag, Settings::default()))
-    }
-
-    #[test]
-    fn push_undo_bounds_stack_at_history_cap() {
-        let mut history = History::new();
-        for i in 0..(HISTORY_CAP + 20) {
-            history.push_undo(dummy_project(&format!("edit-{i}")));
-        }
-        assert_eq!(history.undo.len(), HISTORY_CAP);
-        // Oldest entries should have been evicted — the surviving bottom entry is the
-        // 21st push (edits 0..19 evicted), not edit-0.
-        assert_eq!(history.undo.first().unwrap().name, "edit-20");
-        assert_eq!(history.undo.last().unwrap().name, "edit-119");
-    }
-
-    #[test]
-    fn an_agent_turn_is_one_undo_step() {
-        let mut h = History::new();
-        h.begin_group();
-        h.push_undo(dummy_project("before-turn"));
-        h.push_undo(dummy_project("after-edit-1"));
-        h.push_undo(dummy_project("after-edit-2"));
-        assert_eq!(h.undo.len(), 1, "all three edits share one entry");
-        assert_eq!(
-            h.undo[0].name, "before-turn",
-            "the entry is the pre-turn state"
-        );
-        h.end_group();
-        // A manual edit after the turn is its own step.
-        h.push_undo(dummy_project("manual"));
-        assert_eq!(h.undo.len(), 2);
-    }
-
-    #[test]
-    fn each_agent_turn_opens_its_own_group() {
-        let mut h = History::new();
-        h.begin_group();
-        h.push_undo(dummy_project("turn-1-start"));
-        h.push_undo(dummy_project("turn-1-edit"));
-        h.end_group();
-        h.begin_group();
-        h.push_undo(dummy_project("turn-2-start"));
-        h.push_undo(dummy_project("turn-2-edit"));
-        h.end_group();
-        assert_eq!(h.undo.len(), 2);
-        assert_eq!(h.undo[1].name, "turn-2-start");
-    }
-
-    #[test]
-    fn a_group_edit_still_clears_redo() {
-        let mut h = History::new();
-        h.redo.push(dummy_project("redo"));
-        h.begin_group();
-        h.push_undo(dummy_project("start"));
-        assert!(h.redo.is_empty());
-        h.push_undo(dummy_project("edit"));
-        assert!(h.redo.is_empty());
-    }
-
-    #[test]
-    fn group_base_evicted_by_the_cap_opens_a_fresh_entry() {
-        let mut h = History::new();
-        for i in 0..HISTORY_CAP {
-            h.push_undo(dummy_project(&format!("old-{i}")));
-        }
-        h.begin_group();
-        // The turn's first edit pushes past the cap, evicting the oldest entry; the group
-        // base is still the newest entry, so the turn's next edit must coalesce into it.
-        h.push_undo(dummy_project("turn-start"));
-        assert_eq!(h.undo.len(), HISTORY_CAP);
-        h.push_undo(dummy_project("turn-edit"));
-        assert_eq!(h.undo.len(), HISTORY_CAP, "still one entry for the turn");
-        assert_eq!(h.undo.last().map(|p| p.name.as_str()), Some("turn-start"));
-    }
-
-    #[test]
-    fn push_undo_clears_redo_but_push_undo_bounded_does_not() {
-        let mut history = History::new();
-        history.push_undo(dummy_project("a"));
-        history.redo.push(dummy_project("stale-redo"));
-
-        // A genuinely new edit invalidates the redo branch.
-        history.push_undo(dummy_project("b"));
-        assert!(history.redo.is_empty());
-
-        // Redo's own bookkeeping push must NOT clear a redo branch that still has
-        // further-forward entries below the one just popped.
-        history.redo.push(dummy_project("still-redoable"));
-        history.push_undo_bounded(dummy_project("c"));
-        assert_eq!(history.redo.len(), 1);
-    }
-
-    #[test]
-    fn clear_empties_both_stacks() {
-        let mut history = History::new();
-        history.push_undo(dummy_project("a"));
-        history.redo.push(dummy_project("b"));
-        history.clear();
-        assert!(!history.status().can_undo);
-        assert!(!history.status().can_redo);
-    }
-
-    #[test]
-    fn rename_diff_is_non_empty() {
-        let before = Project::new("before", Settings::default());
-        let before_json = serde_json::to_value(&before).expect("serialize before");
-        let mut after = before;
-        after.name = "after".into();
-        let after_json = serde_json::to_value(&after).expect("serialize after");
-        let patch = json_patch::diff(&before_json, &after_json);
-        assert!(
-            !patch.0.is_empty(),
-            "rename should produce a non-empty JSON Patch"
-        );
-    }
 }
 
 #[cfg(test)]

@@ -647,6 +647,37 @@ removes both the track and the clip together instead of leaving an empty track b
 of `renderly-core`'s public API — CLI and MCP keep calling `apply_command` once per
 command, which is sufficient for scripted/agent use.
 
+## History, transactions, coalescing and preview overrides
+
+The `Command` enum and `apply_command` are unchanged by this section. Everything here is
+envelope and session-layer behaviour around them. The full design is in
+[architecture.md](architecture.md) "History, transactions and preview overrides"; this
+section fixes the command-facing rules.
+
+- **History lives in core.** `renderly_core::history::History<S>` owns the undo/redo
+  records (label, applied command names, merge key, pre-change state). The app, bridge and
+  CLI all record into it. The GUI remains a thin dispatcher.
+- **Transactions.** `begin_transaction(label)`, `commit_transaction()` and
+  `rollback_transaction()` (Tauri and bridge) group every edit between begin and commit into
+  one undo record. Transactions nest by depth, and rollback aborts the outermost one. Agent
+  turns open a transaction when they are sent and commit it at `TurnFinished`. The CLI's
+  `apply-script` is one transaction.
+- **Merge key (coalescing).** `apply_command` and `apply_commands` accept an optional
+  `merge_key` **next to** the command, never inside the `Command` enum. A change with the
+  same key as the top record, within `COALESCE_WINDOW` (1 s) and before `end_gesture()`,
+  amends that record instead of adding one, so a slider drag is one undo step. The record
+  keeps its original pre-gesture state. Suggested keys: `transform:<clip id>`,
+  `effects:<clip id>:<effect instance id>`, `opacity:<clip id>`.
+- **Gesture end.** `end_gesture()` (Tauri and bridge) closes the top record's gesture. The UI
+  calls it on mouse-up or key-up. Without it, the window ends the gesture after 1 s idle.
+- **Preview overrides are not commands.** `set_preview_override(target, override)` and
+  `clear_preview_override(target)` (Tauri and bridge) set or clear a temporary clip transform,
+  opacity or effect stack. They never touch the project, never save and never enter undo. The
+  shared render path applies them, so the native `FrameRenderer` (`render_frame`, `look`) and
+  the wasm preview honour them identically. Export never applies them.
+- **Memory.** Each undo or redo stack holds at most 100 records (oldest evicted). Each record
+  holds one whole-project snapshot.
+
 ## Non-goals (later)
 
 In-app remote marketplace with payments, custom pack WGSL shaders — see

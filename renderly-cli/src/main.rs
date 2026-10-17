@@ -5,6 +5,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use renderly_core::commands::{Command, ExportPreset};
 use renderly_core::export::export_project_with_progress;
+use renderly_core::history::History;
 use renderly_core::otio::{
     export_otio_with_options, import_otio, probe_media, ExportOptions, ImportOptions,
 };
@@ -230,11 +231,28 @@ fn main() -> Result<()> {
             let mut project = load_project(&path)?;
             let script_data = fs::read_to_string(&script)
                 .with_context(|| format!("reading {}", script.display()))?;
-            let commands: Vec<Command> =
+            let raw: Vec<serde_json::Value> =
                 serde_json::from_str(&script_data).context("parsing script JSON")?;
-            for cmd in commands {
-                apply_and_report(&mut project, cmd)?;
+            // The whole script is one transaction (docs/command-api.md): any failing command
+            // rolls it back, and the file is only written when every command succeeded.
+            let mut history: History<Project> = History::new();
+            history.begin("apply-script");
+            for value in raw {
+                let name = value
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Command")
+                    .to_string();
+                let cmd: Command = serde_json::from_value(value).context("parsing script JSON")?;
+                let before = project.clone();
+                if let Err(e) = apply_and_report(&mut project, cmd) {
+                    // Nothing is saved on failure: the rolled-back state is never written.
+                    history.rollback();
+                    return Err(e);
+                }
+                history.record(before, [name], None, std::time::Instant::now());
             }
+            history.commit();
             save_project(&path, &project)?;
         }
         CliCommand::Show { path } => {

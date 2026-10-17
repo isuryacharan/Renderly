@@ -5,7 +5,7 @@ import * as ipc from "../../lib/ipc";
 import type { ExtensionCatalog } from "../../lib/ipc";
 import type { AdjustmentClip, EffectInstance, MediaClip, Track } from "../../lib/types";
 import { activeTracks } from "../../lib/container";
-import { useEditorStore } from "../../store/editorStore";
+import { useEditorStore, type DispatchOptions } from "../../store/editorStore";
 
 export const BUILTIN_VIDEO_EFFECTS: {
   id: string;
@@ -43,6 +43,8 @@ export function EffectsPanel() {
   const project = useEditorStore((s) => s.project);
   const selection = useEditorStore((s) => s.selection);
   const dispatch = useEditorStore((s) => s.dispatch);
+  const previewEffectOnSelection = useEditorStore((s) => s.previewEffectOnSelection);
+  const clearEffectPreview = useEditorStore((s) => s.clearEffectPreview);
   const [catalog, setCatalog] = useState<ExtensionCatalog | null>(null);
 
   useEffect(() => {
@@ -101,8 +103,10 @@ export function EffectsPanel() {
         ...(isAdjustment ? [] : wasmEffects.filter((p) => p.id.startsWith("wasm:"))),
       ];
 
-  async function commit(next: EffectInstance[]) {
-    await dispatch(setClipEffects(track!.id, mediaClip!.id, next));
+  async function commit(next: EffectInstance[], opts?: DispatchOptions) {
+    // A click while hovering must not leave the hover instance stacked on the committed one.
+    clearEffectPreview();
+    await dispatch(setClipEffects(track!.id, mediaClip!.id, next), false, opts);
   }
 
   return (
@@ -119,6 +123,17 @@ export function EffectsPanel() {
             key={e.id}
             type="button"
             disabled={locked}
+            // Hover preview (docs/architecture.md "Preview overrides"): the selected clip renders
+            // the effect while the item is hovered, with no command and no undo record. WASM
+            // plugins run only on export, so they are not previewed.
+            onMouseEnter={
+              e.id.startsWith("wasm:") ? undefined : () => previewEffectOnSelection(e.id, e.defaults)
+            }
+            onMouseLeave={clearEffectPreview}
+            onFocus={
+              e.id.startsWith("wasm:") ? undefined : () => previewEffectOnSelection(e.id, e.defaults)
+            }
+            onBlur={clearEffectPreview}
             onClick={() =>
               void commit([
                 ...effects,
@@ -160,15 +175,41 @@ export function EffectList({
   clip: MediaClip | AdjustmentClip;
   effects: EffectInstance[];
   locked: boolean;
-  onCommit: (next: EffectInstance[]) => Promise<void>;
+  onCommit: (next: EffectInstance[], opts?: DispatchOptions) => Promise<void>;
   labelLookup?: { id: string; label: string }[];
 }) {
   void track;
-  void clip;
+  const liveEffects = useEditorStore((s) => s.previewOverrides[clip.id]?.effects);
+  const setPreviewOverride = useEditorStore((s) => s.setPreviewOverride);
+  const clearPreviewOverride = useEditorStore((s) => s.clearPreviewOverride);
+  const endGesture = useEditorStore((s) => s.endGesture);
 
   if (effects.length === 0) {
     return <p className="empty-hint">No effects on this clip.</p>;
   }
+
+  // A slider drag shows a render-only override on every tick and commits one command on
+  // release, so the drag is one undo step and the history does not flood (see
+  // docs/architecture.md "Preview overrides").
+  const shownValue = (idx: number, key: string): number =>
+    liveEffects?.[idx]?.params[key] ?? effects[idx]?.params[key] ?? 0;
+  const previewParam = (idx: number, key: string, v: number) =>
+    setPreviewOverride(clip.id, {
+      effects: effects.map((x, i) => (i === idx ? { ...x, params: { ...x.params, [key]: v } } : x)),
+    });
+  const commitParam = async (idx: number, key: string, v: number) => {
+    if (effects[idx]?.params[key] === v) {
+      // A click without movement: nothing to commit, so no undo step.
+      clearPreviewOverride(clip.id);
+      endGesture();
+      return;
+    }
+    const next = effects.map((x, i) => (i === idx ? { ...x, params: { ...x.params, [key]: v } } : x));
+    // One merge key per effect instance: back-to-back releases on the same slider coalesce.
+    await onCommit(next, { mergeKey: `effects:${clip.id}:${effects[idx]?.id ?? idx}` });
+    clearPreviewOverride(clip.id);
+    endGesture();
+  };
 
   return (
     <ul className="effect-list">
@@ -209,17 +250,14 @@ export function EffectList({
                   min={key === "radius" ? 0 : key === "exposure" ? -2 : 0}
                   max={key === "radius" ? 32 : key === "exposure" ? 2 : 2}
                   step={0.05}
-                  value={fx.params[key]}
+                  value={shownValue(idx, key)}
                   disabled={locked || !fx.enabled}
-                  onChange={(e) => {
-                    const v = parseFloat(e.target.value);
-                    const next = effects.map((x, i) =>
-                      i === idx ? { ...x, params: { ...x.params, [key]: v } } : x,
-                    );
-                    void onCommit(next);
-                  }}
+                  onChange={(e) => previewParam(idx, key, parseFloat(e.target.value))}
+                  onMouseUp={(e) => void commitParam(idx, key, parseFloat(e.currentTarget.value))}
+                  onTouchEnd={(e) => void commitParam(idx, key, parseFloat(e.currentTarget.value))}
+                  onKeyUp={(e) => void commitParam(idx, key, parseFloat(e.currentTarget.value))}
                 />
-                <span>{fx.params[key].toFixed(2)}</span>
+                <span>{shownValue(idx, key).toFixed(2)}</span>
               </div>
             ))}
           </li>

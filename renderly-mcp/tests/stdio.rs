@@ -30,7 +30,9 @@ const TOOLS: &[&str] = &[
     "open_project",
     "permission_prompt",
     "probe_media",
+    "redo",
     "render_frame",
+    "undo",
 ];
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(60);

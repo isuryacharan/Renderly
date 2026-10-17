@@ -9,6 +9,9 @@ const ipc = vi.hoisted(() => ({
   applyCommands: vi.fn(),
   undo: vi.fn(),
   redo: vi.fn(),
+  setPreviewOverride: vi.fn(),
+  clearPreviewOverride: vi.fn(),
+  endGesture: vi.fn(),
   refreshFrame: vi.fn(),
   getProject: vi.fn(),
   setEditorSelection: vi.fn(),
@@ -66,6 +69,9 @@ beforeEach(() => {
   ipc.pause.mockResolvedValue(7);
   ipc.play.mockResolvedValue(undefined);
   ipc.getProject.mockResolvedValue({ project: sample(), revision: 99 });
+  ipc.setPreviewOverride.mockResolvedValue(undefined);
+  ipc.clearPreviewOverride.mockResolvedValue(undefined);
+  ipc.endGesture.mockResolvedValue({ can_undo: true, can_redo: false });
   // toast() schedules removal through window.setTimeout; no DOM needed otherwise.
   vi.stubGlobal("window", { setTimeout: () => 0 });
   vi.stubGlobal("document", { getElementById: () => null });
@@ -334,7 +340,7 @@ describe("applying backend JSON patches (dispatch)", () => {
     load(sample(), { playhead: 1.5 });
     ipc.applyCommand.mockResolvedValue(ok());
     await store().dispatch({ command: "SplitClip" });
-    expect(ipc.applyCommand).toHaveBeenCalledWith({ command: "SplitClip" }, expect.any(String));
+    expect(ipc.applyCommand).toHaveBeenCalledWith({ command: "SplitClip" }, expect.any(String), undefined);
     expect(ipc.refreshFrame).toHaveBeenCalledWith(1.5);
   });
 
@@ -357,7 +363,7 @@ describe("applying backend JSON patches (dispatch)", () => {
       ),
     );
     await store().dispatchBatch([{ a: 1 }, { b: 2 }]);
-    expect(ipc.applyCommands).toHaveBeenCalledWith([{ a: 1 }, { b: 2 }], expect.any(String));
+    expect(ipc.applyCommands).toHaveBeenCalledWith([{ a: 1 }, { b: 2 }], expect.any(String), undefined);
     expect(store().project!.tracks[0].clips.map((c) => c.position_secs)).toEqual([1, 8]);
   });
 
@@ -495,6 +501,7 @@ describe("clipboard / duplicate", () => {
     expect(ipc.applyCommand).toHaveBeenCalledWith(
       { command: "AddClip", track_id: "v1", media_id: "m-F", position_secs: 7, source_in_secs: 0, source_out_secs: 6 },
       expect.any(String),
+      undefined,
     );
   });
 
@@ -950,5 +957,88 @@ describe("formatCommandError", () => {
 
   it("keeps other engine errors as they are", () => {
     expect(formatCommandError(new Error("track not found: x"))).toBe("track not found: x");
+  });
+});
+
+describe("live edits: preview overrides and one undo step per gesture", () => {
+  const sel = (trackId: string, clipId: string) => ({ trackId, clipId });
+
+  it("a drag previews through overrides and commits one merge-keyed command on release", async () => {
+    load();
+    ipc.applyCommand.mockResolvedValue(ok([], 3));
+
+    // Every tick of the drag: render-only, no command, no history.
+    for (const opacity of [0.9, 0.7, 0.5, 0.3]) {
+      store().setPreviewOverride("A", { opacity });
+    }
+    expect(ipc.applyCommand).not.toHaveBeenCalled();
+    expect(ipc.setPreviewOverride).toHaveBeenCalledTimes(4);
+    expect(store().previewOverrides.A).toEqual({ opacity: 0.3 });
+    expect(store().project).toEqual(sample());
+
+    // Release: one command, carrying the gesture's merge key; the override is then dropped.
+    const command = { command: "SetClipTransform", track_id: "v1", clip_id: "A", transform: {} };
+    await store().dispatch(command, false, { mergeKey: "transform:A" });
+    store().clearPreviewOverride("A");
+    store().endGesture();
+
+    expect(ipc.applyCommand).toHaveBeenCalledTimes(1);
+    expect(ipc.applyCommand).toHaveBeenCalledWith(command, expect.any(String), "transform:A");
+    expect(store().previewOverrides).toEqual({});
+    expect(ipc.clearPreviewOverride).toHaveBeenCalledWith("A");
+    expect(ipc.endGesture).toHaveBeenCalledTimes(1);
+
+    // The gesture is one step, so one undo reverts it.
+    ipc.undo.mockResolvedValue({ can_undo: false, can_redo: true, revision: 4, patch: [] });
+    await store().undo();
+    expect(ipc.undo).toHaveBeenCalledTimes(1);
+  });
+
+  it("a live edit never reaches the project until it is committed", () => {
+    load();
+    store().setPreviewOverride("A", { opacity: 0.2 });
+    expect(store().project).toEqual(sample());
+    expect(store().canUndo).toBe(false);
+  });
+
+  it("hover preview adds a temporary effect to the selected clip, with no command, and clears on leave", () => {
+    load(sample(), { selections: [sel("v1", "A")], selection: sel("v1", "A") });
+
+    store().previewEffectOnSelection("builtin:blur", { radius: 4 });
+    const effects = store().previewOverrides.A?.effects ?? [];
+    expect(effects).toHaveLength(1);
+    expect(effects[0]).toMatchObject({ effect_id: "builtin:blur", enabled: true, params: { radius: 4 } });
+    expect(ipc.applyCommand).not.toHaveBeenCalled();
+    expect(store().project).toEqual(sample());
+    expect(store().canUndo).toBe(false);
+
+    // Moving to another effect replaces the hover instance rather than stacking it.
+    store().previewEffectOnSelection("builtin:color_adjust", { exposure: 0 });
+    expect(store().previewOverrides.A?.effects).toHaveLength(1);
+
+    store().clearEffectPreview();
+    expect(store().previewOverrides).toEqual({});
+    expect(ipc.clearPreviewOverride).toHaveBeenCalledWith("A");
+    expect(ipc.applyCommand).not.toHaveBeenCalled();
+  });
+
+  it("hover preview keeps the clip's committed effects and appends the temporary one", () => {
+    const withGlitch = sample();
+    const a = withGlitch.tracks[0].clips[0] as { effects?: unknown[] };
+    a.effects = [{ id: "e1", effect_id: "builtin:glitch", enabled: true, params: { intensity: 0.5 } }];
+    load(withGlitch, { selections: [sel("v1", "A")], selection: sel("v1", "A") });
+
+    store().previewEffectOnSelection("builtin:blur", { radius: 4 });
+    const effects = store().previewOverrides.A?.effects ?? [];
+    expect(effects.map((e) => e.effect_id)).toEqual(["builtin:glitch", "builtin:blur"]);
+  });
+
+  it("a rejected commit still clears the override, so no phantom preview remains", async () => {
+    load();
+    ipc.applyCommand.mockRejectedValue("nope");
+    store().setPreviewOverride("A", { opacity: 0.2 });
+    await store().dispatch({ command: "SetClipTransform" }, true, { mergeKey: "transform:A" });
+    store().clearPreviewOverride("A");
+    expect(store().previewOverrides).toEqual({});
   });
 });

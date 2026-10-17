@@ -2,7 +2,7 @@ import { SlidersHorizontal } from "lucide-react";
 import { setClipEffects } from "../../lib/commands";
 import type { EffectInstance, MediaClip } from "../../lib/types";
 import { activeTracks } from "../../lib/container";
-import { useEditorStore } from "../../store/editorStore";
+import { useEditorStore, type DispatchOptions } from "../../store/editorStore";
 import { EffectList } from "./EffectsPanel";
 
 const COLOR_ADJUST_ID = "builtin:color_adjust";
@@ -36,8 +36,8 @@ export function AdjustPanel() {
   const effects = mediaClip.effects ?? [];
   const hasAdjust = effects.some((e) => e.effect_id === COLOR_ADJUST_ID);
 
-  async function commit(next: EffectInstance[]) {
-    await dispatch(setClipEffects(track!.id, mediaClip!.id, next));
+  async function commit(next: EffectInstance[], opts?: DispatchOptions) {
+    await dispatch(setClipEffects(track!.id, mediaClip!.id, next), false, opts);
   }
 
   function ensureAdjust() {
@@ -70,9 +70,9 @@ export function AdjustPanel() {
           clip={mediaClip}
           effects={adjustOnly}
           locked={locked}
-          onCommit={async (nextAdjust) => {
+          onCommit={async (nextAdjust, opts) => {
             const others = effects.filter((e) => e.effect_id !== COLOR_ADJUST_ID);
-            await commit([...others, ...nextAdjust]);
+            await commit([...others, ...nextAdjust], opts);
           }}
         />
       )}

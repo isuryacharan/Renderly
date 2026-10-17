@@ -81,6 +81,9 @@ const DENOISE_BACKENDS = [
 
 export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaClip }) {
   const dispatch = useEditorStore((s) => s.dispatch);
+  const setPreviewOverride = useEditorStore((s) => s.setPreviewOverride);
+  const clearPreviewOverride = useEditorStore((s) => s.clearPreviewOverride);
+  const endGesture = useEditorStore((s) => s.endGesture);
   const select = useEditorStore((s) => s.select);
   const project = useEditorStore((s) => s.project);
   const media = useEditorStore((s) => s.project?.media.find((m) => m.id === clip.media_id));
@@ -148,9 +151,23 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
     clip.audio_denoise?.strength,
   ]);
 
+  /** Live edit: show the transform on the preview as a render-only override (no command). */
+  function previewTransform(next: ClipTransform) {
+    setTransform(next);
+    setPreviewOverride(clip.id, { transform: next });
+  }
+
+  /** Commit one edit as a single undo step. `transform:<clip>` lets back-to-back commits on the
+   *  same clip (a field blur, then a slider release) coalesce into one record. */
   async function commitTransform(next: ClipTransform) {
     setTransform(next);
-    await dispatch(setClipTransform(track.id, clip.id, next));
+    if (JSON.stringify(next) !== JSON.stringify(clipTransform(clip))) {
+      await dispatch(setClipTransform(track.id, clip.id, next), false, {
+        mergeKey: `transform:${clip.id}`,
+      });
+    }
+    clearPreviewOverride(clip.id);
+    endGesture();
   }
 
   const fileName = media ? media.path.split(/[/\\]/).pop() : null;
@@ -248,14 +265,14 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
               label="X"
               value={transform.x}
               disabled={track.locked}
-              onChange={(x) => setTransform({ ...transform, x })}
+              onChange={(x) => previewTransform({ ...transform, x })}
               onCommit={(x) => void commitTransform({ ...transform, x })}
             />
             <NumCell
               label="Y"
               value={transform.y}
               disabled={track.locked}
-              onChange={(y) => setTransform({ ...transform, y })}
+              onChange={(y) => previewTransform({ ...transform, y })}
               onCommit={(y) => void commitTransform({ ...transform, y })}
             />
           </div>
@@ -267,9 +284,9 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
               disabled={track.locked}
               onChange={(scale_x) => {
                 if (linkScale) {
-                  setTransform({ ...transform, scale_x, scale_y: scale_x });
+                  previewTransform({ ...transform, scale_x, scale_y: scale_x });
                 } else {
-                  setTransform({ ...transform, scale_x });
+                  previewTransform({ ...transform, scale_x });
                 }
               }}
               onCommit={(scale_x) => {
@@ -296,9 +313,9 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
               disabled={track.locked}
               onChange={(scale_y) => {
                 if (linkScale) {
-                  setTransform({ ...transform, scale_x: scale_y, scale_y });
+                  previewTransform({ ...transform, scale_x: scale_y, scale_y });
                 } else {
-                  setTransform({ ...transform, scale_y });
+                  previewTransform({ ...transform, scale_y });
                 }
               }}
               onCommit={(scale_y) => {
@@ -315,7 +332,7 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
               value={transform.rotation_deg}
               step={1}
               disabled={track.locked}
-              onChange={(rotation_deg) => setTransform({ ...transform, rotation_deg })}
+              onChange={(rotation_deg) => previewTransform({ ...transform, rotation_deg })}
               onCommit={(rotation_deg) => void commitTransform({ ...transform, rotation_deg })}
             />
             <label className="insp-cell">
@@ -328,7 +345,7 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
                 value={transform.opacity}
                 disabled={track.locked}
                 onChange={(e) =>
-                  setTransform({ ...transform, opacity: parseFloat(e.target.value) })
+                  previewTransform({ ...transform, opacity: parseFloat(e.target.value) })
                 }
                 onMouseUp={(e) => {
                   const opacity = parseFloat((e.target as HTMLInputElement).value);
@@ -358,7 +375,7 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
                     value={transform[axis]}
                     disabled={track.locked}
                     title="Moves the cover-fit window across the source (-1 edge, 0 centre, +1 edge). Has no effect on an axis the source does not overflow."
-                    onChange={(e) => setTransform(withFit(parseFloat(e.target.value)))}
+                    onChange={(e) => previewTransform(withFit(parseFloat(e.target.value)))}
                     onMouseUp={(e) =>
                       void commitTransform(withFit(parseFloat((e.target as HTMLInputElement).value)))
                     }

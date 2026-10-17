@@ -6,7 +6,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import type { Project } from "./types";
+import type { ClipTransform, EffectInstance, Project } from "./types";
 import type {
   AgentEnvelope,
   AgentId,
@@ -275,11 +275,14 @@ export interface ProjectSnapshot {
 /// `mutationId`, if given, comes back on the resulting `project:changed` event so the
 /// caller can recognize "this is my own edit" and skip a second refetch — see B2 in
 /// docs/improvement-plan.md and the `project:changed` handler in `store/editorStore.ts`.
+/// `mergeKey`, if given, coalesces this change into the previous undo record when that record
+/// has the same key and its gesture is still open (docs/architecture.md "Coalescing").
 export function applyCommand(
   command: Record<string, unknown>,
   mutationId?: string,
+  mergeKey?: string,
 ): Promise<CommandResult> {
-  return invoke<CommandResult>("apply_command", { command, mutationId });
+  return invoke<CommandResult>("apply_command", { command, mutationId, mergeKey });
 }
 
 /// Atomic batch — all-or-nothing, one undo step. For gestures that are logically a
@@ -287,8 +290,9 @@ export function applyCommand(
 export function applyCommands(
   commands: Record<string, unknown>[],
   mutationId?: string,
+  mergeKey?: string,
 ): Promise<CommandsResult> {
-  return invoke<CommandsResult>("apply_commands", { commands, mutationId });
+  return invoke<CommandsResult>("apply_commands", { commands, mutationId, mergeKey });
 }
 
 export function undo(mutationId?: string): Promise<HistoryResult> {
@@ -297,6 +301,46 @@ export function undo(mutationId?: string): Promise<HistoryResult> {
 
 export function redo(mutationId?: string): Promise<HistoryResult> {
   return invoke<HistoryResult>("redo", { mutationId });
+}
+
+export interface HistoryFlags {
+  can_undo: boolean;
+  can_redo: boolean;
+}
+
+/** Open an undo transaction: every edit until `commitTransaction` is one undo step. */
+export function beginTransaction(label: string): Promise<HistoryFlags> {
+  return invoke<HistoryFlags>("begin_transaction", { label });
+}
+
+export function commitTransaction(): Promise<HistoryFlags> {
+  return invoke<HistoryFlags>("commit_transaction");
+}
+
+/** Abort the open transaction and restore the state it started from. */
+export function rollbackTransaction(mutationId?: string): Promise<HistoryResult> {
+  return invoke<HistoryResult>("rollback_transaction", { mutationId });
+}
+
+/** Close the top undo record's merge gesture (mouse-up or key-up after a live edit). */
+export function endGesture(): Promise<HistoryFlags> {
+  return invoke<HistoryFlags>("end_gesture");
+}
+
+/** Render-only override for one clip: a temporary transform, opacity or effect stack. Never
+ *  saved and never in undo. Mirrors the core `PreviewOverride` (`renderly_core::compose`). */
+export interface PreviewOverride {
+  transform?: ClipTransform;
+  opacity?: number;
+  effects?: EffectInstance[];
+}
+
+export function setPreviewOverride(target: string, over: PreviewOverride): Promise<void> {
+  return invoke<void>("set_preview_override", { target, over });
+}
+
+export function clearPreviewOverride(target: string): Promise<void> {
+  return invoke<void>("clear_preview_override", { target });
 }
 
 // ---- Export ----

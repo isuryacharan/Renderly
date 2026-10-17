@@ -89,6 +89,7 @@ emit `project:changed` so the GUI updates live.
 | Tool | Description |
 |---|---|
 | `apply_command` | Apply one `Command` JSON object and save (same shape as CLI `apply`) |
+| `undo` / `redo` | Step the open app's shared undo history. One step is one agent turn, one batch, or one coalesced drag. Needs the desktop app open on the project (the history lives in the app session) |
 | `export` | Render open project to MP4 (`preset`: `tiktok` or `youtube`) |
 | `export_otio` | Write the open project as an OpenTimelineIO `.otio` file (`output_path`); lossless for Renderly, see [otio.md](otio.md) |
 | `import_otio` | Create a **new** project file from a `.otio` file (`input_path`, `output_path`, optional `width`/`height`/`probe`) and open it; returns `{ project_path, fps, tracks, media, sequences, warnings[] }` — read `warnings` for what could not be carried over |

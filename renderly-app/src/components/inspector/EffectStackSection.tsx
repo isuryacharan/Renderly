@@ -25,8 +25,8 @@ export function EffectStackSection({
           clip={clip}
           effects={effects}
           locked={track.locked}
-          onCommit={async (next) => {
-            await dispatch(setClipEffects(track.id, clip.id, next));
+          onCommit={async (next, opts) => {
+            await dispatch(setClipEffects(track.id, clip.id, next), false, opts);
           }}
         />
       </div>

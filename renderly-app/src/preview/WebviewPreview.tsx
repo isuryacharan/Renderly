@@ -61,6 +61,7 @@ export function WebviewPreview({
     void engine.init().then(() => {
       // Push whatever state accumulated while the mode ladder resolved.
       engine.setProject(useEditorStore.getState().project ?? null);
+      engine.setPreviewOverrides(useEditorStore.getState().previewOverrides);
       engine.setActiveSequence(useEditorStore.getState().activeSequenceId);
       engine.seek(useEditorStore.getState().playhead);
     });
@@ -109,6 +110,10 @@ export function WebviewPreview({
     return useEditorStore.subscribe((state, prevState) => {
       if (state.project !== prevState.project) {
         engineRef.current?.notifyProjectPatched();
+      }
+      // Live drags and hover previews change only the render-only overrides (no project change).
+      if (state.previewOverrides !== prevState.previewOverrides) {
+        engineRef.current?.setPreviewOverrides(state.previewOverrides);
       }
     });
   }, []);

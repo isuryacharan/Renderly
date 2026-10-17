@@ -671,6 +671,39 @@ impl RenderlyMcp {
     }
 
     #[tool(
+        name = "undo",
+        description = "Undo the last edit step. One step is one agent turn, one batch, or one coalesced slider drag. Needs the Renderly desktop app open on this project (its undo history is shared with the GUI)."
+    )]
+    fn undo_tool(&self) -> String {
+        self.history_step_impl("undo")
+            .unwrap_or_else(|e| format!("error: {e}"))
+    }
+
+    #[tool(
+        name = "redo",
+        description = "Redo the last undone edit step. Needs the Renderly desktop app open on this project."
+    )]
+    fn redo_tool(&self) -> String {
+        self.history_step_impl("redo")
+            .unwrap_or_else(|e| format!("error: {e}"))
+    }
+
+    fn history_step_impl(&self, method: &str) -> Result<String, String> {
+        self.with_live_or_headless(
+            |client| {
+                let result =
+                    Self::block_on_bridge(async { client.call(method, json!({})).await })?;
+                Ok(result.to_string())
+            },
+            |_session| {
+                Err(format!(
+                    "{method} needs the Renderly desktop app open on this project: undo history lives in the app session"
+                ))
+            },
+        )
+    }
+
+    #[tool(
         description = "Whether the Renderly desktop app is live on this project, plus playhead/selection"
     )]
     fn get_editor_status(&self) -> String {
@@ -1310,6 +1343,8 @@ mod tests {
         names.sort();
         let mut expected = vec![
             "apply_command",
+            "redo",
+            "undo",
             "detect_scenes",
             "describe_commands",
             "detect_silence",
