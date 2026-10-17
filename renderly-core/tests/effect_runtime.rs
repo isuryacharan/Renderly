@@ -121,6 +121,34 @@ fn golden(name: &str) -> Vec<u8> {
     rgba.into_raw()
 }
 
+/// The golden suite's default tolerance (tests/golden_frames.rs `GOLDEN_TOL`). The goldens
+/// were rendered on one GPU; other backends (Vulkan/lavapipe/Metal on CI) differ by a few
+/// LSB in sampling and float rounding. On the machine that made the goldens the runtime
+/// renders them exactly (max diff 0), which the eprintln below reports.
+const GOLDEN_CHANNEL_TOL: u8 = 3;
+const GOLDEN_MAX_FRAC: f64 = 0.001;
+
+fn assert_within_golden_tol(name: &str, actual: &[u8], expected: &[u8]) {
+    let (max, count) = diff(actual, expected);
+    let over = actual
+        .chunks(4)
+        .zip(expected.chunks(4))
+        .filter(|(a, e)| {
+            a.iter()
+                .zip(e.iter())
+                .any(|(x, y)| x.abs_diff(*y) > GOLDEN_CHANNEL_TOL)
+        })
+        .count();
+    let frac = over as f64 / (actual.len() / 4) as f64;
+    eprintln!(
+        "{name}: max abs diff {max}, differing channel values {count}, pixels over tol {over}"
+    );
+    assert!(
+        frac <= GOLDEN_MAX_FRAC,
+        "{name}: {over} pixels differ by more than {GOLDEN_CHANNEL_TOL} (budget {GOLDEN_MAX_FRAC})"
+    );
+}
+
 /// Max per-channel abs difference and the number of differing channel values.
 fn diff(actual: &[u8], expected: &[u8]) -> (u8, usize) {
     assert_eq!(actual.len(), expected.len());
@@ -352,12 +380,7 @@ fn blur_matches_the_committed_golden_frame() {
     let expected = golden("fx_blur_t0500ms");
     // The check has teeth: the blurred golden is not the unblurred source.
     assert_ne!(diff(&expected, &gen_bars().into_raw()).1, 0);
-    let (max, count) = diff(&actual, &expected);
-    eprintln!("fx_blur_t0500ms: max abs diff {max}, differing channel values {count}");
-    assert_eq!(
-        max, 0,
-        "blur is expected to be bit-identical to the golden frame"
-    );
+    assert_within_golden_tol("fx_blur_t0500ms", &actual, &expected);
 }
 
 #[test]
@@ -381,9 +404,7 @@ fn crossfade_matches_the_committed_golden_frames() {
             &host(f64::from(t_ms) / 1000.0, progress, 0),
         );
         let name = format!("transition_crossfade_t{t_ms:04}ms");
-        let (max, count) = diff(&actual, &golden(&name));
-        eprintln!("{name}: max abs diff {max}, differing channel values {count}");
-        assert_eq!(max, 0, "{name} is expected to be bit-identical");
+        assert_within_golden_tol(&name, &actual, &golden(&name));
     }
 }
 
