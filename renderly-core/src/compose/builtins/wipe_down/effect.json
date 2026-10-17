@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "id": "wipe_down",
+  "version": 1,
+  "kind": "transition",
+  "label": "Wipe down",
+  "category": "wipe",
+  "default_duration_ms": 500,
+  "overlap": true,
+  "easing": "linear",
+  "passes": [
+    { "type": "fragment", "shader": "wipe_down.wgsl", "inputs": ["from", "to"], "output": "out" }
+  ]
+}

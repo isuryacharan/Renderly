@@ -1,0 +1,16 @@
+{
+  "format": 1,
+  "id": "color_adjust",
+  "version": 1,
+  "kind": "effect",
+  "label": "Color adjust",
+  "category": "color",
+  "params": [
+    { "key": "exposure", "type": "float", "label": "Exposure", "min": -5, "max": 5, "default": 0 },
+    { "key": "contrast", "type": "float", "min": 0, "max": 4, "default": 1 },
+    { "key": "saturation", "type": "float", "min": 0, "max": 4, "default": 1 }
+  ],
+  "passes": [
+    { "type": "fragment", "shader": "color_adjust.wgsl", "inputs": ["src"], "output": "out" }
+  ]
+}

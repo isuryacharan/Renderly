@@ -36,6 +36,8 @@ pub enum ComposeError {
     NoAdapter,
     #[error("wgpu error: {0}")]
     Wgpu(String),
+    #[error("effect runtime: {0}")]
+    Effect(String),
 }
 
 /// Marks a layer as one side of an outgoing→incoming transition pair.
@@ -806,6 +808,7 @@ impl Compositor {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("compose-gpu"),
             });
+        self.begin_frame();
         let scratch = self.encode_root(packs, steps, &mut encoder)?;
         self.queue.submit(Some(encoder.finish()));
         self.recycle(scratch);
@@ -834,6 +837,12 @@ impl Compositor {
         self.composite_inner(packs, steps.iter().map(SceneStep::as_ref))
     }
 
+    /// Rewinds the effect runtimes' uniform rings at the start of each submitted frame.
+    fn begin_frame(&mut self) {
+        self.effects.begin_frame();
+        self.transitions.begin_frame();
+    }
+
     fn composite_inner<'a, I: Iterator<Item = StepRef<'a>>>(
         &mut self,
         packs: &[LoadedPack],
@@ -845,6 +854,7 @@ impl Compositor {
                 label: Some("export-frame"),
             });
 
+        self.begin_frame();
         let scratch = self.encode_root(packs, steps, &mut encoder)?;
 
         let bytes_per_row = self.width * 4;
@@ -1025,8 +1035,14 @@ impl Compositor {
                     DrawDest::TransitionB,
                     encoder,
                 )?;
-                self.transitions
-                    .blend(&self.device, encoder, &target.view, kind, progress)?;
+                self.transitions.blend(
+                    &self.device,
+                    &self.queue,
+                    encoder,
+                    &target.view,
+                    kind,
+                    progress,
+                )?;
                 continue;
             }
 
@@ -1241,10 +1257,9 @@ impl Compositor {
                 usage: wgpu::BufferUsages::UNIFORM,
             });
 
-        let sample_view = if use_effects {
-            self.effects.result_view()
-        } else {
-            uploaded_view
+        let sample_view = match (use_effects, self.effects.result_view()) {
+            (true, Some(view)) => view,
+            _ => uploaded_view,
         };
 
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {

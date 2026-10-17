@@ -12,8 +12,6 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use wgpu::util::DeviceExt;
-
 use super::manifest::{
     EffectManifest, FilterMode, ItemKind, TargetFormat, WrapMode, MAX_UNIFORM_BYTES,
 };
@@ -271,6 +269,19 @@ impl CompiledEffect {
         &self.manifest
     }
 
+    /// True when the item's `bypass` holds for the stored params: the item is the identity and
+    /// the caller runs no passes.
+    pub fn is_bypassed(
+        &self,
+        params: &dyn Fn(&str) -> Option<ParamValue>,
+    ) -> Result<bool, EffectError> {
+        let controls = self
+            .manifest
+            .resolve_params(params)
+            .map_err(EffectError::Param)?;
+        Ok(self.manifest.is_bypassed(&controls)?)
+    }
+
     /// Content key of this item (manifest, shaders and textures); changes whenever any of
     /// them does.
     pub fn content_hash(&self) -> u64 {
@@ -329,9 +340,10 @@ impl EffectOutput {
 
 struct PassPipeline {
     pipeline: wgpu::RenderPipeline,
-    group0: wgpu::BindGroupLayout,
     group1: wgpu::BindGroupLayout,
     group2: wgpu::BindGroupLayout,
+    /// Group 2 bind group when the pass has no file textures (it is empty, so created once).
+    group2_empty: Option<wgpu::BindGroup>,
 }
 
 struct FileTexture {
@@ -340,13 +352,49 @@ struct FileTexture {
     sampler: wgpu::Sampler,
 }
 
+/// Byte stride of each pass's `Host` block in the uniform ring: the dynamic-offset alignment.
+const UNIFORM_ALIGN: u64 = 256;
+/// Bytes reserved for one run's `Params` block (the largest the design allows).
+const PARAMS_SLOT: u64 = MAX_UNIFORM_BYTES as u64;
+/// Smallest uniform ring allocation.
+const RING_MIN_BYTES: u64 = 64 * 1024;
+
+/// Per-frame uniform storage. Every run stages its `Params` and each pass's `Host` block at
+/// fresh offsets, and binds them with dynamic offsets, so a frame creates no uniform buffers
+/// and no per-run bind groups. The compositor calls [`EffectExecutor::begin_frame`] once per
+/// submitted frame, which rewinds the cursor: the queue applies those writes after the previous
+/// submission has run, so reusing the offsets is safe.
+struct UniformRing {
+    buffer: wgpu::Buffer,
+    group0: wgpu::BindGroup,
+    capacity: u64,
+    cursor: u64,
+}
+
+/// Where one run's uniforms sit in the ring.
+struct StagedUniforms {
+    params_offset: u32,
+    host_offsets: Vec<u32>,
+}
+
 /// Runs compiled effects on one device. Create one per device and keep it.
 pub struct EffectExecutor {
     sampler_linear: wgpu::Sampler,
     sampler_nearest: wgpu::Sampler,
-    pipelines: HashMap<(u64, usize), PassPipeline>,
+    group0_layout: wgpu::BindGroupLayout,
+    ring: Option<UniformRing>,
+    pipelines: HashMap<(u64, usize, bool), PassPipeline>,
     files: HashMap<(u64, usize), FileTexture>,
     pool: HashMap<(u32, u32, wgpu::TextureFormat), Vec<wgpu::Texture>>,
+}
+
+/// Where a run's final pass writes.
+pub enum FinalTarget<'a> {
+    /// A pooled output texture, returned as [`EffectOutput`].
+    Output,
+    /// Straight into `view`, alpha-blended over its contents (`ALPHA_BLENDING`, no clear), so
+    /// a transition lands on the layer it replaces without an extra copy pass.
+    Blend(&'a wgpu::TextureView),
 }
 
 impl EffectExecutor {
@@ -369,9 +417,21 @@ impl EffectExecutor {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             ..Default::default()
         });
+        let fragment = wgpu::ShaderStages::FRAGMENT;
+        let group0_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("effect-group0"),
+            entries: &[
+                dynamic_uniform_entry(0, fragment, Some(prelude::HOST_SIZE as u64)),
+                dynamic_uniform_entry(1, fragment, None),
+                sampler_entry(2, fragment),
+                sampler_entry(3, fragment),
+            ],
+        });
         Self {
             sampler_linear,
             sampler_nearest,
+            group0_layout,
+            ring: None,
             pipelines: HashMap::new(),
             files: HashMap::new(),
             pool: HashMap::new(),
@@ -381,6 +441,28 @@ impl EffectExecutor {
     /// Returns a finished output to the pool.
     pub fn recycle(&mut self, out: EffectOutput) {
         self.put(out.texture);
+    }
+
+    /// Marks the start of a submitted frame: uniform staging restarts at the ring's beginning.
+    /// Call it once before each frame's effect runs, at the point the previous frame has been
+    /// submitted.
+    pub fn begin_frame(&mut self) {
+        if let Some(ring) = self.ring.as_mut() {
+            ring.cursor = 0;
+        }
+    }
+
+    /// A pooled `width` x `height` output, for passes the caller records itself (for example a
+    /// mask). Hand it back with [`Self::recycle`].
+    pub fn take_output(&mut self, device: &wgpu::Device, width: u32, height: u32) -> EffectOutput {
+        let texture = self.take(device, width, height, wgpu::TextureFormat::Rgba8Unorm);
+        let view = texture.create_view(&Default::default());
+        EffectOutput {
+            texture,
+            view,
+            width,
+            height,
+        }
     }
 
     fn take(
@@ -421,22 +503,19 @@ impl EffectExecutor {
         }
     }
 
-    fn ensure_pipeline(&mut self, device: &wgpu::Device, effect: &CompiledEffect, index: usize) {
-        let key = (effect.hash, index);
+    fn ensure_pipeline(
+        &mut self,
+        device: &wgpu::Device,
+        effect: &CompiledEffect,
+        index: usize,
+        blend: bool,
+    ) {
+        let key = (effect.hash, index, blend);
         if self.pipelines.contains_key(&key) {
             return;
         }
         let pass = &effect.passes[index];
         let fragment = wgpu::ShaderStages::FRAGMENT;
-        let group0 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("effect-group0"),
-            entries: &[
-                uniform_entry(0, fragment),
-                uniform_entry(1, fragment),
-                sampler_entry(2, fragment),
-                sampler_entry(3, fragment),
-            ],
-        });
         let group1_entries: Vec<wgpu::BindGroupLayoutEntry> = pass
             .prelude_inputs
             .iter()
@@ -471,11 +550,19 @@ impl EffectExecutor {
             label: Some("effect-group2"),
             entries: &group2_entries,
         });
+        let group2_empty = group2_entries.is_empty().then(|| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("effect-group2-empty"),
+                layout: &group2,
+                entries: &[],
+            })
+        });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("effect-pipeline-layout"),
-            bind_group_layouts: &[Some(&group0), Some(&group1), Some(&group2)],
+            bind_group_layouts: &[Some(&self.group0_layout), Some(&group1), Some(&group2)],
             immediate_size: 0,
         });
+        let blend_state = blend.then_some(wgpu::BlendState::ALPHA_BLENDING);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("effect-pass"),
             source: wgpu::ShaderSource::Wgsl(pass.wgsl.as_str().into()),
@@ -494,7 +581,7 @@ impl EffectExecutor {
                 entry_point: Some(pass.entry.as_str()),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: pass.output_format,
-                    blend: None,
+                    blend: blend_state,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -509,11 +596,100 @@ impl EffectExecutor {
             key,
             PassPipeline {
                 pipeline,
-                group0,
                 group1,
                 group2,
+                group2_empty,
             },
         );
+    }
+
+    /// Stages one run's `Params` and each pass's `Host` block in the uniform ring.
+    fn stage_uniforms(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        params: &[u8],
+        hosts: &[Vec<u8>],
+    ) -> StagedUniforms {
+        let need = PARAMS_SLOT + hosts.len() as u64 * UNIFORM_ALIGN;
+        let fits = self
+            .ring
+            .as_ref()
+            .is_some_and(|r| r.cursor + need <= r.capacity);
+        if !fits {
+            let capacity = (self
+                .ring
+                .as_ref()
+                .map_or(RING_MIN_BYTES, |r| r.capacity * 2))
+            .max(need.next_power_of_two());
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("effect-uniform-ring"),
+                size: capacity,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let group0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("effect-group0"),
+                layout: &self.group0_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &buffer,
+                            offset: 0,
+                            size: wgpu::BufferSize::new(prelude::HOST_SIZE as u64),
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &buffer,
+                            offset: 0,
+                            size: wgpu::BufferSize::new(PARAMS_SLOT),
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler_linear),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler_nearest),
+                    },
+                ],
+            });
+            self.ring = Some(UniformRing {
+                buffer,
+                group0,
+                capacity,
+                cursor: 0,
+            });
+        }
+        let Some(ring) = self.ring.as_mut() else {
+            return StagedUniforms {
+                params_offset: 0,
+                host_offsets: Vec::new(),
+            };
+        };
+        let base = ring.cursor;
+        ring.cursor += need;
+        let write = |offset: u64, bytes: &[u8]| {
+            // write_buffer needs 4-byte multiples; pad with zeros.
+            let mut padded = bytes.to_vec();
+            padded.resize(bytes.len().div_ceil(4) * 4, 0);
+            queue.write_buffer(&ring.buffer, offset, &padded);
+        };
+        write(base, params);
+        let mut host_offsets = Vec::with_capacity(hosts.len());
+        for (i, host) in hosts.iter().enumerate() {
+            let offset = base + PARAMS_SLOT + i as u64 * UNIFORM_ALIGN;
+            write(offset, host);
+            host_offsets.push(offset as u32);
+        }
+        StagedUniforms {
+            params_offset: base as u32,
+            host_offsets,
+        }
     }
 
     fn ensure_file(
@@ -592,8 +768,8 @@ impl EffectExecutor {
         );
     }
 
-    /// Runs `effect` once and returns its output. `params` are the stored control values
-    /// (missing keys take their defaults). The effect's input frame is `host.width` x
+    /// Runs `effect` once into a pooled output. `params` looks up the stored control value of a
+    /// param by key (`None` takes the default). The effect's input frame is `host.width` x
     /// `host.height`; intermediate targets scale from it. The caller submits `encoder`.
     #[allow(clippy::too_many_arguments)]
     pub fn run(
@@ -603,9 +779,61 @@ impl EffectExecutor {
         encoder: &mut wgpu::CommandEncoder,
         effect: &CompiledEffect,
         inputs: &EffectInputs<'_>,
-        params: &BTreeMap<String, ParamValue>,
+        params: &dyn Fn(&str) -> Option<ParamValue>,
         host: &HostValues,
     ) -> Result<EffectOutput, EffectError> {
+        self.encode(
+            device,
+            queue,
+            encoder,
+            effect,
+            inputs,
+            params,
+            host,
+            FinalTarget::Output,
+        )?
+        .ok_or_else(|| EffectError::Gpu("the run produced no output".into()))
+    }
+
+    /// As [`Self::run`], but the final pass is alpha-blended straight into `dest` (see
+    /// [`FinalTarget::Blend`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_blended(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        effect: &CompiledEffect,
+        inputs: &EffectInputs<'_>,
+        params: &dyn Fn(&str) -> Option<ParamValue>,
+        host: &HostValues,
+        dest: &wgpu::TextureView,
+    ) -> Result<(), EffectError> {
+        self.encode(
+            device,
+            queue,
+            encoder,
+            effect,
+            inputs,
+            params,
+            host,
+            FinalTarget::Blend(dest),
+        )?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn encode(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        effect: &CompiledEffect,
+        inputs: &EffectInputs<'_>,
+        params: &dyn Fn(&str) -> Option<ParamValue>,
+        host: &HostValues,
+        final_target: FinalTarget<'_>,
+    ) -> Result<Option<EffectOutput>, EffectError> {
         if host.width == 0 || host.height == 0 {
             return Err(EffectError::Limit("effect input has no pixels".into()));
         }
@@ -630,15 +858,38 @@ impl EffectExecutor {
         let values = manifest.evaluate_uniforms(&controls, host)?;
         let params_bytes = effect.layout.encode(&values).map_err(EffectError::Param)?;
 
+        let last = effect.passes.len().saturating_sub(1);
+        let blended = matches!(final_target, FinalTarget::Blend(_));
         for index in 0..effect.passes.len() {
-            self.ensure_pipeline(device, effect, index);
+            self.ensure_pipeline(device, effect, index, blended && index == last);
         }
         for index in 0..manifest.textures.len() {
             self.ensure_file(device, queue, effect, index);
         }
 
-        let params_buffer = uniform_buffer(device, &params_bytes);
         let (width, height) = (host.width, host.height);
+        let host_blocks: Vec<Vec<u8>> = effect
+            .passes
+            .iter()
+            .map(|pass| {
+                prelude::encode_host(
+                    host,
+                    match pass.output {
+                        Slot::Out => (width, height),
+                        Slot::Target(t) => {
+                            let scale = &manifest.targets[t];
+                            (
+                                ((f64::from(width) * scale.scale).round() as u32).max(1),
+                                ((f64::from(height) * scale.scale).round() as u32).max(1),
+                            )
+                        }
+                    },
+                    (width, height),
+                )
+            })
+            .collect();
+        let staged = self.stage_uniforms(device, queue, &params_bytes, &host_blocks);
+
         let mut targets: Vec<(wgpu::Texture, wgpu::TextureView)> =
             Vec::with_capacity(manifest.targets.len());
         for t in &manifest.targets {
@@ -648,37 +899,22 @@ impl EffectExecutor {
             let view = texture.create_view(&Default::default());
             targets.push((texture, view));
         }
-        let out_texture = self.take(device, width, height, wgpu::TextureFormat::Rgba8Unorm);
-        let out_view = out_texture.create_view(&Default::default());
+        let out = match final_target {
+            FinalTarget::Output => {
+                let texture = self.take(device, width, height, wgpu::TextureFormat::Rgba8Unorm);
+                let view = texture.create_view(&Default::default());
+                Some((texture, view))
+            }
+            FinalTarget::Blend(_) => None,
+        };
 
+        let ring = self
+            .ring
+            .as_ref()
+            .ok_or_else(|| EffectError::Gpu("uniform ring missing".into()))?;
         for (index, pass) in effect.passes.iter().enumerate() {
-            let pipeline = &self.pipelines[&(effect.hash, index)];
-            let host_bytes = prelude::encode_host(
-                host,
-                match pass.output {
-                    Slot::Out => (width, height),
-                    Slot::Target(t) => (targets[t].0.width(), targets[t].0.height()),
-                },
-                (width, height),
-            );
-            let host_buffer = uniform_buffer(device, &host_bytes);
-
-            let group0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("effect-group0"),
-                layout: &pipeline.group0,
-                entries: &[
-                    buffer_entry(0, &host_buffer),
-                    buffer_entry(1, &params_buffer),
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler_linear),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler_nearest),
-                    },
-                ],
-            });
+            let is_final = index == last;
+            let pipeline = &self.pipelines[&(effect.hash, index, blended && is_final)];
 
             let mut views: Vec<&wgpu::TextureView> = Vec::with_capacity(pass.inputs.len());
             for input in &pass.inputs {
@@ -711,29 +947,44 @@ impl EffectExecutor {
                 layout: &pipeline.group1,
                 entries: &group1_entries,
             });
-            let group2_entries: Vec<wgpu::BindGroupEntry> = pass
-                .inputs
-                .iter()
-                .enumerate()
-                .filter_map(|(i, input)| match input {
-                    InputRef::File(f) => Some(wgpu::BindGroupEntry {
-                        binding: i as u32,
-                        resource: wgpu::BindingResource::Sampler(
-                            &self.files[&(effect.hash, *f)].sampler,
-                        ),
-                    }),
-                    _ => None,
-                })
-                .collect();
-            let group2 = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("effect-group2"),
-                layout: &pipeline.group2,
-                entries: &group2_entries,
-            });
+            let group2_made;
+            let group2 = match &pipeline.group2_empty {
+                Some(empty) => empty,
+                None => {
+                    let group2_entries: Vec<wgpu::BindGroupEntry> = pass
+                        .inputs
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, input)| match input {
+                            InputRef::File(f) => Some(wgpu::BindGroupEntry {
+                                binding: i as u32,
+                                resource: wgpu::BindingResource::Sampler(
+                                    &self.files[&(effect.hash, *f)].sampler,
+                                ),
+                            }),
+                            _ => None,
+                        })
+                        .collect();
+                    group2_made = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("effect-group2"),
+                        layout: &pipeline.group2,
+                        entries: &group2_entries,
+                    });
+                    &group2_made
+                }
+            };
 
-            let target_view = match pass.output {
-                Slot::Out => &out_view,
-                Slot::Target(t) => &targets[t].1,
+            let (target_view, load) = match (pass.output, is_final, &final_target) {
+                (Slot::Out, true, FinalTarget::Blend(dest)) => (*dest, wgpu::LoadOp::Load),
+                (Slot::Out, _, _) => (
+                    out.as_ref()
+                        .map(|(_, v)| v)
+                        .ok_or_else(|| EffectError::Gpu("no output target".into()))?,
+                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                ),
+                (Slot::Target(t), _, _) => {
+                    (&targets[t].1, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT))
+                }
             };
             {
                 let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -742,7 +993,7 @@ impl EffectExecutor {
                         view: target_view,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            load,
                             store: wgpu::StoreOp::Store,
                         },
                         depth_slice: None,
@@ -753,9 +1004,10 @@ impl EffectExecutor {
                     multiview_mask: None,
                 });
                 rp.set_pipeline(&pipeline.pipeline);
-                rp.set_bind_group(0, &group0, &[]);
+                let host_offset = staged.host_offsets[index];
+                rp.set_bind_group(0, &ring.group0, &[host_offset, staged.params_offset]);
                 rp.set_bind_group(1, &group1, &[]);
-                rp.set_bind_group(2, &group2, &[]);
+                rp.set_bind_group(2, group2, &[]);
                 rp.draw(0..6, 0..1);
             }
         }
@@ -765,23 +1017,27 @@ impl EffectExecutor {
         for (texture, _) in targets {
             self.put(texture);
         }
-        Ok(EffectOutput {
-            texture: out_texture,
-            view: out_view,
+        Ok(out.map(|(texture, view)| EffectOutput {
+            texture,
+            view,
             width,
             height,
-        })
+        }))
     }
 }
 
-fn uniform_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
+fn dynamic_uniform_entry(
+    binding: u32,
+    visibility: wgpu::ShaderStages,
+    min_binding_size: Option<u64>,
+) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
+            has_dynamic_offset: true,
+            min_binding_size: min_binding_size.and_then(wgpu::BufferSize::new),
         },
         count: None,
     }
@@ -794,22 +1050,6 @@ fn sampler_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGrou
         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
         count: None,
     }
-}
-
-fn buffer_entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
-    wgpu::BindGroupEntry {
-        binding,
-        resource: buffer.as_entire_binding(),
-    }
-}
-
-/// A uniform buffer holding `bytes`.
-fn uniform_buffer(device: &wgpu::Device, bytes: &[u8]) -> wgpu::Buffer {
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("effect-uniform"),
-        contents: bytes,
-        usage: wgpu::BufferUsages::UNIFORM,
-    })
 }
 
 #[cfg(test)]

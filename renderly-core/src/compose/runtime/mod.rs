@@ -18,9 +18,8 @@
 //! Nothing here touches the filesystem or decodes images: manifests, WGSL and decoded pixels
 //! come in as strings and buffers, so the module builds for wasm32 as well.
 //!
-//! Not wired yet: the builtin effects and transitions in `compose::effects` and
-//! `compose::transition` still use their hard-coded passes. `compose::builtins` holds the
-//! format-2 versions that the tests check against them.
+//! The live compositor runs every builtin through this module: `compose::effects` and
+//! `compose::transition` resolve the project's ids onto the items in `compose::builtins`.
 
 pub mod executor;
 pub mod expr;

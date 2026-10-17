@@ -867,22 +867,6 @@ impl TransitionKind {
             Self::BlurDissolve => "blur_dissolve",
         }
     }
-
-    /// Uniform `kind` id for `transition.wgsl`.
-    pub fn shader_id(self) -> u32 {
-        match self {
-            Self::Crossfade => 0,
-            Self::FadeBlack => 1,
-            Self::WipeLeft => 2,
-            Self::WipeRight => 3,
-            Self::WipeUp => 4,
-            Self::WipeDown => 5,
-            Self::SlideLeft => 6,
-            Self::SlideRight => 7,
-            Self::Iris => 8,
-            Self::BlurDissolve => 9,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

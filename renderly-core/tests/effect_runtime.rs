@@ -237,7 +237,15 @@ fn render(
     }
     let mut encoder = device.create_command_encoder(&Default::default());
     let out = exec
-        .run(device, queue, &mut encoder, effect, &bound, params, host)
+        .run(
+            device,
+            queue,
+            &mut encoder,
+            effect,
+            &bound,
+            &|k| params.get(k).cloned(),
+            host,
+        )
         .unwrap_or_else(|e| panic!("run failed: {e}"));
     let (w, h) = (out.width(), out.height());
     let row = w as usize * 4;
@@ -593,7 +601,7 @@ fn render_with_lut(
             &mut encoder,
             effect,
             &bound,
-            params,
+            &|k| params.get(k).cloned(),
             &host(0.0, 0.0, 0),
         )
         .unwrap_or_else(|e| panic!("{e}"));
@@ -725,7 +733,7 @@ fn missing_inputs_and_bad_params_are_errors() {
             &mut encoder,
             &blur,
             &no_inputs,
-            &blur_params(1.0),
+            &|k| blur_params(1.0).get(k).cloned(),
             &host(0.0, 0.0, 0)
         )
         .is_err());
@@ -741,8 +749,159 @@ fn missing_inputs_and_bad_params_are_errors() {
             &mut encoder,
             &blur,
             &bound,
-            &bad,
+            &|k| bad.get(k).cloned(),
             &host(0.0, 0.0, 0)
         )
         .is_err());
+}
+
+/// Stored params that exercise each builtin effect's non-trivial paths.
+fn seek_params(name: &str) -> BTreeMap<String, ParamValue> {
+    let pairs: &[(&str, f64)] = match name {
+        "blur" => &[("radius", 3.0)],
+        "color_adjust" => &[("exposure", 0.5), ("contrast", 1.2), ("saturation", 0.8)],
+        "lut_contrast" | "lut_warm" => &[("intensity", 0.7)],
+        "glitch" => &[("intensity", 0.8), ("slice", 0.6), ("seed", 3.0)],
+        "chroma_key" => &[
+            ("key_g", 1.0),
+            ("tolerance", 0.2),
+            ("softness", 0.2),
+            ("spill", 0.5),
+        ],
+        _ => &[],
+    };
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), ParamValue::Number(*v)))
+        .collect()
+}
+
+#[test]
+fn every_builtin_effect_is_the_same_cold_or_after_playing_up_to_it() {
+    let gpu = gpu_or_skip!();
+    let (device, queue) = gpu;
+    let src = upload(device, queue, &gen_bars());
+    let view = src.create_view(&Default::default());
+    for name in [
+        "blur",
+        "color_adjust",
+        "lut_contrast",
+        "lut_warm",
+        "glitch",
+        "chroma_key",
+    ] {
+        let item = load_builtin(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let params = seek_params(name);
+        let mut cold = EffectExecutor::new(device);
+        let a = render(
+            gpu,
+            &mut cold,
+            &item,
+            &[("src", &view)],
+            &params,
+            &host(0.5, 0.0, 15),
+        );
+        let mut warm = EffectExecutor::new(device);
+        for k in 0..5 {
+            let _ = render(
+                gpu,
+                &mut warm,
+                &item,
+                &[("src", &view)],
+                &params,
+                &host(f64::from(k) / 30.0, 0.0, k),
+            );
+        }
+        let b = render(
+            gpu,
+            &mut warm,
+            &item,
+            &[("src", &view)],
+            &params,
+            &host(0.5, 0.0, 15),
+        );
+        assert_eq!(diff(&a, &b), (0, 0), "{name} is not seek-pure");
+    }
+}
+
+#[test]
+fn every_builtin_transition_is_the_same_cold_or_after_playing_up_to_it() {
+    let gpu = gpu_or_skip!();
+    let (device, queue) = gpu;
+    let from = upload(device, queue, &gen_bars());
+    let to = upload(device, queue, &gen_stripes());
+    let (vf, vt) = (
+        from.create_view(&Default::default()),
+        to.create_view(&Default::default()),
+    );
+    let names = [
+        "crossfade",
+        "fade_black",
+        "wipe_left",
+        "wipe_right",
+        "wipe_up",
+        "wipe_down",
+        "slide_left",
+        "slide_right",
+        "iris",
+        "blur_dissolve",
+    ];
+    for name in names {
+        let item = load_builtin(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+        for progress in [0.25, 0.5, 0.75] {
+            let inputs = [("from", &vf), ("to", &vt)];
+            let none = BTreeMap::new();
+            let mut cold = EffectExecutor::new(device);
+            let a = render(
+                gpu,
+                &mut cold,
+                &item,
+                &inputs,
+                &none,
+                &host(0.0, progress, 3),
+            );
+            let mut warm = EffectExecutor::new(device);
+            for k in 0..3 {
+                let _ = render(
+                    gpu,
+                    &mut warm,
+                    &item,
+                    &inputs,
+                    &none,
+                    &host(0.0, 0.1 * f64::from(k), k),
+                );
+            }
+            let b = render(
+                gpu,
+                &mut warm,
+                &item,
+                &inputs,
+                &none,
+                &host(0.0, progress, 3),
+            );
+            assert_eq!(
+                diff(&a, &b),
+                (0, 0),
+                "{name} at progress {progress} is not seek-pure"
+            );
+        }
+    }
+}
+
+#[test]
+fn bypass_marks_the_identity_settings_only() {
+    let blur = load_builtin("blur").unwrap_or_else(|e| panic!("{e}"));
+    let at = |radius: f64| {
+        let p = blur_params(radius);
+        blur.is_bypassed(&|k| p.get(k).cloned())
+            .unwrap_or_else(|e| panic!("{e}"))
+    };
+    assert!(at(0.0));
+    assert!(at(0.4));
+    assert!(!at(0.5));
+    let warm = load_builtin("lut_warm").unwrap_or_else(|e| panic!("{e}"));
+    let zero = BTreeMap::from([("intensity".to_string(), ParamValue::Number(0.0))]);
+    assert!(warm.is_bypassed(&|k| zero.get(k).cloned()).unwrap_or(false));
+    let chroma = load_builtin("chroma_key").unwrap_or_else(|e| panic!("{e}"));
+    assert!(!chroma.is_bypassed(&|_| None).unwrap_or(true));
 }

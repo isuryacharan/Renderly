@@ -1,17 +1,27 @@
-//! Builtin effect registry + GPU ping-pong chain (Phase 3.4).
+//! Builtin effect chain (Phase 3.4), now running on the effect runtime.
 //!
-//! Effects run on each layer's uploaded texture *before* the cover+transform composite
-//! draw. Unknown `effect_id`s are rejected at command validation; this module only
-//! executes the locked builtins below.
+//! Every builtin effect, filter and transition runs through `compose::runtime`, from the items in
+//! `compose::builtins`. This module maps the project's `effect_id`s onto those items, carries
+//! the chain's intermediate pictures between passes, and keeps the clip mask and the
+//! adjustment-layer mix as compositor code: a clip mask is a slot, not an item (see
+//! docs/effect-pack-format.md "Stack slots"). Unknown `effect_id`s are rejected at command
+//! validation; this module skips anything it cannot resolve.
 
-use crate::packs::{cube_lut_upload_bytes, find_cube_lut, parse_pack_lut_id, LoadedPack};
+use crate::packs::{find_cube_lut, parse_pack_lut_id, LoadedPack};
 use crate::project::{ClipMask, ClipMaskKind, EffectInstance};
 use std::collections::{BTreeMap, HashMap};
 use wgpu::util::DeviceExt;
 
+use super::builtins;
+use super::runtime::lut::{upload_cube, Lut3d};
+use super::runtime::manifest::ParamKind;
+use super::runtime::{
+    CompiledEffect, EffectError, EffectExecutor, EffectInputs, EffectOutput, HostValues, ParamValue,
+};
 use super::ComposeError;
 
-/// Locked builtin effect ids (also useful for GUI pickers).
+/// Locked builtin effect ids: the v7 `effect_id` strings the project stores. Each names the
+/// builtin item of the same name in [`builtins::BUILTINS`] (checked by a unit test).
 pub const BUILTIN_EFFECT_IDS: &[&str] = &[
     "builtin:color_adjust",
     "builtin:blur",
@@ -30,58 +40,43 @@ pub fn is_builtin_effect_id(effect_id: &str) -> bool {
     BUILTIN_EFFECT_IDS.contains(&effect_id)
 }
 
-/// Default params for a builtin (empty map if unknown).
+/// The builtin item behind a locked v7 effect id (`builtin:blur` -> `blur`).
+fn builtin_item_for(effect_id: &str) -> Option<&'static str> {
+    BUILTIN_EFFECT_IDS
+        .iter()
+        .find(|id| **id == effect_id)
+        .and_then(|id| id.strip_prefix("builtin:"))
+}
+
+/// Default params of a builtin, read from its manifest (empty if unknown).
 pub fn default_params(effect_id: &str) -> BTreeMap<String, f64> {
-    let mut m = BTreeMap::new();
-    match effect_id {
-        "builtin:color_adjust" => {
-            m.insert("exposure".into(), 0.0);
-            m.insert("contrast".into(), 1.0);
-            m.insert("saturation".into(), 1.0);
+    let mut out = BTreeMap::new();
+    let Some(manifest) = builtin_item_for(effect_id).and_then(builtins::manifest) else {
+        return out;
+    };
+    for p in &manifest.params {
+        if let ParamValue::Number(n) = p.default {
+            out.insert(p.key.clone(), n);
         }
-        "builtin:blur" => {
-            m.insert("radius".into(), 0.0);
-        }
-        "builtin:lut_contrast" | "builtin:lut_warm" => {
-            m.insert("intensity".into(), 1.0);
-        }
-        "builtin:glitch" => {
-            m.insert("intensity".into(), 0.5);
-            m.insert("slice".into(), 0.5);
-        }
-        "builtin:chroma_key" => {
-            m.insert("key_r".into(), 0.0);
-            m.insert("key_g".into(), 1.0);
-            m.insert("key_b".into(), 0.0);
-            m.insert("tolerance".into(), 0.3);
-            m.insert("softness".into(), 0.1);
-            m.insert("spill".into(), 0.0);
-        }
-        _ => {}
     }
-    m
+    out
 }
 
-/// Clamp known params into finite, reasonable ranges. Unknown keys left unchanged.
+/// Clamp known params into their manifest ranges. Unknown keys are left unchanged.
 pub fn clamp_effect_params(effect_id: &str, params: &mut BTreeMap<String, f64>) {
-    for (k, v) in params.iter_mut() {
-        *v = match (effect_id, k.as_str()) {
-            ("builtin:color_adjust", "exposure") => v.clamp(-5.0, 5.0),
-            ("builtin:color_adjust", "contrast") => v.clamp(0.0, 4.0),
-            ("builtin:color_adjust", "saturation") => v.clamp(0.0, 4.0),
-            ("builtin:blur", "radius") => v.clamp(0.0, 64.0),
-            ("builtin:lut_contrast" | "builtin:lut_warm", "intensity") => v.clamp(0.0, 1.0),
-            ("builtin:glitch", "intensity") => v.clamp(0.0, 1.0),
-            ("builtin:glitch", "slice") => v.clamp(0.0, 1.0),
-            ("builtin:chroma_key", "key_r" | "key_g" | "key_b") => v.clamp(0.0, 1.0),
-            ("builtin:chroma_key", "tolerance" | "softness" | "spill") => v.clamp(0.0, 1.0),
-            _ => *v,
-        };
+    let Some(manifest) = builtin_item_for(effect_id).and_then(builtins::manifest) else {
+        return;
+    };
+    for (key, value) in params.iter_mut() {
+        if let Some(spec) = manifest.params.iter().find(|p| &p.key == key) {
+            if matches!(
+                spec.kind,
+                ParamKind::Float | ParamKind::Int | ParamKind::Choice
+            ) {
+                *value = value.clamp(spec.min, spec.max);
+            }
+        }
     }
-}
-
-fn param_or(params: &BTreeMap<String, f64>, key: &str, default: f64) -> f64 {
-    params.get(key).copied().unwrap_or(default)
 }
 
 fn has_enabled_effects(effects: &[EffectInstance], packs: &[LoadedPack]) -> bool {
@@ -101,60 +96,6 @@ fn has_enabled_effects(effects: &[EffectInstance], packs: &[LoadedPack]) -> bool
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct ColorAdjustUniform {
-    exposure: f32,
-    contrast: f32,
-    saturation: f32,
-    _pad: f32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct BlurUniform {
-    texel: [f32; 2],
-    radius: f32,
-    _pad: f32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct LutUniform {
-    intensity: f32,
-    mode: u32,
-    _pad0: f32,
-    _pad1: f32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct GlitchUniform {
-    intensity: f32,
-    slice: f32,
-    time_seed: f32,
-    _pad: f32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct PackLutUniform {
-    intensity: f32,
-    lut_size: f32,
-    _pad0: f32,
-    _pad1: f32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct ChromaKeyUniform {
-    key_rgb: [f32; 4],
-    tolerance: f32,
-    softness: f32,
-    spill: f32,
-    _pad: f32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct MaskUniform {
     bounds: [f32; 4],
     feather: f32,
@@ -162,59 +103,6 @@ struct MaskUniform {
     mode: u32,
     _pad0: f32,
 }
-
-enum EffectKind {
-    ColorAdjust,
-    Blur,
-    Lut,
-    Glitch,
-    ChromaKey,
-}
-
-struct PackLutGpu {
-    size: u32,
-    _texture: wgpu::Texture,
-    view: wgpu::TextureView,
-}
-
-struct PingPongRt {
-    /// Kept alive so `view` remains valid.
-    _texture: wgpu::Texture,
-    view: wgpu::TextureView,
-}
-
-/// GPU resources for the builtin effect chain (owned by [`super::Compositor`]).
-pub struct EffectProcessor {
-    sampler: wgpu::Sampler,
-    bind_group_layout: wgpu::BindGroupLayout,
-    pack_lut_bind_group_layout: wgpu::BindGroupLayout,
-    mask_bind_group_layout: wgpu::BindGroupLayout,
-    color_adjust_pipeline: wgpu::RenderPipeline,
-    blur_pipeline: wgpu::RenderPipeline,
-    lut_pipeline: wgpu::RenderPipeline,
-    glitch_pipeline: wgpu::RenderPipeline,
-    chroma_key_pipeline: wgpu::RenderPipeline,
-    pack_lut_pipeline: wgpu::RenderPipeline,
-    mask_pipeline: wgpu::RenderPipeline,
-    pack_lut_cache: HashMap<String, PackLutGpu>,
-    matte_cache: HashMap<String, wgpu::TextureView>,
-    dummy_matte_view: Option<wgpu::TextureView>,
-    /// Ping/pong render targets per size, so alternating sizes within a frame (a nested
-    /// sequence at its own resolution) reuses them instead of reallocating every layer.
-    rts: HashMap<(u32, u32), [PingPongRt; 2]>,
-    /// Size of the ping/pong pair the last [`Self::apply`] wrote to.
-    cur_size: (u32, u32),
-    /// After a successful write, index of the RT holding the result (0=ping, 1=pong).
-    result_slot: u8,
-    unpremul_pipeline: wgpu::RenderPipeline,
-    adjust_mix_pipeline: wgpu::RenderPipeline,
-    adjust_mix_bind_group_layout: wgpu::BindGroupLayout,
-    /// Unused 16-byte uniform for passes that share the single-texture effect layout.
-    dummy_uniform: wgpu::Buffer,
-}
-
-/// Distinct ping/pong sizes kept alive before the cache is reset.
-const MAX_RT_SIZES: usize = 4;
 
 /// Matches `MixParams` in adjust_mix.wgsl.
 #[repr(C)]
@@ -225,6 +113,63 @@ struct MixUniform {
     invert: f32,
     mode: u32,
     opacity: f32,
+}
+
+fn effect_error(e: EffectError) -> ComposeError {
+    ComposeError::Effect(e.to_string())
+}
+
+/// The compiled builtin `name`, loading it on first use.
+pub(super) fn ensure_item<'a>(
+    items: &'a mut HashMap<&'static str, CompiledEffect>,
+    name: &'static str,
+) -> Result<&'a CompiledEffect, ComposeError> {
+    if !items.contains_key(name) {
+        let compiled = builtins::load_builtin(name).map_err(effect_error)?;
+        items.insert(name, compiled);
+    }
+    items
+        .get(name)
+        .ok_or_else(|| ComposeError::Effect(format!("builtin '{name}' did not load")))
+}
+
+/// Host values of an effect run. Builtins are time-independent; the clip-time values are zero
+/// until schema v8 threads them through the stack.
+fn effect_host(width: u32, height: u32) -> HostValues {
+    HostValues {
+        width,
+        height,
+        time: 0.0,
+        duration: 0.0,
+        progress: 0.0,
+        frame: 0,
+        seed: 0,
+        speed: 1.0,
+    }
+}
+
+/// GPU resources for the effect chain and the compositor-side mask passes (owned by
+/// [`super::Compositor`]).
+pub struct EffectProcessor {
+    sampler: wgpu::Sampler,
+    bind_group_layout: wgpu::BindGroupLayout,
+    mask_bind_group_layout: wgpu::BindGroupLayout,
+    mask_pipeline: wgpu::RenderPipeline,
+    unpremul_pipeline: wgpu::RenderPipeline,
+    adjust_mix_pipeline: wgpu::RenderPipeline,
+    adjust_mix_bind_group_layout: wgpu::BindGroupLayout,
+    /// Unused 16-byte uniform for passes that share the single-texture layout.
+    dummy_uniform: wgpu::Buffer,
+    /// Runs every builtin item and LUT filter.
+    executor: EffectExecutor,
+    /// Compiled builtin items, loaded on first use.
+    items: HashMap<&'static str, CompiledEffect>,
+    /// Uploaded pack LUTs by `effect_id`, re-uploaded when the cube size changes.
+    lut_cache: HashMap<String, Lut3d>,
+    matte_cache: HashMap<String, wgpu::TextureView>,
+    dummy_matte_view: Option<wgpu::TextureView>,
+    /// The picture the last [`Self::apply`] produced; the layer draw samples it.
+    current: Option<EffectOutput>,
 }
 
 impl EffectProcessor {
@@ -239,6 +184,7 @@ impl EffectProcessor {
             ..Default::default()
         });
 
+        // Unpremultiply: 0 = texture, 1 = sampler, 2 = unused uniform.
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("effect"),
             entries: &[
@@ -271,67 +217,11 @@ impl EffectProcessor {
             ],
         });
 
-        let pack_lut_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("pack-lut-effect"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D3,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
-
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("effect"),
             bind_group_layouts: &[Some(&bind_group_layout)],
             immediate_size: 0,
         });
-
-        let pack_lut_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("pack-lut-effect"),
-                bind_group_layouts: &[Some(&pack_lut_bind_group_layout)],
-                immediate_size: 0,
-            });
 
         let mask_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -388,34 +278,6 @@ impl EffectProcessor {
             immediate_size: 0,
         });
 
-        let color_adjust_pipeline = make_effect_pipeline(
-            device,
-            &pipeline_layout,
-            "color_adjust",
-            include_str!("color_adjust.wgsl"),
-        );
-        let blur_pipeline =
-            make_effect_pipeline(device, &pipeline_layout, "blur", include_str!("blur.wgsl"));
-        let lut_pipeline =
-            make_effect_pipeline(device, &pipeline_layout, "lut", include_str!("lut.wgsl"));
-        let glitch_pipeline = make_effect_pipeline(
-            device,
-            &pipeline_layout,
-            "glitch",
-            include_str!("glitch.wgsl"),
-        );
-        let chroma_key_pipeline = make_effect_pipeline(
-            device,
-            &pipeline_layout,
-            "chroma_key",
-            include_str!("chroma_key.wgsl"),
-        );
-        let pack_lut_pipeline = make_effect_pipeline(
-            device,
-            &pack_lut_pipeline_layout,
-            "pack_lut",
-            include_str!("pack_lut.wgsl"),
-        );
         let mask_pipeline = make_effect_pipeline(
             device,
             &mask_pipeline_layout,
@@ -482,21 +344,8 @@ impl EffectProcessor {
         Self {
             sampler,
             bind_group_layout,
-            pack_lut_bind_group_layout,
             mask_bind_group_layout,
-            color_adjust_pipeline,
-            blur_pipeline,
-            lut_pipeline,
-            glitch_pipeline,
-            chroma_key_pipeline,
-            pack_lut_pipeline,
             mask_pipeline,
-            pack_lut_cache: HashMap::new(),
-            matte_cache: HashMap::new(),
-            dummy_matte_view: None,
-            rts: HashMap::new(),
-            cur_size: (0, 0),
-            result_slot: 0,
             unpremul_pipeline,
             adjust_mix_pipeline,
             adjust_mix_bind_group_layout,
@@ -505,37 +354,23 @@ impl EffectProcessor {
                 contents: &[0u8; 16],
                 usage: wgpu::BufferUsages::UNIFORM,
             }),
+            executor: EffectExecutor::new(device),
+            items: HashMap::new(),
+            lut_cache: HashMap::new(),
+            matte_cache: HashMap::new(),
+            dummy_matte_view: None,
+            current: None,
         }
     }
 
-    fn ensure_rts(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        self.cur_size = (width, height);
-        if self.rts.contains_key(&self.cur_size) {
-            return;
-        }
-        if self.rts.len() >= MAX_RT_SIZES {
-            self.rts.clear();
-        }
-        self.rts.insert(
-            self.cur_size,
-            [
-                create_rt(device, "effect-ping", width, height),
-                create_rt(device, "effect-pong", width, height),
-            ],
-        );
+    /// Marks the start of a submitted frame; see [`EffectExecutor::begin_frame`].
+    pub(super) fn begin_frame(&mut self) {
+        self.executor.begin_frame();
     }
 
-    /// View of ping (0) or pong (1) at the size of the last [`Self::apply`].
-    fn slot_view(&self, slot: u8) -> &wgpu::TextureView {
-        &self
-            .rts
-            .get(&self.cur_size)
-            .expect("effect RTs for the current size")[slot as usize]
-            .view
-    }
-
-    pub fn result_view(&self) -> &wgpu::TextureView {
-        self.slot_view(self.result_slot)
+    /// The most recent chain output (valid after [`Self::apply`] returned `true`).
+    pub fn result_view(&self) -> Option<&wgpu::TextureView> {
+        self.current.as_ref().map(EffectOutput::view)
     }
 
     /// True when `effects` would write anything (some enabled, resolvable effect).
@@ -543,8 +378,9 @@ impl EffectProcessor {
         has_enabled_effects(effects, packs)
     }
 
-    /// Run enabled effects on `src_view` into ping-pong RTs. Returns `false` when nothing
-    /// was written (caller keeps using `src_view`).
+    /// Run enabled effects on `src_view`, then the clip mask. Returns `false` when nothing was
+    /// written (the caller keeps using `src_view`). Passes are recorded in list order; each
+    /// intermediate is recycled once the pass that reads it is recorded.
     #[allow(clippy::too_many_arguments)]
     pub fn apply(
         &mut self,
@@ -562,199 +398,111 @@ impl EffectProcessor {
             return Ok(false);
         }
 
-        self.ensure_rts(device, width, height);
-
-        let mut read_src = true;
-        let mut wrote = false;
-
+        let mut carry: Option<EffectOutput> = None;
         for effect in effects.iter().filter(|e| e.enabled) {
-            match effect.effect_id.as_str() {
-                "builtin:color_adjust" => {
-                    let u = ColorAdjustUniform {
-                        exposure: param_or(&effect.params, "exposure", 0.0) as f32,
-                        contrast: param_or(&effect.params, "contrast", 1.0) as f32,
-                        saturation: param_or(&effect.params, "saturation", 1.0) as f32,
-                        _pad: 0.0,
-                    };
-                    self.draw_pass(
-                        device,
-                        encoder,
-                        src_view,
-                        read_src,
-                        EffectKind::ColorAdjust,
-                        bytemuck::bytes_of(&u),
-                    )?;
-                    read_src = false;
-                    wrote = true;
+            let input = carry.as_ref().map_or(src_view, EffectOutput::view);
+            let produced =
+                self.run_effect(device, queue, encoder, effect, input, width, height, packs)?;
+            if let Some(out) = produced {
+                if let Some(prev) = carry.replace(out) {
+                    self.executor.recycle(prev);
                 }
-                "builtin:blur" => {
-                    let radius = param_or(&effect.params, "radius", 0.0) as f32;
-                    if radius < 0.5 {
-                        continue;
-                    }
-                    let u_h = BlurUniform {
-                        texel: [1.0 / width as f32, 0.0],
-                        radius,
-                        _pad: 0.0,
-                    };
-                    self.draw_pass(
-                        device,
-                        encoder,
-                        src_view,
-                        read_src,
-                        EffectKind::Blur,
-                        bytemuck::bytes_of(&u_h),
-                    )?;
-                    read_src = false;
-                    wrote = true;
-
-                    let u_v = BlurUniform {
-                        texel: [0.0, 1.0 / height as f32],
-                        radius,
-                        _pad: 0.0,
-                    };
-                    self.draw_pass(
-                        device,
-                        encoder,
-                        src_view,
-                        read_src,
-                        EffectKind::Blur,
-                        bytemuck::bytes_of(&u_v),
-                    )?;
-                }
-                "builtin:lut_contrast" | "builtin:lut_warm" => {
-                    let intensity = param_or(&effect.params, "intensity", 1.0) as f32;
-                    if intensity <= 0.0 {
-                        continue;
-                    }
-                    let mode = if effect.effect_id == "builtin:lut_contrast" {
-                        0u32
-                    } else {
-                        1u32
-                    };
-                    let u = LutUniform {
-                        intensity,
-                        mode,
-                        _pad0: 0.0,
-                        _pad1: 0.0,
-                    };
-                    self.draw_pass(
-                        device,
-                        encoder,
-                        src_view,
-                        read_src,
-                        EffectKind::Lut,
-                        bytemuck::bytes_of(&u),
-                    )?;
-                    read_src = false;
-                    wrote = true;
-                }
-                "builtin:glitch" => {
-                    let intensity = param_or(&effect.params, "intensity", 0.5) as f32;
-                    if intensity <= 0.001 {
-                        continue;
-                    }
-                    let u = GlitchUniform {
-                        intensity,
-                        slice: param_or(&effect.params, "slice", 0.5) as f32,
-                        time_seed: param_or(&effect.params, "seed", 0.0) as f32,
-                        _pad: 0.0,
-                    };
-                    self.draw_pass(
-                        device,
-                        encoder,
-                        src_view,
-                        read_src,
-                        EffectKind::Glitch,
-                        bytemuck::bytes_of(&u),
-                    )?;
-                    read_src = false;
-                    wrote = true;
-                }
-                "builtin:chroma_key" => {
-                    let u = ChromaKeyUniform {
-                        key_rgb: [
-                            param_or(&effect.params, "key_r", 0.0) as f32,
-                            param_or(&effect.params, "key_g", 1.0) as f32,
-                            param_or(&effect.params, "key_b", 0.0) as f32,
-                            0.0,
-                        ],
-                        tolerance: param_or(&effect.params, "tolerance", 0.3) as f32,
-                        softness: param_or(&effect.params, "softness", 0.1) as f32,
-                        spill: param_or(&effect.params, "spill", 0.0) as f32,
-                        _pad: 0.0,
-                    };
-                    self.draw_pass(
-                        device,
-                        encoder,
-                        src_view,
-                        read_src,
-                        EffectKind::ChromaKey,
-                        bytemuck::bytes_of(&u),
-                    )?;
-                    read_src = false;
-                    wrote = true;
-                }
-                id if parse_pack_lut_id(id).is_some() => {
-                    let intensity = param_or(&effect.params, "intensity", 1.0) as f32;
-                    if intensity <= 0.0 {
-                        continue;
-                    }
-                    let Some((pack_id, lut_id)) = parse_pack_lut_id(id) else {
-                        continue;
-                    };
-                    let Some(cube) = find_cube_lut(packs, pack_id, lut_id) else {
-                        continue;
-                    };
-                    self.ensure_pack_lut_gpu(device, queue, id, cube)?;
-                    let lut_view = self
-                        .pack_lut_cache
-                        .get(id)
-                        .expect("pack lut cache")
-                        .view
-                        .clone();
-                    let u = PackLutUniform {
-                        intensity,
-                        lut_size: cube.size as f32,
-                        _pad0: 0.0,
-                        _pad1: 0.0,
-                    };
-                    self.draw_pack_lut_pass(
-                        device,
-                        encoder,
-                        src_view,
-                        read_src,
-                        &lut_view,
-                        bytemuck::bytes_of(&u),
-                    )?;
-                    read_src = false;
-                    wrote = true;
-                }
-                _ => continue,
             }
         }
 
         if let Some(mask) = mask.filter(|m| m.enabled) {
             let u = mask_uniform(mask);
-
             let matte_view = if u.mode == 2 {
                 self.ensure_matte_view(device, queue, &mask.kind)?
             } else {
                 self.ensure_dummy_matte(device, queue)?
             };
-
+            let input = carry.as_ref().map_or(src_view, EffectOutput::view);
+            let out = self.executor.take_output(device, width, height);
             self.draw_mask_pass(
                 device,
                 encoder,
-                src_view,
-                read_src,
+                input,
+                &out,
                 &matte_view,
                 bytemuck::bytes_of(&u),
-            )?;
-            wrote = true;
+            );
+            if let Some(prev) = carry.replace(out) {
+                self.executor.recycle(prev);
+            }
         }
 
+        let wrote = carry.is_some();
+        if let Some(last) = carry {
+            if let Some(old) = self.current.replace(last) {
+                self.executor.recycle(old);
+            }
+        }
         Ok(wrote)
+    }
+
+    /// Runs one enabled effect instance. `None` when it resolves to nothing or is bypassed
+    /// (for example blur at radius 0, or a pack LUT whose file is not loaded).
+    #[allow(clippy::too_many_arguments)]
+    fn run_effect(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        effect: &EffectInstance,
+        input: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+        packs: &[LoadedPack],
+    ) -> Result<Option<EffectOutput>, ComposeError> {
+        let lookup = |key: &str| effect.params.get(key).map(|v| ParamValue::Number(*v));
+        let host = effect_host(width, height);
+        let Self {
+            executor,
+            items,
+            lut_cache,
+            ..
+        } = self;
+
+        if let Some((pack_id, lut_id)) = parse_pack_lut_id(&effect.effect_id) {
+            let Some(cube) = find_cube_lut(packs, pack_id, lut_id) else {
+                return Ok(None);
+            };
+            let stale = lut_cache
+                .get(&effect.effect_id)
+                .is_none_or(|l| l.size() != cube.size as u32);
+            if stale {
+                let lut = upload_cube(device, queue, cube).map_err(effect_error)?;
+                lut_cache.insert(effect.effect_id.clone(), lut);
+            }
+            let item = ensure_item(items, "lut_filter")?;
+            if item.is_bypassed(&lookup).map_err(effect_error)? {
+                return Ok(None);
+            }
+            let Some(lut) = lut_cache.get(&effect.effect_id) else {
+                return Ok(None);
+            };
+            let mut inputs = EffectInputs::new();
+            inputs.bind("src", input).bind("lut", lut.view());
+            let out = executor
+                .run(device, queue, encoder, item, &inputs, &lookup, &host)
+                .map_err(effect_error)?;
+            return Ok(Some(out));
+        }
+
+        let Some(name) = builtin_item_for(&effect.effect_id) else {
+            return Ok(None);
+        };
+        let item = ensure_item(items, name)?;
+        if item.is_bypassed(&lookup).map_err(effect_error)? {
+            return Ok(None);
+        }
+        let mut inputs = EffectInputs::new();
+        inputs.bind("src", input);
+        let out = executor
+            .run(device, queue, encoder, item, &inputs, &lookup, &host)
+            .map_err(effect_error)?;
+        Ok(Some(out))
     }
 
     /// Convert a premultiplied-alpha texture into straight alpha (`dest` = `src` with colour
@@ -840,6 +588,10 @@ impl EffectProcessor {
             }
             _ => self.ensure_dummy_matte(device, queue)?,
         };
+        let adjusted_view = self
+            .result_view()
+            .cloned()
+            .ok_or_else(|| ComposeError::Effect("adjustment has no adjusted picture".into()))?;
         let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("adjust-mix-params"),
             contents: bytemuck::bytes_of(&uniform),
@@ -855,7 +607,7 @@ impl EffectProcessor {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(self.result_view()),
+                    resource: wgpu::BindingResource::TextureView(&adjusted_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -1031,7 +783,7 @@ impl EffectProcessor {
     /// Drop uploaded pack-LUT 3D textures so the next use re-uploads from the (possibly
     /// replaced) `LoadedPack` data - the cache is otherwise keyed by effect id + size only.
     pub(super) fn clear_pack_lut_cache(&mut self) {
-        self.pack_lut_cache.clear();
+        self.lut_cache.clear();
     }
 
     fn ensure_dummy_matte(
@@ -1066,315 +818,67 @@ impl EffectProcessor {
         Ok(view)
     }
 
+    /// Clip-mask pass: `input_view` masked by the matte into `dest`.
     fn draw_mask_pass(
-        &mut self,
+        &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
-        src_view: &wgpu::TextureView,
-        read_src: bool,
+        input_view: &wgpu::TextureView,
+        dest: &EffectOutput,
         matte_view: &wgpu::TextureView,
         uniform_bytes: &[u8],
-    ) -> Result<(), ComposeError> {
-        let dest_slot = if read_src { 0u8 } else { 1 - self.result_slot };
-
+    ) {
         let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("mask-params"),
             contents: uniform_bytes,
             usage: wgpu::BufferUsages::UNIFORM,
         });
-
-        let input_is_src = read_src;
-        let input_slot = self.result_slot;
-
-        let bind_group = {
-            let input_view = if input_is_src {
-                src_view
-            } else if input_slot == 0 {
-                self.slot_view(0)
-            } else {
-                self.slot_view(1)
-            };
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("mask-bind"),
-                layout: &self.mask_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(input_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: params_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(matte_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                ],
-            })
-        };
-
-        let dest_view = if dest_slot == 0 {
-            self.slot_view(0)
-        } else {
-            self.slot_view(1)
-        };
-
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("mask-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: dest_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&self.mask_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.draw(0..6, 0..1);
-        }
-
-        self.result_slot = dest_slot;
-        Ok(())
-    }
-
-    fn ensure_pack_lut_gpu(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        effect_id: &str,
-        cube: &crate::packs::CubeLut,
-    ) -> Result<(), ComposeError> {
-        let size = cube.size as u32;
-        let needs_upload = self
-            .pack_lut_cache
-            .get(effect_id)
-            .map(|e| e.size != size)
-            .unwrap_or(true);
-        if needs_upload {
-            let bytes = cube_lut_upload_bytes(cube);
-            let texture = device.create_texture_with_data(
-                queue,
-                &wgpu::TextureDescriptor {
-                    label: Some("pack-lut-3d"),
-                    size: wgpu::Extent3d {
-                        width: size,
-                        height: size,
-                        depth_or_array_layers: size,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D3,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("mask-bind"),
+            layout: &self.mask_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(input_view),
                 },
-                wgpu::util::TextureDataOrder::LayerMajor,
-                &bytes,
-            );
-            let view = texture.create_view(&Default::default());
-            self.pack_lut_cache.insert(
-                effect_id.to_string(),
-                PackLutGpu {
-                    size,
-                    _texture: texture,
-                    view,
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
-            );
-        }
-        Ok(())
-    }
-
-    fn draw_pack_lut_pass(
-        &mut self,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        src_view: &wgpu::TextureView,
-        read_src: bool,
-        lut_view: &wgpu::TextureView,
-        uniform_bytes: &[u8],
-    ) -> Result<(), ComposeError> {
-        let dest_slot = if read_src { 0u8 } else { 1 - self.result_slot };
-
-        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("pack-lut-params"),
-            contents: uniform_bytes,
-            usage: wgpu::BufferUsages::UNIFORM,
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(matte_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
         });
 
-        let input_is_src = read_src;
-        let input_slot = self.result_slot;
-
-        let bind_group = {
-            let input_view = if input_is_src {
-                src_view
-            } else if input_slot == 0 {
-                self.slot_view(0)
-            } else {
-                self.slot_view(1)
-            };
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("pack-lut-bind"),
-                layout: &self.pack_lut_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(input_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: params_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(lut_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                ],
-            })
-        };
-
-        let dest_view = if dest_slot == 0 {
-            self.slot_view(0)
-        } else {
-            self.slot_view(1)
-        };
-
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("pack-lut-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: dest_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&self.pack_lut_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.draw(0..6, 0..1);
-        }
-
-        self.result_slot = dest_slot;
-        Ok(())
-    }
-
-    fn draw_pass(
-        &mut self,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        src_view: &wgpu::TextureView,
-        read_src: bool,
-        kind: EffectKind,
-        uniform_bytes: &[u8],
-    ) -> Result<(), ComposeError> {
-        let dest_slot = if read_src { 0u8 } else { 1 - self.result_slot };
-
-        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("effect-params"),
-            contents: uniform_bytes,
-            usage: wgpu::BufferUsages::UNIFORM,
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("mask-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: dest.view(),
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
         });
-
-        // Resolve input/dest views and pipeline without holding conflicting borrows.
-        let input_is_src = read_src;
-        let input_slot = self.result_slot;
-        let pipeline = match kind {
-            EffectKind::ColorAdjust => &self.color_adjust_pipeline,
-            EffectKind::Blur => &self.blur_pipeline,
-            EffectKind::Lut => &self.lut_pipeline,
-            EffectKind::Glitch => &self.glitch_pipeline,
-            EffectKind::ChromaKey => &self.chroma_key_pipeline,
-        };
-
-        let bind_group = {
-            let input_view = if input_is_src {
-                src_view
-            } else if input_slot == 0 {
-                self.slot_view(0)
-            } else {
-                self.slot_view(1)
-            };
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("effect-bind"),
-                layout: &self.bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(input_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: params_buffer.as_entire_binding(),
-                    },
-                ],
-            })
-        };
-
-        let dest_view = if dest_slot == 0 {
-            self.slot_view(0)
-        } else {
-            self.slot_view(1)
-        };
-
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("effect-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: dest_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.draw(0..6, 0..1);
-        }
-
-        self.result_slot = dest_slot;
-        Ok(())
+        pass.set_pipeline(&self.mask_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.draw(0..6, 0..1);
     }
 }
 
@@ -1419,28 +923,6 @@ fn mask_uniform(mask: &ClipMask) -> MaskUniform {
     }
 }
 
-fn create_rt(device: &wgpu::Device, label: &str, width: u32, height: u32) -> PingPongRt {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&Default::default());
-    PingPongRt {
-        _texture: texture,
-        view,
-    }
-}
-
 fn make_effect_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
@@ -1476,4 +958,53 @@ fn make_effect_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compose::runtime::manifest::ItemKind;
+
+    /// The locked v7 effect ids are exactly the effect and filter builtins' `builtin:<name>`
+    /// ids: the list agrees with the manifests.
+    #[test]
+    fn builtin_effect_ids_agree_with_the_builtin_manifests() {
+        for id in BUILTIN_EFFECT_IDS {
+            let name = builtin_item_for(id).unwrap_or_else(|| panic!("{id} is not builtin:<name>"));
+            let m = builtins::manifest(name).unwrap_or_else(|| panic!("no manifest for {name}"));
+            assert!(
+                matches!(m.kind, ItemKind::Effect | ItemKind::Filter),
+                "{id}"
+            );
+        }
+        let effects = builtins::BUILTINS
+            .iter()
+            .filter(|b| {
+                builtins::manifest(b.name).is_some_and(|m| matches!(m.kind, ItemKind::Effect))
+            })
+            .count();
+        assert_eq!(effects, BUILTIN_EFFECT_IDS.len());
+    }
+
+    #[test]
+    fn default_params_come_from_the_manifests() {
+        assert_eq!(default_params("builtin:blur").get("radius"), Some(&0.0));
+        assert_eq!(default_params("builtin:glitch").get("seed"), Some(&0.0));
+        assert_eq!(
+            default_params("builtin:chroma_key").get("key_g"),
+            Some(&1.0)
+        );
+        assert!(default_params("builtin:unknown").is_empty());
+    }
+
+    #[test]
+    fn clamp_uses_the_manifest_ranges() {
+        let mut p = BTreeMap::from([
+            ("exposure".to_string(), 9.0),
+            ("unknown".to_string(), 100.0),
+        ]);
+        clamp_effect_params("builtin:color_adjust", &mut p);
+        assert_eq!(p["exposure"], 5.0);
+        assert_eq!(p["unknown"], 100.0);
+    }
 }

@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "id": "blur_dissolve",
+  "version": 1,
+  "kind": "transition",
+  "label": "Blur dissolve",
+  "category": "dissolve",
+  "default_duration_ms": 500,
+  "overlap": true,
+  "easing": "linear",
+  "passes": [
+    { "type": "fragment", "shader": "blur_dissolve.wgsl", "inputs": ["from", "to"], "output": "out" }
+  ]
+}

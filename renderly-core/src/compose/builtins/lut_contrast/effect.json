@@ -1,0 +1,15 @@
+{
+  "format": 1,
+  "id": "lut_contrast",
+  "version": 1,
+  "kind": "effect",
+  "label": "LUT Contrast",
+  "category": "color",
+  "params": [
+    { "key": "intensity", "type": "float", "min": 0, "max": 1, "default": 1 }
+  ],
+  "bypass": "intensity <= 0",
+  "passes": [
+    { "type": "fragment", "shader": "lut_contrast.wgsl", "inputs": ["src"], "output": "out" }
+  ]
+}

@@ -1,18 +1,17 @@
-//! Dual-texture WGSL transition pass (Phase 3).
+//! Dual-input transitions (Phase 3), run on the effect runtime.
+//!
+//! The outgoing and incoming pictures are drawn into two offscreen targets, then the builtin
+//! transition item named by the clip's [`TransitionKind`] blends them onto the output (the
+//! item's `from` and `to` inputs). Its last pass is alpha-blended straight into the output, so
+//! a transition costs no copy pass.
+
+use std::collections::HashMap;
 
 use crate::project::TransitionKind;
-use wgpu::util::DeviceExt;
 
+use super::effects::ensure_item;
+use super::runtime::{CompiledEffect, EffectExecutor, EffectInputs, HostValues, ParamValue};
 use super::ComposeError;
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct TransitionUniform {
-    progress: f32,
-    kind: u32,
-    _pad0: f32,
-    _pad1: f32,
-}
 
 struct Offscreen {
     _texture: wgpu::Texture,
@@ -22,106 +21,26 @@ struct Offscreen {
 }
 
 pub struct TransitionPass {
-    sampler: wgpu::Sampler,
-    bind_group_layout: wgpu::BindGroupLayout,
-    pipeline: wgpu::RenderPipeline,
+    executor: EffectExecutor,
+    /// Compiled builtin transition items, loaded on first use.
+    items: HashMap<&'static str, CompiledEffect>,
     rt_a: Option<Offscreen>,
     rt_b: Option<Offscreen>,
 }
 
 impl TransitionPass {
     pub fn new(device: &wgpu::Device) -> Self {
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("transition-linear"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("transition"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
-
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("transition"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("transition.wgsl").into()),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("transition"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("transition"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-
         Self {
-            sampler,
-            bind_group_layout,
-            pipeline,
+            executor: EffectExecutor::new(device),
+            items: HashMap::new(),
             rt_a: None,
             rt_b: None,
         }
+    }
+
+    /// Marks the start of a submitted frame; see [`EffectExecutor::begin_frame`].
+    pub fn begin_frame(&mut self) {
+        self.executor.begin_frame();
     }
 
     pub fn ensure_rts(&mut self, device: &wgpu::Device, width: u32, height: u32) {
@@ -139,77 +58,66 @@ impl TransitionPass {
     }
 
     pub fn view_a(&self) -> &wgpu::TextureView {
-        &self.rt_a.as_ref().expect("trans-a").view
+        self.rt_a
+            .as_ref()
+            .map(|r| &r.view)
+            .unwrap_or_else(|| unreachable!("ensure_rts runs before any transition draw"))
     }
 
     pub fn view_b(&self) -> &wgpu::TextureView {
-        &self.rt_b.as_ref().expect("trans-b").view
+        self.rt_b
+            .as_ref()
+            .map(|r| &r.view)
+            .unwrap_or_else(|| unreachable!("ensure_rts runs before any transition draw"))
     }
 
+    /// Blends the two offscreen pictures onto `output_view` with the builtin item for `kind`.
     pub fn blend(
-        &self,
+        &mut self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         output_view: &wgpu::TextureView,
         kind: TransitionKind,
         progress: f32,
     ) -> Result<(), ComposeError> {
-        let u = TransitionUniform {
-            progress: progress.clamp(0.0, 1.0),
-            kind: kind.shader_id(),
-            _pad0: 0.0,
-            _pad1: 0.0,
+        let Self {
+            executor,
+            items,
+            rt_a,
+            rt_b,
+        } = self;
+        let (Some(a), Some(b)) = (rt_a.as_ref(), rt_b.as_ref()) else {
+            return Err(ComposeError::Effect(
+                "transition targets are not allocated".into(),
+            ));
         };
-        let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("transition-params"),
-            contents: bytemuck::bytes_of(&u),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("transition-bind"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(self.view_a()),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(self.view_b()),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: params.as_entire_binding(),
-                },
-            ],
-        });
-
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("transition-blend"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: output_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.draw(0..6, 0..1);
-        }
-        Ok(())
+        let item = ensure_item(items, kind.as_str())?;
+        let mut inputs = EffectInputs::new();
+        inputs.bind("from", &a.view).bind("to", &b.view);
+        let host = HostValues {
+            width: a.width,
+            height: a.height,
+            time: 0.0,
+            duration: 0.0,
+            progress: f64::from(progress.clamp(0.0, 1.0)),
+            frame: 0,
+            seed: 0,
+            speed: 1.0,
+        };
+        let no_params = |_: &str| -> Option<ParamValue> { None };
+        executor
+            .run_blended(
+                device,
+                queue,
+                encoder,
+                item,
+                &inputs,
+                &no_params,
+                &host,
+                output_view,
+            )
+            .map_err(|e| ComposeError::Effect(e.to_string()))
     }
 }
 
@@ -234,5 +142,28 @@ fn create_offscreen(device: &wgpu::Device, label: &str, width: u32, height: u32)
         view,
         width,
         height,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compose::builtins;
+    use crate::compose::runtime::manifest::ItemKind;
+
+    /// Every transition kind has a transition item of the same name, and nothing else is a
+    /// transition: `TransitionKind::ALL` agrees with the builtin manifests.
+    #[test]
+    fn transition_kinds_agree_with_builtin_manifests() {
+        for kind in TransitionKind::ALL {
+            let m = builtins::manifest(kind.as_str())
+                .unwrap_or_else(|| panic!("no builtin item for {kind:?}"));
+            assert_eq!(m.kind, ItemKind::Transition, "{kind:?}");
+        }
+        let transitions = builtins::BUILTINS
+            .iter()
+            .filter(|b| builtins::manifest(b.name).is_some_and(|m| m.kind == ItemKind::Transition))
+            .count();
+        assert_eq!(transitions, TransitionKind::ALL.len());
     }
 }

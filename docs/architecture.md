@@ -88,7 +88,9 @@ mix pieces (`export::collect_audio_clips`).
 
 ## Effect runtime (pack format 2, step 1)
 
-Status: the runtime exists and is tested; the live pipeline does not use it yet. Design:
+Status: every builtin effect, filter and transition runs through the runtime, and the live
+pipeline (native `FrameRenderer`, the wasm compositor and the golden-suite preview stand-in)
+uses it. Design:
 [effect-pack-format.md](effect-pack-format.md) (the normative parts move here and into
 asset-pack.md when the format ships).
 
@@ -121,15 +123,40 @@ manifest, shader text, decoded textures and LUTs arrive as data.
   No state is kept between runs, so frame N is the same cold or after frames 0..N-1.
 - `lut.rs`: `.cube` LUTs as `texture_3d` in `Rgba8Unorm`, using the same bytes as the pack LUT
   path. PNG LUT layouts (grid, strip, Hald) are not read yet.
-- `compose/builtins/`: format-2 sources for `blur` (two passes, a `blurred` target, `radius`)
-  and `crossfade` (transition), embedded with `include_str!`. `tests/effect_runtime.rs` checks
-  both against the committed golden frames (`fx_blur_t0500ms`,
-  `transition_crossfade_t{1250,1500,1750}ms`) bit for bit, and checks seek purity.
+- `compose/builtins/`: the builtin items, one folder each (`effect.json` + WGSL), embedded with
+  `include_str!` and listed in one table, `BUILTINS`. Effects: `blur` (two passes),
+  `color_adjust`, `lut_contrast`, `lut_warm`, `glitch`, `chroma_key`. Filter: `lut_filter`
+  (a pack `.cube` LUT as its `lut` param). Transitions: `crossfade`, `fade_black`,
+  `wipe_left/right/up/down`, `slide_left/right`, `iris`, `blur_dissolve`. Item ids are the
+  bare names (`builtin:<name>@1`).
+- `compose/effects` and `compose/transition.rs` resolve the project's ids onto those items:
+  `builtin:<name>` (locked v7 ids, `BUILTIN_EFFECT_IDS`) to `<name>`, a pack LUT
+  `pack:<pack>:lut:<id>` to `lut_filter` with the cube bound as `lut`, and a `TransitionKind`
+  to the item of the same name (`TransitionKind::as_str`). Effects run in list order, as
+  before; each is skipped when it resolves to nothing or its `bypass` holds.
+- Defaults, ranges and the id lists come from the manifests: `default_params` and
+  `clamp_effect_params` read them, and unit tests check that `BUILTIN_EFFECT_IDS` and
+  `TransitionKind::ALL` agree with the builtin items.
+- `bypass` (format extension, optional): a boolean `expr.v1` over the params (no host values).
+  When it holds, the item is the identity and runs no passes (for example blur at radius below
+  0.5). Without it, the builtins would cost passes at their defaults.
+- Transitions blend their last pass straight onto the output (`EffectExecutor::run_blended`,
+  `ALPHA_BLENDING`, no clear), so a transition adds no copy pass.
+- Per-frame uniforms live in a ring buffer owned by each executor, bound with dynamic offsets.
+  `Compositor` calls `begin_frame` once per submitted frame to rewind it, so a run creates no
+  uniform buffer and each pass creates only its group-1 bind group.
+- The clip mask, the adjustment-layer mix and unpremultiply stay compositor code (a mask is a
+  slot, not an item).
+- Clip time is not threaded yet: builtins get zero time and progress for effects. The shaders
+  do not read it, so output is unchanged; schema v8 adds real time.
 
-Not yet: the builtin dispatch in `compose/effects` and `compose/transition.rs` still runs the
-hard-coded passes, and the other four effects and eight transitions are not ported. Items
-are not yet loaded from packs (no `pack.json` format 2, library or store), there is no
-`describe_*` output, no hash-based ref resolution, and no importer. Compute passes, meshes,
+`tests/effect_runtime.rs` checks `blur` and `crossfade` against the committed golden frames
+with the golden suite's tolerance, and every builtin effect and transition for seek purity
+(frame N the same cold or after earlier frames). `tests/golden_frames.rs` runs the live
+pipeline against all committed goldens.
+
+Not yet: items are not loaded from packs (no `pack.json` format 2, library or store), there is
+no `describe_*` output, no hash-based ref resolution, and no importer. Compute passes, meshes,
 feedback and AI inputs are reserved features and are rejected as `NeedsNewer` today. The
 naga dependency is direct (`renderly-core/Cargo.toml`) at the version wgpu already uses.
 

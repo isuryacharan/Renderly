@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "id": "iris",
+  "version": 1,
+  "kind": "transition",
+  "label": "Iris",
+  "category": "shape",
+  "default_duration_ms": 500,
+  "overlap": true,
+  "easing": "linear",
+  "passes": [
+    { "type": "fragment", "shader": "iris.wgsl", "inputs": ["from", "to"], "output": "out" }
+  ]
+}

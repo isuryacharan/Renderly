@@ -1,0 +1,17 @@
+{
+  "format": 1,
+  "id": "glitch",
+  "version": 1,
+  "kind": "effect",
+  "label": "Glitch",
+  "category": "distort",
+  "params": [
+    { "key": "intensity", "type": "float", "min": 0, "max": 1, "default": 0.5 },
+    { "key": "slice", "type": "float", "label": "Slice", "min": 0, "max": 1, "default": 0.5 },
+    { "key": "seed", "type": "float", "label": "Seed", "min": -1000000000, "max": 1000000000, "default": 0, "animatable": false }
+  ],
+  "bypass": "intensity <= 0.001",
+  "passes": [
+    { "type": "fragment", "shader": "glitch.wgsl", "inputs": ["src"], "output": "out" }
+  ]
+}

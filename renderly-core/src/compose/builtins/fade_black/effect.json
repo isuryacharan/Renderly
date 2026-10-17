@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "id": "fade_black",
+  "version": 1,
+  "kind": "transition",
+  "label": "Fade to black",
+  "category": "fade",
+  "default_duration_ms": 500,
+  "overlap": true,
+  "easing": "linear",
+  "passes": [
+    { "type": "fragment", "shader": "fade_black.wgsl", "inputs": ["from", "to"], "output": "out" }
+  ]
+}

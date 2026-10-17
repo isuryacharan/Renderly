@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "id": "slide_left",
+  "version": 1,
+  "kind": "transition",
+  "label": "Slide left",
+  "category": "slide",
+  "default_duration_ms": 500,
+  "overlap": true,
+  "easing": "linear",
+  "passes": [
+    { "type": "fragment", "shader": "slide_left.wgsl", "inputs": ["from", "to"], "output": "out" }
+  ]
+}

@@ -453,6 +453,9 @@ pub struct EffectManifest {
     pub targets: Vec<TargetSpec>,
     pub passes: Vec<PassSpec>,
     pub transition: Option<TransitionSpec>,
+    /// Optional `bypass` expression over the params: when it is true the item is the identity
+    /// and runs no passes (see [`Self::is_bypassed`]).
+    pub(crate) bypass: Option<Compiled>,
 }
 
 // ---- raw JSON shapes -------------------------------------------------------------------
@@ -477,6 +480,8 @@ struct RawManifest {
     targets: Vec<RawTarget>,
     #[serde(default)]
     passes: Vec<RawPass>,
+    #[serde(default)]
+    bypass: Option<String>,
     #[serde(default)]
     default_duration_ms: Option<u32>,
     #[serde(default)]
@@ -569,7 +574,7 @@ fn is_ident(s: &str) -> bool {
 fn is_item_id(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
 /// Relative path inside the item folder: no absolute paths, drive letters or `..`.
@@ -661,7 +666,7 @@ impl EffectManifest {
 
     fn from_raw(raw: RawManifest, kind: ItemKind) -> Result<EffectManifest, ManifestError> {
         if !is_item_id(&raw.id) {
-            return invalid(format!("item id '{}' must match [a-z0-9-]+", raw.id));
+            return invalid(format!("item id '{}' must match [a-z0-9_-]+", raw.id));
         }
         let requires = match raw.requires {
             Some(list) => list,
@@ -680,6 +685,10 @@ impl EffectManifest {
         let textures = parse_textures(raw.textures)?;
         let targets = parse_targets(raw.targets)?;
         let passes = parse_passes(raw.passes, kind, &params, &textures, &targets)?;
+        let bypass = match &raw.bypass {
+            None => None,
+            Some(src) => Some(compile_bypass(src, &params)?),
+        };
 
         let transition = match kind {
             ItemKind::Transition => Some(TransitionSpec {
@@ -709,7 +718,21 @@ impl EffectManifest {
             targets,
             passes,
             transition,
+            bypass,
         })
+    }
+
+    /// True when the item's `bypass` expression holds for these control values (for example
+    /// `radius < 0.5` on blur): the item is then the identity and the caller runs no passes.
+    /// Items without a `bypass` are never bypassed.
+    pub fn is_bypassed(&self, controls: &[ParamValue]) -> Result<bool, ManifestError> {
+        let Some(c) = &self.bypass else {
+            return Ok(false);
+        };
+        let host = [0.0f64; 7];
+        let v = eval_compiled(c, &host, controls, &[], 0, 0.0)
+            .map_err(|e| expr_error("bypass".into(), e))?;
+        Ok(v != 0.0)
     }
 
     /// Parameter keys whose values are LUT references.
@@ -723,11 +746,11 @@ impl EffectManifest {
     /// declaration order.
     pub fn resolve_params(
         &self,
-        given: &BTreeMap<String, ParamValue>,
+        given: &dyn Fn(&str) -> Option<ParamValue>,
     ) -> Result<Vec<ParamValue>, String> {
         let mut out = Vec::with_capacity(self.params.len());
         for p in &self.params {
-            let value = match given.get(&p.key) {
+            let value = match given(&p.key) {
                 None => p.default.clone(),
                 Some(v) => match (p.kind, v) {
                     (ParamKind::Lut, ParamValue::Lut(r)) => ParamValue::Lut(r.clone()),
@@ -747,7 +770,7 @@ impl EffectManifest {
                         ParamValue::Number(n),
                     ) if n.is_finite() => ParamValue::Number(match p.kind {
                         ParamKind::Bool => {
-                            if *n != 0.0 {
+                            if n != 0.0 {
                                 1.0
                             } else {
                                 0.0
@@ -1089,6 +1112,29 @@ fn compile_param_uniforms(raw: &[RawParam], params: &mut [ParamSpec]) -> Result<
         params[i].uniform = Some(compiled);
     }
     Ok(())
+}
+
+/// Compiles a `bypass` expression. It sees the params' control values only (no host values,
+/// so it cannot depend on time) and must be a boolean.
+fn compile_bypass(src: &str, params: &[ParamSpec]) -> Result<Compiled, ManifestError> {
+    let mut sb = ScopeBuilder {
+        scope: Scope::new(),
+        sources: Vec::new(),
+    };
+    for (pj, p) in params.iter().enumerate() {
+        let (source, ty) = match p.kind {
+            ParamKind::Lut | ParamKind::Vec2 | ParamKind::Color => continue,
+            ParamKind::Bool => (Source::Scalar(pj), Ty::Bool),
+            _ => (Source::Scalar(pj), Ty::Num),
+        };
+        sb.push(&p.key, ty, source);
+    }
+    let (scope, sources) = sb.finish();
+    let compiled = compile_expr("bypass", src, &scope, &[], sources)?;
+    if compiled.expr.result_ty() != Ty::Bool {
+        return invalid("bypass must be a boolean expression");
+    }
+    Ok(compiled)
 }
 
 fn parse_derived(
@@ -1507,13 +1553,15 @@ mod tests {
         let m = parse(GRAIN).unwrap_or_else(|e| panic!("{e}"));
         let mut given = BTreeMap::new();
         given.insert("intensity".to_string(), ParamValue::Number(7.0));
-        let resolved = m.resolve_params(&given).unwrap_or_else(|e| panic!("{e}"));
+        let resolved = m
+            .resolve_params(&|k| given.get(k).cloned())
+            .unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(resolved[0], ParamValue::Number(1.0));
         assert_eq!(resolved[1], ParamValue::Number(0.3));
         assert_eq!(resolved[2], ParamValue::Vector(vec![1.0, 1.0, 1.0, 1.0]));
         assert_eq!(resolved[3], ParamValue::Number(1.0));
         given.insert("tint".to_string(), ParamValue::Number(1.0));
-        assert!(m.resolve_params(&given).is_err());
+        assert!(m.resolve_params(&|k| given.get(k).cloned()).is_err());
     }
 
     #[test]
@@ -1541,7 +1589,7 @@ mod tests {
     fn uniform_and_derived_values_evaluate() {
         let m = parse(GRAIN).unwrap_or_else(|e| panic!("{e}"));
         let controls = m
-            .resolve_params(&BTreeMap::new())
+            .resolve_params(&|_| None)
             .unwrap_or_else(|e| panic!("{e}"));
         let host = HostValues {
             width: 320,

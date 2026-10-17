@@ -8,6 +8,7 @@
   "params": [
     { "key": "radius", "type": "float", "label": "Radius", "min": 0, "max": 64, "default": 0 }
   ],
+  "bypass": "radius < 0.5",
   "derived": [
     { "name": "inv_w", "type": "float", "expr": "1.0 / width" },
     { "name": "inv_h", "type": "float", "expr": "1.0 / height" }
