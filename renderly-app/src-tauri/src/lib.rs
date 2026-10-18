@@ -2,6 +2,7 @@ mod media_assets;
 mod ml;
 mod playback;
 mod preview_assets;
+mod write_contract;
 
 pub mod agent_chat;
 mod bridge;
@@ -11,10 +12,9 @@ use playback::PlaybackEngine;
 use renderly_core::compose::{PreviewOverride, PreviewOverrides};
 use renderly_core::history::{History, HistoryStatus};
 use renderly_core::{
-    apply_command as apply_core_command, commands::ExportPreset, encode_rgba_png,
-    export_project_with_settings, project::Id, project::Project, Command, CommandOutcome,
-    DecodeOptions, ExportError, ExportPhase, ExportProgress, ExportSettings, FrameRenderer,
-    VideoEncoderPreference,
+    commands::ExportPreset, encode_rgba_png, export_project_with_settings, project::Id,
+    project::Project, CommandOutcome, DecodeOptions, ExportError, ExportPhase, ExportProgress,
+    ExportSettings, FrameRenderer, VideoEncoderPreference,
 };
 use serde::Serialize;
 use std::path::PathBuf;
@@ -66,21 +66,22 @@ struct Session {
 /// project's contents change.
 type ProjectHistory = History<Arc<Project>>;
 
-/// Result of a single `apply_command` — revision + RFC-6902 patch so the frontend can
-/// update without a full `get_project` round-trip (improvement-plan B3). App IPC only;
-/// not part of the core `Command` enum.
+/// Result of a single `apply_command`: the edit-contract result (`committed`, `revision`,
+/// `changed`, `summary`, `warnings`, `patch`, ...) flattened next to the command's outcome. The
+/// webview reads `revision`, `patch` and `outcome` (improvement-plan B3). App IPC only; not part
+/// of the core `Command` enum.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct CommandResult {
-    pub revision: u64,
-    pub patch: json_patch::Patch,
+    #[serde(flatten)]
+    pub write: renderly_core::edit_contract::WriteResult,
     pub outcome: String,
 }
 
 /// Result of an atomic `apply_commands` batch (one undo step, one patch).
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct CommandsResult {
-    pub revision: u64,
-    pub patch: json_patch::Patch,
+pub struct CommandsResult {
+    #[serde(flatten)]
+    pub write: renderly_core::edit_contract::WriteResult,
     pub outcomes: Vec<String>,
     /// Typed outcomes for in-app callers (agent edit summaries). Not sent to the webview.
     #[serde(skip)]
@@ -102,15 +103,6 @@ pub(crate) struct HistoryResult {
 struct ProjectSnapshot {
     project: Project,
     revision: u64,
-}
-
-/// The command's `command` tag (the serde discriminant), for history labels.
-fn command_name(command: &serde_json::Value) -> String {
-    command
-        .get("command")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("Command")
-        .to_string()
 }
 
 fn empty_patch() -> json_patch::Patch {
@@ -143,6 +135,9 @@ pub struct AppState {
     /// applied by `render_live_frame_png` (see docs/architecture.md).
     preview_overrides: Mutex<PreviewOverrides>,
     revision: AtomicU64,
+    /// Committed `request_id`s of this session (edit contract idempotency). Cleared with the
+    /// revision on open/close/create. Behind an `Arc` so the planning step can run off-thread.
+    write_ledger: Arc<Mutex<renderly_core::edit_contract::WriteLedger>>,
     /// Cooperative cancel flag for the in-flight export (M6). Cleared at export start;
     /// `cancel_export` sets it so the progress callback returns `false`.
     pub(crate) export_cancel: Arc<AtomicBool>,
@@ -177,6 +172,7 @@ impl AppState {
             history: Mutex::new(ProjectHistory::new()),
             preview_overrides: Mutex::new(PreviewOverrides::new()),
             revision: AtomicU64::new(0),
+            write_ledger: Arc::new(Mutex::new(renderly_core::edit_contract::WriteLedger::new())),
             export_cancel: Arc::new(AtomicBool::new(false)),
             matte_cancel: Arc::new(AtomicBool::new(false)),
             matte_running: AtomicBool::new(false),
@@ -293,158 +289,6 @@ impl AppState {
             .render(&project, time_secs)
             .map_err(|e| e.to_string())?;
         encode_rgba_png(&rgba, settings.width, settings.height).map_err(|e| e.to_string())
-    }
-
-    /// Shared by the Tauri `apply_command` handler and the live agent bridge.
-    pub(crate) async fn apply_command_inner(
-        &self,
-        app: &AppHandle,
-        command: serde_json::Value,
-        mutation_id: Option<String>,
-        merge_key: Option<String>,
-    ) -> Result<CommandResult, String> {
-        let name = command_name(&command);
-        // The in-process `rvm` matte bake takes minutes: run it off the project lock with
-        // progress + cancel, and only apply its small result through the edit lock below.
-        if let Some((track_id, clip_id)) = ml::rvm_matte_target(self, &command) {
-            // Boxed: `generate_rvm_matte` calls back into this function for the attach step.
-            return Box::pin(self.generate_rvm_matte(app, track_id, clip_id, mutation_id)).await;
-        }
-        let _edit_guard = self.edit_lock.lock().await;
-        let cmd: Command =
-            serde_json::from_value(command).map_err(|e| format!("invalid command: {e}"))?;
-        let before_arc = self.with_session(|s| Ok(Arc::clone(&s.project)))?;
-        let before_json = project_json(&before_arc)?;
-        let mut project = (*before_arc).clone();
-
-        let denoise_prewarm = match &cmd {
-            Command::SetClipAudioDenoise {
-                track_id,
-                clip_id,
-                config: Some(cfg),
-            } if cfg.enabled && cfg.backend == "rnnoise" => {
-                Some((*track_id, *clip_id, cfg.strength))
-            }
-            _ => None,
-        };
-
-        let (outcome, project) = tauri::async_runtime::spawn_blocking(move || {
-            let outcome = apply_core_command(&mut project, cmd);
-            (outcome, project)
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-        let outcome = outcome.map_err(|e| e.to_string())?;
-
-        // RNNoise denoise is rendered into a cache the first time it is mixed; start that
-        // now, off the UI/command path, so the next playback or export finds it ready.
-        if let Some((track_id, clip_id, strength)) = denoise_prewarm {
-            let source = project
-                .find_track(track_id)
-                .and_then(|t| t.clips.iter().find(|c| c.id() == clip_id))
-                .and_then(|c| c.as_media())
-                .and_then(|c| project.find_media(c.media_id))
-                .map(|m| m.path.clone());
-            if let Some(path) = source {
-                let strength = strength.clamp(0.0, 1.0);
-                tauri::async_runtime::spawn_blocking(move || {
-                    let _ = renderly_core::audio::denoise::denoised_wav_cached(&path, strength);
-                });
-            }
-        }
-
-        if let CommandOutcome::MediaImported { media_id } = &outcome {
-            if let Some(item) = project.find_media(*media_id) {
-                let session_path = self.with_session(|s| Ok(s.path.clone())).ok();
-                let assets_dir = media_assets::resolve_cache_dir(app, session_path.as_deref());
-                if let Ok(dir) = &assets_dir {
-                    allow_media_assets_dir(app, dir);
-                }
-                if let Ok(dir) = assets_dir {
-                    media_assets::request_assets(
-                        app.clone(),
-                        media_id.to_string(),
-                        item.path.clone(),
-                        item.kind,
-                        dir,
-                    );
-                }
-                allow_media_assets(app, std::iter::once(item.path.as_path()));
-            }
-        }
-
-        let after_json = project_json(&project)?;
-        let patch = json_patch::diff(&before_json, &after_json);
-        self.record_change(before_arc, [name], merge_key.as_deref());
-        self.commit_project(Arc::new(project)).await?;
-        let revision = self.emit_project_changed(app, mutation_id);
-        Ok(CommandResult {
-            revision,
-            patch,
-            outcome: format!("{outcome:?}"),
-        })
-    }
-
-    pub(crate) async fn apply_commands_inner(
-        &self,
-        app: &AppHandle,
-        commands: Vec<serde_json::Value>,
-        mutation_id: Option<String>,
-        merge_key: Option<String>,
-    ) -> Result<CommandsResult, String> {
-        let _edit_guard = self.edit_lock.lock().await;
-        let names: Vec<String> = commands.iter().map(command_name).collect();
-        let cmds: Vec<Command> = commands
-            .into_iter()
-            .map(|c| serde_json::from_value(c).map_err(|e| format!("invalid command: {e}")))
-            .collect::<Result<_, _>>()?;
-
-        let voiceover_paths: Vec<Option<PathBuf>> = cmds
-            .iter()
-            .map(|c| match c {
-                Command::GenerateVoiceover { output_path, .. } => Some(PathBuf::from(output_path)),
-                _ => None,
-            })
-            .collect();
-
-        let before_arc = self.with_session(|s| Ok(Arc::clone(&s.project)))?;
-        let before_json = project_json(&before_arc)?;
-        let mut project = (*before_arc).clone();
-
-        let (result, project) = tauri::async_runtime::spawn_blocking(move || {
-            let mut outcomes = Vec::with_capacity(cmds.len());
-            for cmd in cmds {
-                match apply_core_command(&mut project, cmd) {
-                    Ok(outcome) => outcomes.push(outcome),
-                    Err(e) => return (Err((outcomes.len(), e.to_string())), project),
-                }
-            }
-            (Ok(outcomes), project)
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-
-        let outcomes = match result {
-            Ok(outcomes) => outcomes,
-            Err((succeeded, message)) => {
-                for path in voiceover_paths.iter().take(succeeded).flatten() {
-                    let _ = std::fs::remove_file(path);
-                }
-                return Err(message);
-            }
-        };
-
-        let after_json = project_json(&project)?;
-        let patch = json_patch::diff(&before_json, &after_json);
-        self.record_change(before_arc, names, merge_key.as_deref());
-        self.commit_project(Arc::new(project)).await?;
-        let revision = self.emit_project_changed(app, mutation_id);
-        Ok(CommandsResult {
-            revision,
-            patch,
-            outcomes: outcomes.iter().map(|o| format!("{o:?}")).collect(),
-            typed_outcomes: outcomes,
-        })
     }
 
     pub(crate) async fn undo_inner(
@@ -612,6 +456,7 @@ impl AppState {
     /// session as a full load (clientRevision starts from the subsequent emit / get_project).
     fn reset_revision(&self) {
         self.revision.store(0, Ordering::SeqCst);
+        self.write_ledger.lock().clear();
     }
 }
 
@@ -1377,17 +1222,45 @@ async fn get_project(state: State<'_, AppState>) -> Result<ProjectSnapshot, Stri
     })
 }
 
+/// The edit-contract envelope from a Tauri call. The webview's own edits are `Caller::User`
+/// (no deletion guard); it may still send `expectedRevision`, `dryRun` and `requestId`.
+fn webview_write_options(
+    expected_revision: Option<u64>,
+    dry_run: Option<bool>,
+    request_id: Option<String>,
+) -> renderly_core::edit_contract::WriteOptions {
+    renderly_core::edit_contract::WriteOptions {
+        expected_revision,
+        dry_run: dry_run.unwrap_or(false),
+        request_id,
+        allow_deletion: None,
+    }
+}
+
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn apply_command(
     app: AppHandle,
     state: State<'_, AppState>,
     command: serde_json::Value,
     mutation_id: Option<String>,
     merge_key: Option<String>,
+    expected_revision: Option<u64>,
+    dry_run: Option<bool>,
+    request_id: Option<String>,
 ) -> Result<CommandResult, String> {
+    let options = webview_write_options(expected_revision, dry_run, request_id);
     state
-        .apply_command_inner(&app, command, mutation_id, merge_key)
+        .apply_command_inner(
+            &app,
+            command,
+            mutation_id,
+            merge_key,
+            options,
+            renderly_core::edit_contract::Caller::User,
+        )
         .await
+        .map_err(|e| e.message)
 }
 
 /// Apply a batch of commands atomically: all-or-nothing against a single project clone,
@@ -1395,16 +1268,29 @@ async fn apply_command(
 /// logically a single edit but need more than one `Command` (e.g. CapCut-style
 /// auto-track-on-drop: `AddTrack` + `AddClip` should undo together, not as two steps).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn apply_commands(
     app: AppHandle,
     state: State<'_, AppState>,
     commands: Vec<serde_json::Value>,
     mutation_id: Option<String>,
     merge_key: Option<String>,
+    expected_revision: Option<u64>,
+    dry_run: Option<bool>,
+    request_id: Option<String>,
 ) -> Result<CommandsResult, String> {
+    let options = webview_write_options(expected_revision, dry_run, request_id);
     state
-        .apply_commands_inner(&app, commands, mutation_id, merge_key)
+        .apply_commands_inner(
+            &app,
+            commands,
+            mutation_id,
+            merge_key,
+            options,
+            renderly_core::edit_contract::Caller::User,
+        )
         .await
+        .map_err(|e| e.message)
 }
 
 /// Open an undo transaction: every edit until `commit_transaction` is one undo step.

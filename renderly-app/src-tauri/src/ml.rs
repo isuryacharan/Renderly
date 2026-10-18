@@ -223,7 +223,15 @@ impl AppState {
             "clip_id": clip_id,
             "cache_dir": baked,
         });
-        self.apply_command_inner(app, attach, mutation_id, None)
-            .await
+        self.apply_command_inner(
+            app,
+            attach,
+            mutation_id,
+            None,
+            renderly_core::edit_contract::WriteOptions::default(),
+            renderly_core::edit_contract::Caller::User,
+        )
+        .await
+        .map_err(|e| e.message)
     }
 }

@@ -2,18 +2,22 @@
 //! when headless, or through the live Tauri WebSocket bridge (E1/E2) when the app is open
 //! on the same project.
 
-use crate::bridge_client::{try_live_bridge, BridgeClient, EditorStatusHeadless};
+use crate::bridge_client::{try_live_bridge, BridgeClient, CallFailure, EditorStatusHeadless};
+use renderly_core::edit_contract::{
+    self, AllowDeletion as CoreAllowDeletion, Caller, EditError, EditErrorCode, WriteLedger,
+    WriteOptions,
+};
 use renderly_core::{
-    apply_command, audio_peaks as analyze_audio_peaks, commands::ExportPreset,
-    detect_scenes as analyze_scenes, detect_silence as analyze_silence, export_project, media,
-    perceive, project::Project, transcribe_media, Command,
+    audio_peaks as analyze_audio_peaks, commands::ExportPreset, detect_scenes as analyze_scenes,
+    detect_silence as analyze_silence, export_project, media, perceive, project::Project,
+    transcribe_media, Command,
 };
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{ServerCapabilities, ServerInfo},
+    model::{CallToolResult, ContentBlock, ServerCapabilities, ServerInfo},
     schemars, tool, tool_handler, tool_router, ServerHandler,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -28,6 +32,69 @@ pub struct RenderlyMcp {
 struct Session {
     path: PathBuf,
     project: Project,
+    /// Committed writes to this open project; reported as `project_revision` on reads.
+    /// Counts from 0 each time the project is opened or created (headless). When the desktop
+    /// app is live the app's counter is used instead and mirrored here.
+    revision: u64,
+    /// Recently committed `request_id`s, so retries are not applied twice.
+    ledger: WriteLedger,
+}
+
+impl Session {
+    fn new(path: PathBuf, project: Project) -> Self {
+        Self {
+            path,
+            project,
+            revision: 0,
+            ledger: WriteLedger::new(),
+        }
+    }
+}
+
+fn lock_error(e: impl std::fmt::Display) -> EditError {
+    EditError::internal(format!("session lock poisoned: {e}"))
+}
+
+fn no_project_error() -> EditError {
+    EditError::new(
+        EditErrorCode::NotFound,
+        "no project open",
+        "call open_project or new_project first",
+    )
+}
+
+/// A typed tool result: success as pretty JSON text, failure as an error result (`isError`)
+/// whose text is the edit-contract error JSON.
+fn json_result(value: &Value) -> CallToolResult {
+    CallToolResult::success(vec![ContentBlock::text(
+        serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()),
+    )])
+}
+
+fn edit_error_result(err: &EditError) -> CallToolResult {
+    CallToolResult::error(vec![ContentBlock::text(
+        serde_json::to_string_pretty(err)
+            .unwrap_or_else(|_| format!("{}: {}", err.code.as_str(), err.message)),
+    )])
+}
+
+/// Turn a bridge failure into the contract error the app sent, when it sent one.
+fn call_failure_to_edit(failure: CallFailure) -> EditError {
+    match failure {
+        CallFailure::Rpc {
+            data: Some(data), ..
+        } => serde_json::from_value::<EditError>(data.clone())
+            .unwrap_or_else(|_| EditError::internal(format!("live app error: {data}"))),
+        CallFailure::Rpc {
+            message,
+            data: None,
+        } => EditError::internal(message),
+        CallFailure::Transport(message) => EditError::new(
+            EditErrorCode::Internal,
+            format!("the desktop app did not answer: {message}"),
+            "retry; if the app was closed, the next call runs headless on the project file",
+        ),
+    }
 }
 
 impl RenderlyMcp {
@@ -97,6 +164,9 @@ impl RenderlyMcp {
     ) -> Result<(), String> {
         let value = client.call("get_project", json!({})).await?;
         // Bridge returns `{ project, revision }` (B3); accept a bare Project for older shapes.
+        if let Some(revision) = value.get("revision").and_then(Value::as_u64) {
+            session.revision = revision;
+        }
         let project_val = value.get("project").cloned().unwrap_or(value);
         session.project = serde_json::from_value(project_val).map_err(|e| e.to_string())?;
         Ok(())
@@ -114,6 +184,11 @@ pub struct NewProjectRequest {
     pub height: u32,
     #[serde(default = "default_fps")]
     pub fps: f64,
+}
+
+/// Run a future to completion from inside the server's tokio runtime, without blocking it.
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(f))
 }
 
 fn default_name() -> String {
@@ -144,10 +219,67 @@ pub struct OpenProjectRequest {
     pub path: String,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct ApplyCommandRequest {
     /// A single Command object — same JSON as renderly-cli `apply`.
     pub command: serde_json::Value,
+    /// The `project_revision` from your last read (get_project, get_editor_status). If the
+    /// project has moved on, the write is rejected with revision_conflict and nothing changes.
+    #[serde(default)]
+    pub expected_revision: Option<u64>,
+    /// Validate and apply to a scratch copy only. Returns the summary, changed ids and the
+    /// patch; changes nothing and records no history.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Idempotency key. Retrying a write with the same request_id and payload returns the
+    /// original result instead of applying it again.
+    #[serde(default)]
+    pub request_id: Option<String>,
+    /// Required for a write that deletes clips, tracks, media or sequences. Give a reason and
+    /// the exact ids a dry_run lists under changed.deleted.
+    #[serde(default)]
+    pub allow_deletion: Option<AllowDeletionArg>,
+}
+
+/// `allow_deletion` as an agent sends it. Ids are strings here and parsed when the write runs.
+#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+pub struct AllowDeletionArg {
+    /// Why these deletions are intended. Must not be empty.
+    pub reason: String,
+    /// Every id the write would delete (clips, tracks, media items and sequences).
+    pub ids: Vec<String>,
+}
+
+impl ApplyCommandRequest {
+    /// The envelope fields as the shared contract's options.
+    fn write_options(&self) -> Result<WriteOptions, EditError> {
+        let allow_deletion = match &self.allow_deletion {
+            None => None,
+            Some(arg) => {
+                let ids = arg
+                    .ids
+                    .iter()
+                    .map(|raw| {
+                        uuid::Uuid::parse_str(raw.trim()).map_err(|e| {
+                            EditError::invalid(format!(
+                                "allow_deletion.ids contains '{raw}', which is not an id: {e}"
+                            ))
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Some(CoreAllowDeletion {
+                    reason: arg.reason.clone(),
+                    ids,
+                })
+            }
+        };
+        Ok(WriteOptions {
+            expected_revision: self.expected_revision,
+            dry_run: self.dry_run,
+            request_id: self.request_id.clone(),
+            allow_deletion,
+        })
+    }
 }
 
 /// Parse the `command` tool parameter into a `Command`, accepting both a bare JSON object
@@ -292,7 +424,7 @@ impl RenderlyMcp {
         );
         let data = serde_json::to_string_pretty(&project).map_err(|e| e.to_string())?;
         std::fs::write(&path, data).map_err(|e| e.to_string())?;
-        *self.session.lock().map_err(|e| e.to_string())? = Some(Session { path, project });
+        *self.session.lock().map_err(|e| e.to_string())? = Some(Session::new(path, project));
         Ok(format!("created and opened {}", req.path))
     }
 
@@ -315,7 +447,7 @@ impl RenderlyMcp {
         let path = PathBuf::from(&req.path);
         let data = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
         let project = Project::from_json(&data).map_err(|e| e.to_string())?;
-        *self.session.lock().map_err(|e| e.to_string())? = Some(Session { path, project });
+        *self.session.lock().map_err(|e| e.to_string())? = Some(Session::new(path, project));
         Ok(format!("opened {}", req.path))
     }
 
@@ -361,7 +493,9 @@ impl RenderlyMcp {
         Self::block_on_bridge(async move { client.call("agent_permission", params).await })
     }
 
-    #[tool(description = "Return the current project JSON")]
+    #[tool(
+        description = "Return the current project JSON, plus project_revision at its top level. Pass project_revision as expected_revision on your next write."
+    )]
     fn get_project(&self) -> String {
         self.get_project_impl()
             .unwrap_or_else(|e| format!("error: {e}"))
@@ -372,56 +506,121 @@ impl RenderlyMcp {
             |client| {
                 let value =
                     Self::block_on_bridge(async { client.call("get_project", json!({})).await })?;
-                // Prefer bare project JSON for agents; fall back to full snapshot if needed.
-                let project = value.get("project").unwrap_or(&value);
-                serde_json::to_string_pretty(project).map_err(|e| e.to_string())
+                let revision = value.get("revision").cloned().unwrap_or(Value::Null);
+                let mut project = value.get("project").unwrap_or(&value).clone();
+                if let Some(obj) = project.as_object_mut() {
+                    obj.insert("project_revision".into(), revision);
+                }
+                serde_json::to_string_pretty(&project).map_err(|e| e.to_string())
             },
-            |session| serde_json::to_string_pretty(&session.project).map_err(|e| e.to_string()),
+            |session| {
+                let mut project =
+                    serde_json::to_value(&session.project).map_err(|e| e.to_string())?;
+                if let Some(obj) = project.as_object_mut() {
+                    obj.insert("project_revision".into(), json!(session.revision));
+                }
+                serde_json::to_string_pretty(&project).map_err(|e| e.to_string())
+            },
         )
     }
 
     #[tool(
         name = "apply_command",
-        description = "Apply one renderly-core Command (a JSON object tagged by \"command\") and save the project. Call describe_commands first for the exact variants and fields."
+        description = "Apply one Command (a JSON object tagged by \"command\") and save the project. Pass expected_revision from your last read to guard against stale ids; dry_run to preview; request_id to make retries safe; allow_deletion to delete clips, tracks, media or sequences. Returns {committed, revision, changed{created,modified,deleted}, summary, warnings, patch}. Errors are returned as {code, message, hint} with isError set. Call describe_commands first for the exact variants, fields and the edit contract."
     )]
-    fn apply_command_tool(&self, Parameters(req): Parameters<ApplyCommandRequest>) -> String {
-        self.apply_command_impl(req)
-            .unwrap_or_else(|e| format!("error: {e}"))
+    fn apply_command_tool(
+        &self,
+        Parameters(req): Parameters<ApplyCommandRequest>,
+    ) -> CallToolResult {
+        match self.apply_write_impl(req) {
+            Ok(value) => json_result(&value),
+            Err(err) => edit_error_result(&err),
+        }
     }
 
+    /// Test helper: the write's JSON result as text, or the contract error as JSON text.
+    #[cfg(test)]
     fn apply_command_impl(&self, req: ApplyCommandRequest) -> Result<String, String> {
-        let cmd = parse_command_param(&req.command)?;
-        // Re-serialise the parsed command so the bridge always receives a JSON object,
-        // not the raw (possibly string-encoded) value the MCP client sent us.
-        let cmd_value = serde_json::to_value(&cmd).map_err(|e| format!("internal error: {e}"))?;
-        self.with_live_or_headless(
-            |client| {
-                let result = Self::block_on_bridge(async {
-                    client
-                        .call("apply_command", json!({ "command": cmd_value }))
-                        .await
-                })?;
-                // Keep the MCP-side session mirror fresh for perception tools that stay headless.
-                if let Ok(mut guard) = self.session.lock() {
-                    if let Some(session) = guard.as_mut() {
-                        let _ = Self::block_on_bridge(async {
-                            Self::sync_session_from_bridge(session, client).await
-                        });
-                    }
+        self.apply_write_impl(req)
+            .map(|v| v.to_string())
+            .map_err(|e| serde_json::to_string(&e).unwrap_or_default())
+    }
+
+    /// One write through the edit contract: live on the desktop app when it is open on this
+    /// project (the app checks and commits), otherwise headless on the project file.
+    fn apply_write_impl(&self, req: ApplyCommandRequest) -> Result<Value, EditError> {
+        let cmd = parse_command_param(&req.command).map_err(EditError::invalid)?;
+        let options = req.write_options()?;
+        let path = {
+            let guard = self.session.lock().map_err(lock_error)?;
+            guard.as_ref().map(|s| s.path.clone())
+        };
+        let Some(path) = path else {
+            return Err(no_project_error());
+        };
+        let bridged = Self::block_on_bridge(async { Ok(try_live_bridge(Some(&path)).await) })
+            .map_err(EditError::internal)?;
+        match bridged {
+            Some((_disc, mut client)) => self.apply_live(&mut client, cmd, &options),
+            None => self.apply_headless(cmd, &options),
+        }
+    }
+
+    fn apply_live(
+        &self,
+        client: &mut BridgeClient,
+        cmd: Command,
+        options: &WriteOptions,
+    ) -> Result<Value, EditError> {
+        let mut params = serde_json::to_value(options)
+            .map_err(|e| EditError::internal(format!("internal error: {e}")))?;
+        let cmd_value = serde_json::to_value(&cmd)
+            .map_err(|e| EditError::internal(format!("internal error: {e}")))?;
+        if let Some(obj) = params.as_object_mut() {
+            obj.insert("command".into(), cmd_value);
+        }
+        let reply =
+            block_on(client.call_checked("apply_command", params)).map_err(call_failure_to_edit)?;
+        // Keep the session mirror fresh (project and revision) for headless perception tools.
+        if let Ok(mut guard) = self.session.lock() {
+            if let Some(session) = guard.as_mut() {
+                let _ = block_on(Self::sync_session_from_bridge(session, client));
+            }
+        }
+        Ok(reply)
+    }
+
+    fn apply_headless(&self, cmd: Command, options: &WriteOptions) -> Result<Value, EditError> {
+        let mut guard = self.session.lock().map_err(lock_error)?;
+        let session = guard.as_mut().ok_or_else(no_project_error)?;
+        let mut plan = edit_contract::plan_write(
+            &session.project,
+            session.revision,
+            &session.ledger,
+            options,
+            Caller::Agent,
+            vec![cmd],
+        )?;
+        let outcome = plan.outcomes().first().map(|o| format!("{o:?}"));
+        let committed_at = match plan.take_next() {
+            Some(next) => {
+                let previous = std::mem::replace(&mut session.project, next);
+                if let Err(e) = Self::save(session) {
+                    session.project = previous;
+                    return Err(EditError::internal(e));
                 }
-                Ok(result
-                    .get("outcome")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("ok")
-                    .to_string())
-            },
-            |session| {
-                let outcome =
-                    apply_command(&mut session.project, cmd).map_err(|e| e.to_string())?;
-                Self::save(session)?;
-                Ok(format!("{outcome:?}"))
-            },
-        )
+                session.revision += 1;
+                Some(session.revision)
+            }
+            None => None,
+        };
+        let result = plan.finish(committed_at, &mut session.ledger);
+        let mut value = serde_json::to_value(&result)
+            .map_err(|e| EditError::internal(format!("internal error: {e}")))?;
+        if let (Some(outcome), Some(obj)) = (outcome, value.as_object_mut()) {
+            obj.insert("outcome".into(), json!(outcome));
+        }
+        Ok(value)
     }
 
     #[tool(description = "Render the open project to an MP4 file")]
@@ -530,7 +729,7 @@ impl RenderlyMcp {
             "sequences": project.sequences.len(),
             "warnings": warnings,
         });
-        *self.session.lock().map_err(|e| e.to_string())? = Some(Session { path, project });
+        *self.session.lock().map_err(|e| e.to_string())? = Some(Session::new(path, project));
         serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())
     }
 
@@ -664,10 +863,12 @@ impl RenderlyMcp {
     }
 
     #[tool(
-        description = "The exact shape of every Command apply_command accepts (variant names, field names and types), with JSON conventions and examples. Read-only; needs no project."
+        description = "The edit contract (renderly.capabilities.v1: revisions, dry_run, request_id, typed errors, the deletion rule) followed by the exact shape of every Command apply_command accepts (variant names, field names and types). Read-only; needs no project."
     )]
     fn describe_commands(&self) -> String {
-        command_reference()
+        let capabilities = serde_json::to_string_pretty(&edit_contract::capabilities())
+            .unwrap_or_else(|_| "{}".to_string());
+        format!("{capabilities}\n\n{}", command_reference())
     }
 
     #[tool(
@@ -712,18 +913,25 @@ impl RenderlyMcp {
     }
 
     fn get_editor_status_impl(&self) -> Result<String, String> {
-        let session_path = {
+        let (session_path, session_revision) = {
             let guard = self
                 .session
                 .lock()
                 .map_err(|e| format!("session lock poisoned: {e}"))?;
-            guard.as_ref().map(|s| s.path.clone())
+            (
+                guard.as_ref().map(|s| s.path.clone()),
+                guard.as_ref().map(|s| s.revision),
+            )
         };
         // Status does not require a path match — report live app even if MCP has no session.
         let status = Self::block_on_bridge(async {
             if let Some((_disc, mut client)) = try_live_bridge(None).await {
                 // If MCP has a project open on a different path, still report live but note mismatch.
                 let mut value = client.call("get_editor_status", json!({})).await?;
+                if let Some(obj) = value.as_object_mut() {
+                    let revision = obj.get("revision").cloned().unwrap_or(Value::Null);
+                    obj.insert("project_revision".into(), revision);
+                }
                 if let (Some(session_path), Some(obj)) =
                     (session_path.as_ref(), value.as_object_mut())
                 {
@@ -749,6 +957,7 @@ impl RenderlyMcp {
                     project_path: session_path.map(|p| p.to_string_lossy().into_owned()),
                     playhead: None,
                     selection: None,
+                    project_revision: session_revision,
                 })
                 .unwrap_or(json!({ "live": false })))
             }
@@ -1090,6 +1299,7 @@ mod tests {
                     command: serde_json::json!({
                         "command": "AddTrack", "kind": "video", "name": "V1"
                     }),
+                    ..Default::default()
                 })
                 .unwrap();
             assert!(!outcome.starts_with("error"));
@@ -1123,6 +1333,7 @@ mod tests {
             let created = mcp
                 .apply_command_impl(ApplyCommandRequest {
                     command: serde_json::json!({ "command": "CreateSequence", "name": "Intro" }),
+                    ..Default::default()
                 })
                 .unwrap();
             assert!(created.contains("SequenceCreated"), "{created}");
@@ -1131,6 +1342,7 @@ mod tests {
                     command: serde_json::json!({
                         "command": "AddTrack", "kind": "video", "name": "V1"
                     }),
+                    ..Default::default()
                 })
                 .unwrap();
             assert!(track.contains("TrackAdded"), "{track}");
@@ -1143,6 +1355,7 @@ mod tests {
                         "command": "AddAdjustmentLayer", "track_id": track_id,
                         "position_secs": 0.0, "duration_secs": 2.0
                     }),
+                    ..Default::default()
                 })
                 .unwrap();
             assert!(adjusted.contains("ClipAdded"), "{adjusted}");
@@ -1175,6 +1388,7 @@ mod tests {
             let err = mcp
                 .apply_command_impl(ApplyCommandRequest {
                     command: serde_json::json!({ "command": "NoSuchCommand" }),
+                    ..Default::default()
                 })
                 .unwrap_err();
             assert!(err.contains("invalid command JSON"));
@@ -1225,10 +1439,14 @@ mod tests {
     }
 
     fn apply(mcp: &RenderlyMcp, command: serde_json::Value) -> Result<String, String> {
-        mcp.apply_command_impl(ApplyCommandRequest { command })
+        mcp.apply_command_impl(ApplyCommandRequest {
+            command,
+            ..Default::default()
+        })
     }
 
     fn project_of(mcp: &RenderlyMcp) -> Project {
+        // `get_project` returns the project JSON plus `project_revision`; the extra key is ignored.
         serde_json::from_str(&mcp.get_project_impl().unwrap()).unwrap()
     }
 
@@ -1474,11 +1692,13 @@ mod tests {
                 ("get_project", mcp.get_project()),
                 (
                     "apply_command",
-                    mcp.apply_command_tool(Parameters(ApplyCommandRequest {
+                    mcp.apply_command_impl(ApplyCommandRequest {
                         command: serde_json::json!({
                             "command": "AddTrack", "kind": "video", "name": "V1"
                         }),
-                    })),
+                        ..Default::default()
+                    })
+                    .unwrap_or_else(|e| format!("error: {e}")),
                 ),
                 (
                     "export",
@@ -1722,9 +1942,12 @@ mod tests {
             let mcp = open_new(&dir);
             let cmd =
                 serde_json::json!({ "command": "AddTrack", "kind": "caption", "name": "Subs" });
-            let out = mcp.apply_command_tool(Parameters(ApplyCommandRequest {
-                command: serde_json::Value::String(cmd.to_string()),
-            }));
+            let out = mcp
+                .apply_command_impl(ApplyCommandRequest {
+                    command: serde_json::Value::String(cmd.to_string()),
+                    ..Default::default()
+                })
+                .unwrap();
             assert!(out.contains("TrackAdded"), "{out}");
             let on_disk = file_project(&dir.project_path());
             assert_eq!(on_disk.tracks.len(), 1);
@@ -1757,11 +1980,17 @@ mod tests {
             assert_eq!(std::fs::read(dir.project_path()).unwrap(), bytes_before);
             assert_eq!(mcp.get_project_impl().unwrap(), json_before);
 
-            // Through the tool wrapper the same failure is an `error:` string, not a panic.
+            // Through the tool wrapper the same failure is a typed tool error, not a panic.
             let out = mcp.apply_command_tool(Parameters(ApplyCommandRequest {
                 command: serde_json::json!({ "command": "NoSuchCommand" }),
+                ..Default::default()
             }));
-            assert!(out.starts_with("error: invalid command JSON"), "{out}");
+            let wire = serde_json::to_string(&out).unwrap();
+            assert!(wire.contains("\"isError\":true"), "{wire}");
+            assert!(
+                wire.contains("invalid_command") && wire.contains("invalid command JSON"),
+                "{wire}"
+            );
             assert_eq!(std::fs::read(dir.project_path()).unwrap(), bytes_before);
         });
     }
@@ -2097,6 +2326,176 @@ mod tests {
             let v: serde_json::Value = serde_json::from_str(&mcp.get_editor_status()).unwrap();
             assert_eq!(v["live"], false);
             assert_eq!(v["project_path"], dir.project_path());
+        });
+    }
+
+    // ---- edit contract (renderly.capabilities.v1) --------------------------------------------
+
+    fn add_caption_track(name: &str) -> ApplyCommandRequest {
+        ApplyCommandRequest {
+            command: serde_json::json!({ "command": "AddTrack", "kind": "caption", "name": name }),
+            ..Default::default()
+        }
+    }
+
+    fn wire(result: &rmcp::model::CallToolResult) -> String {
+        serde_json::to_string(result).unwrap()
+    }
+
+    fn file_bytes(dir: &TempDir) -> Vec<u8> {
+        std::fs::read(dir.project_path()).unwrap()
+    }
+
+    #[test]
+    fn reads_report_project_revision_and_committed_writes_advance_it() {
+        on_worker(|| {
+            let dir = TempDir::new("rev");
+            let mcp = open_new(&dir);
+            let v: Value = serde_json::from_str(&mcp.get_project_impl().unwrap()).unwrap();
+            assert_eq!(v["project_revision"], 0);
+
+            let w = mcp.apply_write_impl(add_caption_track("Subs")).unwrap();
+            assert_eq!(w["committed"], true);
+            assert_eq!(w["revision"], 1);
+            assert_eq!(w["changed"]["created"].as_array().map(Vec::len), Some(1));
+            assert!(w["patch"].as_array().is_some_and(|p| !p.is_empty()));
+
+            let v: Value = serde_json::from_str(&mcp.get_project_impl().unwrap()).unwrap();
+            assert_eq!(v["project_revision"], 1);
+            let status: Value =
+                serde_json::from_str(&mcp.get_editor_status_impl().unwrap()).unwrap();
+            assert_eq!(status["project_revision"], 1);
+        });
+    }
+
+    #[test]
+    fn stale_expected_revision_is_a_typed_tool_error_and_changes_nothing() {
+        on_worker(|| {
+            let dir = TempDir::new("stale");
+            let mcp = open_new(&dir);
+            mcp.apply_write_impl(add_caption_track("A")).unwrap();
+            let before = file_bytes(&dir);
+
+            let mut req = add_caption_track("B");
+            req.expected_revision = Some(0);
+            let err = mcp.apply_write_impl(req).unwrap_err();
+            assert_eq!(err.code, EditErrorCode::RevisionConflict);
+            assert_eq!(err.hint, "re-read with timeline, then retry");
+            assert_eq!(
+                err.data.as_ref().map(|d| d["current_revision"].clone()),
+                Some(serde_json::json!(1))
+            );
+
+            let mut req = add_caption_track("B");
+            req.expected_revision = Some(0);
+            let out = wire(&mcp.apply_command_tool(Parameters(req)));
+            assert!(
+                out.contains("\"isError\":true") && out.contains("revision_conflict"),
+                "{out}"
+            );
+            assert_eq!(file_bytes(&dir), before);
+        });
+    }
+
+    #[test]
+    fn dry_run_returns_the_patch_and_leaves_file_and_revision_alone() {
+        on_worker(|| {
+            let dir = TempDir::new("dry");
+            let mcp = open_new(&dir);
+            let before = file_bytes(&dir);
+            let mut req = add_caption_track("Preview");
+            req.dry_run = true;
+            let w = mcp.apply_write_impl(req).unwrap();
+            assert_eq!(w["committed"], false);
+            assert_eq!(w["dry_run"], true);
+            assert_eq!(w["revision"], 0);
+            assert!(w["patch"].as_array().is_some_and(|p| !p.is_empty()));
+            assert_eq!(file_bytes(&dir), before);
+            assert_eq!(project_of(&mcp).tracks.len(), 0);
+        });
+    }
+
+    #[test]
+    fn request_id_replays_the_original_result_and_rejects_reuse() {
+        on_worker(|| {
+            let dir = TempDir::new("request");
+            let mcp = open_new(&dir);
+            let mut first = add_caption_track("Once");
+            first.request_id = Some("req-a".into());
+            let original = mcp.apply_write_impl(first).unwrap();
+
+            let mut retry = add_caption_track("Once");
+            retry.request_id = Some("req-a".into());
+            let replay = mcp.apply_write_impl(retry).unwrap();
+            assert_eq!(replay["replayed"], true);
+            assert_eq!(replay["revision"], original["revision"]);
+            assert_eq!(
+                project_of(&mcp).tracks.len(),
+                1,
+                "a retry must not apply twice"
+            );
+
+            let mut other = add_caption_track("Different");
+            other.request_id = Some("req-a".into());
+            let err = mcp.apply_write_impl(other).unwrap_err();
+            assert_eq!(err.code, EditErrorCode::RequestIdReused);
+        });
+    }
+
+    #[test]
+    fn agent_deletion_needs_allow_deletion_with_exact_ids() {
+        on_worker(|| {
+            let dir = TempDir::new("guard");
+            let mcp = open_new(&dir);
+            mcp.apply_write_impl(add_caption_track("Trash")).unwrap();
+            let track = project_of(&mcp).tracks[0].id.to_string();
+
+            let delete = || ApplyCommandRequest {
+                command: serde_json::json!({ "command": "DeleteTrack", "track_id": track }),
+                ..Default::default()
+            };
+
+            let err = mcp.apply_write_impl(delete()).unwrap_err();
+            assert_eq!(err.code, EditErrorCode::DeletionNotAllowed);
+            assert!(err.message.contains(&track), "{}", err.message);
+            assert_eq!(project_of(&mcp).tracks.len(), 1);
+
+            let mut wrong = delete();
+            wrong.allow_deletion = Some(AllowDeletionArg {
+                reason: "cleanup".into(),
+                ids: vec![uuid::Uuid::new_v4().to_string()],
+            });
+            assert!(mcp.apply_write_impl(wrong).is_err());
+
+            let mut exact = delete();
+            exact.allow_deletion = Some(AllowDeletionArg {
+                reason: "cleanup".into(),
+                ids: vec![track.clone()],
+            });
+            let done = mcp.apply_write_impl(exact).unwrap();
+            assert_eq!(done["committed"], true);
+            assert_eq!(project_of(&mcp).tracks.len(), 0);
+        });
+    }
+
+    #[test]
+    fn describe_commands_reports_the_capability_set() {
+        let mcp = RenderlyMcp::new();
+        let text = mcp.describe_commands();
+        assert!(
+            text.contains("\"capabilities\": \"renderly.capabilities.v1\""),
+            "{text}"
+        );
+        assert!(text.contains("pub enum Command"));
+    }
+
+    #[test]
+    fn agent_writes_without_expected_revision_carry_a_warning() {
+        on_worker(|| {
+            let dir = TempDir::new("warn");
+            let mcp = open_new(&dir);
+            let w = mcp.apply_write_impl(add_caption_track("W")).unwrap();
+            assert!(w["warnings"].as_array().is_some_and(|a| !a.is_empty()));
         });
     }
 }

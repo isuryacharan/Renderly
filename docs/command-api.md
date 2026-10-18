@@ -678,6 +678,128 @@ section fixes the command-facing rules.
 - **Memory.** Each undo or redo stack holds at most 100 records (oldest evicted). Each record
   holds one whole-project snapshot.
 
+## Edit contract
+
+Normative for every write surface: `renderly-core` (`renderly_core::edit_contract`), the Tauri
+commands, the live bridge ([bridge-protocol.md](bridge-protocol.md)), `renderly-mcp`
+([mcp-agent-guide.md](mcp-agent-guide.md)), the in-app agent tools, and `renderly-cli`. There is
+one implementation: `plan_write` in core. No surface re-implements a rule. Capabilities are
+reported as `renderly.capabilities.v1` (`describe_commands`; core `edit_contract::capabilities()`).
+
+### Envelope
+
+Every write may carry these optional fields next to its command(s):
+
+| Field | Meaning |
+|---|---|
+| `expected_revision` (u64) | The `project_revision` the client last read. If it is not the current revision the write is rejected with `revision_conflict`. |
+| `dry_run` (bool, default false) | Apply to a scratch copy and report. Changes nothing, records no history, commits nothing. |
+| `request_id` (string) | Idempotency key. See "Idempotency". |
+| `allow_deletion` (`{reason, ids}`) | Required for an agent write that deletes anything. See "Deletion guard". |
+
+A batch (`apply_commands`, `edit` with several commands, CLI `apply-script`) is one write: all or
+nothing, one undo step.
+
+### Revisions
+
+- `project_revision` is a monotonic integer per open project. It is returned by every read that
+  describes project state: `get_project`, `get_editor_status`, the agent `timeline` outline, and
+  `renderly show`.
+- The desktop app counts every committed edit, undo and redo (its existing revision counter).
+  Headless MCP and CLI sessions count their own committed writes. A new project or an opened
+  project starts at 0.
+- Checking happens under the project's edit lock, before anything is applied. A write that
+  changes nothing does not bump the revision.
+
+### Results
+
+A write returns:
+
+```json
+{
+  "committed": true,
+  "revision": 7,
+  "changed": { "created": ["…"], "modified": ["…"], "deleted": ["…"] },
+  "summary": ["Split clip", "Modified 1 clip"],
+  "warnings": [],
+  "patch": [ { "op": "replace", "path": "…", "value": "…" } ],
+  "dry_run": false,
+  "replayed": false
+}
+```
+
+- `committed`: this call changed the project. False for dry runs, no-op writes and rejected
+  writes. True for a replayed `request_id` (the original commit; `replayed: true`).
+- `changed` ids cover media items, tracks, clips and sequences. They are computed by diffing the
+  project before and after, keyed by id, not per command. A nested sequence's own entry excludes
+  its children, so changing a clip marks only that clip. A moved clip keeps its id and shows as
+  `modified`.
+- `patch` is an RFC 6902 patch from the pre-write project to the post-write project.
+- App IPC keeps its existing top-level fields (`revision`, `patch`, `outcome`), with the result
+  fields flattened beside them.
+
+### Errors
+
+Codes are stable strings. Each error is `{ "code", "message", "hint", "data"? }`.
+
+| Code | When | `data` |
+|---|---|---|
+| `invalid_command` | Malformed JSON, invalid fields, overlaps, dry run of a file-writing command, `Export` sent as a write. | |
+| `not_found` | A track, clip, media item or sequence id does not exist. | |
+| `revision_conflict` | `expected_revision` is not current. Hint: "re-read with timeline, then retry". | `current_revision` |
+| `request_id_reused` | The id was used for a different payload. | |
+| `deletion_not_allowed` | Deletion without a matching `allow_deletion`. | `would_delete` |
+| `busy` | Reserved: another write is in progress. Surfaces wait on the edit lock rather than return this today. | |
+| `rolled_back` | A batch failed part-way; nothing was applied. | `failed_index`, `failed_command`, `cause` |
+| `internal` | Media, export, model or file failures, or a bug. | |
+
+A single-command failure reports its own code. A failing batch of two or more commands reports
+`rolled_back`. Surfaces map errors as follows: MCP and the in-app tools return them as tool errors
+(`isError: true`) with the JSON text; the bridge returns a JSON-RPC error with `data` set to the
+error object; the CLI prints the JSON on stderr and exits non-zero; the webview receives the
+message.
+
+### Idempotency
+
+- A committed write with a `request_id` is remembered together with a fingerprint of its
+  commands and `allow_deletion`. The session keeps the last **256** committed request ids.
+- The same id with the same payload returns the original result with `replayed: true` and applies
+  nothing. This check runs before the `expected_revision` check, so a retry is never a conflict.
+- The same id with a different payload fails with `request_id_reused`.
+- Dry runs neither consult nor record the ledger.
+- Opening or creating a project clears the ledger. The CLI keeps its ledger in a sidecar file
+  next to the project (`<project>.state.json`) with its revision.
+
+### Dry runs
+
+A dry run applies the commands to a copy and returns the same result as a real write, with
+`committed: false` and `dry_run: true`. It runs the deletion guard too, so it reports the ids a
+deletion would need. It refuses commands that write files outside the project (`GenerateVoiceover`,
+`GenerateSticker`, `GenerateBackgroundMatte`, `AttachBackgroundMatte`, `GenerateCaptions`), because
+it cannot undo those writes.
+
+### Deletion guard
+
+Applies to **agent callers**: MCP, the live bridge, the in-app agent tools and the CLI. It does
+**not** apply to the webview's own actions (the user acting).
+
+A write that would delete any clip, track, media item or sequence is rejected with
+`deletion_not_allowed` unless `allow_deletion` is present with a non-empty `reason` and an `ids`
+list equal to exactly the ids the write would delete. "Would delete" is computed by the same diff
+as `changed.deleted`, so the list includes children: deleting a track lists its clips too; deleting
+a sequence lists its tracks and its media item. The error message lists the ids and the hint shows
+the field to add; a dry run returns the same list.
+
+Moves are not deletions. `NestClips` keeps the moved clips' ids, so it is not guarded.
+`UnnestClip` removes its container sequence and that sequence's media item, so it is guarded like
+any other deletion.
+
+### Concurrency
+
+- One write at a time per project: check, apply and commit run under one lock, so
+  `expected_revision` is compared against the state it applies to.
+- Reads may happen at any time. Read `project_revision` before planning a write and pass it back.
+
 ## Non-goals (later)
 
 In-app remote marketplace with payments, custom pack WGSL shaders — see

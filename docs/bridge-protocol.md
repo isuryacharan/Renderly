@@ -64,9 +64,9 @@ or
 
 | Method | Params | Result |
 |---|---|---|
-| `get_project` | _(token only)_ | `{ project, revision }` |
-| `apply_command` | `command`, `merge_key?` | `{ revision, patch, outcome }` — RFC-6902 patch; shared undo; `merge_key` coalesces consecutive changes into one undo record (command-api.md "History, transactions, coalescing and preview overrides"); emits `project:changed` **without** `mutation_id` so the GUI refetches |
-| `apply_commands` | `commands[]` | `{ revision, patch, outcomes }` |
+| `get_project` | _(token only)_ | `{ project, revision }` — `revision` is `project_revision` (command-api.md "Edit contract") |
+| `apply_command` | `command`, `merge_key?`, `expected_revision?`, `dry_run?`, `request_id?`, `allow_deletion?` | the edit-contract result: `{ committed, revision, changed, summary, warnings, patch, dry_run, replayed, outcome }`. `merge_key` coalesces consecutive changes into one undo record (command-api.md "History, transactions, coalescing and preview overrides"). Emits `project:changed` **without** `mutation_id` so the GUI refetches. Writes are checked as an agent caller (deletion guard applies). Errors: see "Write errors" below |
+| `apply_commands` | `commands[]`, plus the same envelope fields as `apply_command` | `{ committed, revision, changed, summary, warnings, patch, dry_run, replayed, outcomes }`. All or nothing |
 | `end_gesture` | _(token only)_ | `{ can_undo, can_redo }`. Closes the top record's merge gesture |
 | `begin_transaction` | `label` | `{ can_undo, can_redo }`. Opens an undo transaction (nests by depth) |
 | `commit_transaction` | _(token only)_ | `{ can_undo, can_redo }`. Commits the outermost transaction as one record |
@@ -80,8 +80,28 @@ or
 | `set_playhead` | `time_secs` | `{ ok, time_secs }` — seeks/previews like `seek`, then emits Tauri event `bridge:playhead` `{ time_secs }` so the GUI store syncs |
 | `export` | `output_path`, `preset` | `{ ok, output_path }` |
 | `render_frame` | `time_secs`, `preset` | `{ time_secs, png_base64, byte_len }` |
-| `get_editor_status` | | `{ live, project_path, project_name, playhead, playing, selection, revision }` |
+| `get_editor_status` | | `{ live, project_path, project_name, playhead, playing, selection, revision, project_revision }` (`project_revision` equals `revision`; both are kept for older clients) |
 | `agent_permission` | `tool_name`, `input`, `tool_use_id?` | `{ behavior: "allow", updatedInput }` or `{ behavior: "deny", message }`. Sent by `renderly-mcp`'s `permission_prompt` tool for the desktop agent chat. Waits for the user's answer in the app; denies when no agent session is running. Not for other clients |
+
+### Write errors
+
+A failed write returns a JSON-RPC error whose `error.data` is the edit-contract error:
+
+```json
+{ "jsonrpc": "2.0", "id": 4, "error": {
+    "code": -32000,
+    "message": "expected_revision 3 is stale; the project is at revision 5",
+    "data": { "code": "revision_conflict", "message": "…", "hint": "re-read with timeline, then retry", "data": { "current_revision": 5 } }
+} }
+```
+
+`error.data.code` is one of `invalid_command`, `not_found`, `revision_conflict`,
+`request_id_reused`, `deletion_not_allowed`, `busy`, `rolled_back`, `internal` (command-api.md
+"Edit contract"). `error.message` repeats `data.message` for clients that only read the message.
+
+Writes are checked as an agent caller: a write that would delete clips, tracks, media or
+sequences is refused with `deletion_not_allowed` unless `allow_deletion` lists exactly those ids.
+Read methods never fail with these codes.
 
 ### `render_frame` (E3 — live FrameRenderer)
 

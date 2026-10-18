@@ -977,10 +977,21 @@ export function invoke<T = unknown>(cmd: string, args?: any): Promise<T> {
         can_undo: undoStack.length > 0,
         can_redo: redoStack.length > 0,
       });
+      // The edit-contract result (command-api.md "Edit contract"), with the fields the app reads.
+      const write = {
+        committed: true,
+        revision,
+        changed: { created: [], modified: [], deleted: [] },
+        summary: cmds.map((c) => String((c as { command?: string } | undefined)?.command ?? "Command")),
+        warnings: [],
+        patch,
+        dry_run: false,
+        replayed: false,
+      };
       return reply(
         cmd === "apply_command"
-          ? { revision, patch, outcome: "ok" }
-          : { revision, patch, outcomes: cmds.map(() => "ok") },
+          ? { ...write, outcome: "ok" }
+          : { ...write, outcomes: cmds.map(() => "ok") },
       );
     }
     case "begin_transaction": {

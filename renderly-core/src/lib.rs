@@ -17,6 +17,10 @@ pub mod captions;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod commands;
 pub mod compose;
+// The agent edit contract drives the native command set and the write surfaces; the wasm
+// preview compositor does not write projects, so it is native-only.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod edit_contract;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod export;
 pub mod frame;

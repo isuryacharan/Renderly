@@ -82,13 +82,13 @@ emit `project:changed` so the GUI updates live.
 |---|---|
 | `new_project` | Create and open a `.renderly.json` file |
 | `open_project` | Load an existing project |
-| `get_project` | Return current project JSON |
+| `get_project` | Return `{ project_revision, project }` |
 
 ### Editing (command API)
 
 | Tool | Description |
 |---|---|
-| `apply_command` | Apply one `Command` JSON object and save (same shape as CLI `apply`) |
+| `apply_command` | Apply one `Command` JSON object and save (same shape as CLI `apply`). Accepts the edit-contract envelope: `expected_revision`, `dry_run`, `request_id`, `allow_deletion` (see "Edit contract" below) |
 | `undo` / `redo` | Step the open app's shared undo history. One step is one agent turn, one batch, or one coalesced drag. Needs the desktop app open on the project (the history lives in the app session) |
 | `export` | Render open project to MP4 (`preset`: `tiktok` or `youtube`) |
 | `export_otio` | Write the open project as an OpenTimelineIO `.otio` file (`output_path`); lossless for Renderly, see [otio.md](otio.md) |
@@ -123,6 +123,33 @@ with the user's consent; never bundled), then run `GenerateBackgroundMatte`. The
 project it runs there with a progress bar and the user can cancel it). A missing model is the
 typed error `model rvm-mobilenetv3-fp32 is not installed`. Check `get_background_matte_status`
 after trimming the clip or replacing the source: `stale` means regenerate.
+
+## Edit contract: writing safely
+
+The full rules are in [command-api.md](command-api.md) "Edit contract". What an agent needs:
+
+1. **Read first.** `get_project` and `get_editor_status` return `project_revision`. Keep the
+   value from your latest read.
+2. **Pass it back.** Send `expected_revision` with each `apply_command`. If the project changed
+   since (the user edited, or another write landed), the write fails with `revision_conflict`
+   and changes nothing. Re-read, then retry.
+3. **Preview big or destructive edits.** Send `dry_run: true`. The result lists `changed.created`,
+   `changed.modified`, `changed.deleted` and a `patch`. Nothing is written. Send the same command
+   again without `dry_run` to apply it.
+4. **Make retries safe.** Give each logical edit a `request_id`. Retrying the same id and command
+   returns the first result (`replayed: true`) instead of applying it twice.
+5. **Deleting needs permission.** Deleting clips, tracks, media or sequences is refused
+   (`deletion_not_allowed`) unless `allow_deletion` has a `reason` and the exact full ids that a
+   dry run lists under `changed.deleted`. Deleting a track also deletes its clips, so those ids
+   are listed too. Ask the user before you delete anything they did not clearly ask you to remove.
+
+Errors are tool errors (`isError: true`) whose text is JSON: `{ "code", "message", "hint" }`. Do
+what the `hint` says. Codes: `invalid_command`, `not_found`, `revision_conflict`,
+`request_id_reused`, `deletion_not_allowed`, `busy`, `rolled_back`, `internal`. A batch that fails
+part-way reports `rolled_back`, and nothing from it was applied.
+
+`describe_commands` returns the capabilities (`renderly.capabilities.v1`) and every command's
+shape. Renderly's ready-made workflows for Claude Code are in `skills/` (see `skills/README.md`).
 
 ## Worked example: script + footage → export
 

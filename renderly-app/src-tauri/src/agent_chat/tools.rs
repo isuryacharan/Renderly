@@ -11,8 +11,9 @@
 
 use super::outline;
 use super::permission::PermissionBroker;
-use crate::AppState;
+use crate::{AppState, CommandsResult};
 use renderly_core::commands::ExportPreset;
+use renderly_core::edit_contract::{AllowDeletion, Caller, EditError, WriteOptions};
 use renderly_core::project::{Id, Project};
 use renderly_core::{Command, CommandOutcome};
 use rmcp::{
@@ -39,16 +40,19 @@ pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub trait ToolHost: Send + Sync {
     /// The open project. A cheap `Arc` clone.
     fn project(&self) -> Result<Arc<Project>, String>;
+    /// The project's current revision (`project_revision` in reads).
+    fn revision(&self) -> u64;
     /// The playhead in seconds (the default time for `look`).
     fn playhead_secs(&self) -> f64;
     /// The sequence open in the timeline, if any (the default for `timeline`).
     fn active_sequence(&self) -> Option<Id>;
-    /// Apply `commands` as ONE undo step. Each element is a JSON command with short ids already
-    /// resolved. Returns the typed outcome of each command.
-    fn apply_commands(
+    /// Apply `commands` through the edit contract as ONE undo step (or check them, for a dry
+    /// run). Each element is a JSON command with short ids already resolved.
+    fn apply_write(
         &self,
         commands: Vec<Value>,
-    ) -> BoxFut<'_, Result<Vec<CommandOutcome>, String>>;
+        options: WriteOptions,
+    ) -> BoxFut<'_, Result<CommandsResult, EditError>>;
     /// Render the composited frame at `time_secs` as PNG bytes. Blocking.
     fn render_png(&self, time_secs: f64, preset: ExportPreset) -> Result<Vec<u8>, String>;
 }
@@ -65,6 +69,10 @@ impl ToolHost for AppToolHost {
             .with_session(|s| Ok(Arc::clone(&s.project)))
     }
 
+    fn revision(&self) -> u64 {
+        self.app.state::<AppState>().revision_value()
+    }
+
     fn playhead_secs(&self) -> f64 {
         self.app.state::<AppState>().playhead_secs()
     }
@@ -73,17 +81,18 @@ impl ToolHost for AppToolHost {
         *self.app.state::<AppState>().active_sequence.lock()
     }
 
-    fn apply_commands(
+    fn apply_write(
         &self,
         commands: Vec<Value>,
-    ) -> BoxFut<'_, Result<Vec<CommandOutcome>, String>> {
+        options: WriteOptions,
+    ) -> BoxFut<'_, Result<CommandsResult, EditError>> {
         let app = self.app.clone();
         Box::pin(async move {
             let state = app.state::<AppState>();
-            let result = state
-                .apply_commands_inner(&app, commands, None, None)
-                .await?;
-            Ok(result.typed_outcomes)
+            // The in-app agent is an automated caller: the deletion guard applies.
+            state
+                .apply_commands_inner(&app, commands, None, None, options, Caller::Agent)
+                .await
         })
     }
 
@@ -124,6 +133,78 @@ pub struct EditRequest {
     /// One or more commands, applied in order as ONE undo step. If any fails, none are applied.
     #[schemars(schema_with = "command_list_schema")]
     pub commands: Vec<Value>,
+    /// The project_revision from your last timeline read. If the project changed since, the edit
+    /// is rejected with revision_conflict and nothing is applied.
+    #[serde(default)]
+    pub expected_revision: Option<u64>,
+    /// Check the commands and report what would change, without changing anything.
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+    /// Idempotency key. Retrying the same request_id with the same commands returns the original
+    /// result instead of applying them again.
+    #[serde(default)]
+    pub request_id: Option<String>,
+    /// Required to delete clips, tracks, media or sequences: a reason plus the exact full ids a
+    /// dry_run lists under changed.deleted.
+    #[serde(default)]
+    pub allow_deletion: Option<AllowDeletionArg>,
+}
+
+/// `allow_deletion` as an agent sends it. Ids are full UUIDs (the error message lists them).
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct AllowDeletionArg {
+    /// Why these deletions are intended. Must not be empty.
+    pub reason: String,
+    /// Every id the write would delete.
+    pub ids: Vec<String>,
+}
+
+impl EditRequest {
+    /// The envelope fields as the shared contract's options.
+    pub fn write_options(&self) -> Result<WriteOptions, EditError> {
+        options_from(
+            self.expected_revision,
+            self.dry_run.unwrap_or(false),
+            self.request_id.clone(),
+            self.allow_deletion.as_ref(),
+        )
+    }
+}
+
+/// The edit-contract envelope from an agent's edit arguments (shared by the MCP `edit` tool and
+/// the Ollama `edit` tool).
+pub fn options_from(
+    expected_revision: Option<u64>,
+    dry_run: bool,
+    request_id: Option<String>,
+    allow_deletion: Option<&AllowDeletionArg>,
+) -> Result<WriteOptions, EditError> {
+    let allow_deletion = match allow_deletion {
+        None => None,
+        Some(arg) => {
+            let ids = arg
+                .ids
+                .iter()
+                .map(|raw| {
+                    Id::parse_str(raw.trim()).map_err(|e| {
+                        EditError::invalid(format!(
+                            "allow_deletion.ids contains '{raw}', which is not a full id: {e}"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Some(AllowDeletion {
+                reason: arg.reason.clone(),
+                ids,
+            })
+        }
+    };
+    Ok(WriteOptions {
+        expected_revision,
+        dry_run,
+        request_id,
+        allow_deletion,
+    })
 }
 
 fn command_list_schema(gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -185,6 +266,11 @@ fn error_result(text: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(text.into())])
 }
 
+/// A contract error as a tool error: `isError` set, text is the `{code, message, hint}` JSON.
+fn edit_error_result(err: &EditError) -> CallToolResult {
+    error_result(serde_json::to_string_pretty(err).unwrap_or_else(|_| edit_error_text(err)))
+}
+
 /// The short ids of whatever an edit created, so the next edit can refer to them.
 fn created_line(outcome: &CommandOutcome) -> Option<String> {
     let s = outline::short_id;
@@ -216,50 +302,128 @@ pub fn look_size(project_w: u32, project_h: u32, max_width: u32) -> (u32, u32) {
     (w & !1, h.max(2) & !1)
 }
 
-/// `edit`: apply commands as one undo step and summarise each one in plain language.
-pub async fn run_edit(host: &dyn ToolHost, mut commands: Vec<Value>) -> Result<String, String> {
+/// `edit`: apply commands through the edit contract as one undo step and summarise each one in
+/// plain language, with the revision, what changed, and any warnings. A dry run reports the same
+/// text without changing anything.
+pub async fn run_edit(
+    host: &dyn ToolHost,
+    mut commands: Vec<Value>,
+    options: WriteOptions,
+) -> Result<String, EditError> {
     if commands.is_empty() {
-        return Err("no commands given".into());
+        return Err(EditError::invalid("no commands given"));
     }
-    let before = host.project()?;
+    let before = host.project().map_err(EditError::internal)?;
     for value in commands.iter_mut() {
-        outline::resolve_short_ids(value, &before)?;
+        outline::resolve_short_ids(value, &before).map_err(EditError::invalid)?;
     }
     let parsed: Vec<Command> = commands
         .iter()
         .map(|v| {
             serde_json::from_value::<Command>(v.clone()).map_err(|e| {
-                format!(
+                EditError::invalid(format!(
                     "invalid command {}: {e}",
                     v.get("command").unwrap_or(&Value::Null)
-                )
+                ))
             })
         })
         .collect::<Result<_, _>>()?;
 
-    let outcomes = host.apply_commands(commands).await?;
-    let after = host.project()?;
+    let dry_run = options.dry_run;
+    let applied = host.apply_write(commands, options).await?;
+    let result = &applied.write;
+    let after = host.project().map_err(EditError::internal)?;
 
     let mut lines = Vec::new();
     let mut created = Vec::new();
-    for (cmd, outcome) in parsed.iter().zip(outcomes.iter()) {
-        lines.push(format!(
-            "- {}",
-            outline::summarize(cmd, &before, &after, outcome)
-        ));
-        if let Some(c) = created_line(outcome) {
-            created.push(c);
+    for (index, cmd) in parsed.iter().enumerate() {
+        match applied.typed_outcomes.get(index) {
+            Some(outcome) if result.committed => {
+                lines.push(format!(
+                    "- {}",
+                    outline::summarize(cmd, &before, &after, outcome)
+                ));
+                if let Some(c) = created_line(outcome) {
+                    created.push(c);
+                }
+            }
+            _ => lines.push(format!("- {}", command_label(cmd))),
         }
     }
-    let mut text = format!(
-        "Applied {} command(s) as one undo step:\n{}",
-        parsed.len(),
-        lines.join("\n")
-    );
-    if !created.is_empty() {
+
+    let header = if result.committed {
+        format!(
+            "Applied {} command(s) as one undo step. project_revision is now {}.",
+            parsed.len(),
+            result.revision
+        )
+    } else if dry_run {
+        format!(
+            "Dry run of {} command(s): nothing was changed. project_revision is still {}.",
+            parsed.len(),
+            result.revision
+        )
+    } else {
+        format!(
+            "No change: the commands left the project as it was. project_revision is {}.",
+            result.revision
+        )
+    };
+    let mut text = format!("{header}\n{}", lines.join("\n"));
+    if result.committed && !created.is_empty() {
         text.push_str(&format!("\nCreated: {}", created.join("; ")));
     }
+    if !result.changed.is_empty() {
+        text.push_str(&format!("\nChanged: {}", changed_line(&result.changed)));
+    }
+    for warning in &result.warnings {
+        text.push_str(&format!("\nWarning: {warning}"));
+    }
+    if dry_run {
+        text.push_str("\nSend the same commands without dry_run to apply them.");
+    }
     Ok(text)
+}
+
+/// A command's name in words, e.g. `DeleteClip` -> `Delete clip`, for lines that have no outline.
+fn command_label(cmd: &Command) -> String {
+    let name = renderly_core::edit_contract::command_name(cmd);
+    let mut out = String::new();
+    for (i, ch) in name.chars().enumerate() {
+        if ch.is_uppercase() && i > 0 {
+            out.push(' ');
+            out.extend(ch.to_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// `created`, `modified` and `deleted` as short ids, for the edit summary.
+fn changed_line(changed: &renderly_core::edit_contract::Changed) -> String {
+    let short = |ids: &[Id]| {
+        ids.iter()
+            .map(|id| outline::short_id(*id))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut parts = Vec::new();
+    if !changed.created.is_empty() {
+        parts.push(format!("created {}", short(&changed.created)));
+    }
+    if !changed.modified.is_empty() {
+        parts.push(format!("modified {}", short(&changed.modified)));
+    }
+    if !changed.deleted.is_empty() {
+        parts.push(format!("deleted {}", short(&changed.deleted)));
+    }
+    parts.join("; ")
+}
+
+/// A contract error as the text an agent reads: `code: message` and the hint on the next line.
+pub fn edit_error_text(err: &EditError) -> String {
+    format!("{}: {}\nHint: {}", err.code.as_str(), err.message, err.hint)
 }
 
 /// `timeline`: the outline of the root timeline, or of one sequence.
@@ -269,7 +433,11 @@ pub fn run_timeline(host: &dyn ToolHost, sequence_id: Option<&str>) -> Result<St
         Some(raw) => Some(resolve_sequence(&project, raw)?),
         None => host.active_sequence(),
     };
-    Ok(outline::timeline_outline(&project, sequence))
+    Ok(format!(
+        "project_revision: {}\n{}",
+        host.revision(),
+        outline::timeline_outline(&project, sequence)
+    ))
 }
 
 /// `assets`: the effect, transition and caption catalog and the loaded packs.
@@ -316,17 +484,21 @@ pub async fn run_look(
 #[tool_router]
 impl RenderlyTools {
     #[tool(
-        description = "Apply one or more edit commands to the open project as ONE undo step. Each command is a JSON object tagged by \"command\" (see the schema). Ids may be given as the first 8 hex characters shown by timeline. Returns one plain-language line per command, plus short ids of anything created."
+        description = "Apply one or more edit commands to the open project as ONE undo step. Each command is a JSON object tagged by \"command\" (see the schema). Ids may be given as the first 8 hex characters shown by timeline. Pass expected_revision from your last timeline read; use dry_run first for large or destructive edits; deleting clips, tracks, media or sequences needs allow_deletion with the exact full ids a dry run lists. Returns one plain-language line per command, the new project_revision, and what changed."
     )]
     async fn edit(&self, Parameters(req): Parameters<EditRequest>) -> CallToolResult {
-        match run_edit(self.host.as_ref(), req.commands).await {
+        let options = match req.write_options() {
+            Ok(options) => options,
+            Err(e) => return edit_error_result(&e),
+        };
+        match run_edit(self.host.as_ref(), req.commands, options).await {
             Ok(text) => text_result(text),
-            Err(e) => error_result(e),
+            Err(e) => edit_error_result(&e),
         }
     }
 
     #[tool(
-        description = "Compact outline of the open timeline: settings, tracks in z-order (index 0 is the bottom), and clips with short ids, spans, source ranges, media names, speed, effects and transitions. Use it to find ids before editing."
+        description = "Compact outline of the open timeline: project_revision (pass it as expected_revision to edit), settings, tracks in z-order (index 0 is the bottom), and clips with short ids, spans, source ranges, media names, speed, effects and transitions. Use it to find ids before editing."
     )]
     async fn timeline(&self, Parameters(req): Parameters<TimelineRequest>) -> CallToolResult {
         match run_timeline(self.host.as_ref(), req.sequence_id.as_deref()) {
@@ -473,6 +645,173 @@ mod tests {
         eprintln!("edit schema: {} bytes", text.len());
         // Compact enough for a tool listing.
         assert!(text.len() < 60_000, "edit schema is {} bytes", text.len());
+    }
+
+    use renderly_core::edit_contract::EditErrorCode;
+
+    /// An in-memory host that commits through the same core contract the app uses.
+    struct MemHost {
+        state: std::sync::Mutex<(Project, u64, renderly_core::edit_contract::WriteLedger)>,
+    }
+
+    impl MemHost {
+        fn new() -> Self {
+            Self {
+                state: std::sync::Mutex::new((
+                    Project::new("contract", renderly_core::project::Settings::default()),
+                    0,
+                    renderly_core::edit_contract::WriteLedger::new(),
+                )),
+            }
+        }
+    }
+
+    impl ToolHost for MemHost {
+        fn project(&self) -> Result<Arc<Project>, String> {
+            Ok(Arc::new(self.state.lock().unwrap().0.clone()))
+        }
+        fn revision(&self) -> u64 {
+            self.state.lock().unwrap().1
+        }
+        fn playhead_secs(&self) -> f64 {
+            0.0
+        }
+        fn active_sequence(&self) -> Option<Id> {
+            None
+        }
+        fn apply_write(
+            &self,
+            commands: Vec<Value>,
+            options: WriteOptions,
+        ) -> BoxFut<'_, Result<CommandsResult, EditError>> {
+            Box::pin(async move {
+                let cmds: Vec<Command> = commands
+                    .into_iter()
+                    .map(|c| {
+                        serde_json::from_value(c).map_err(|e| EditError::invalid(e.to_string()))
+                    })
+                    .collect::<Result<_, _>>()?;
+                let mut guard = self.state.lock().unwrap();
+                let (project, revision, ledger) = &mut *guard;
+                let mut plan = renderly_core::edit_contract::plan_write(
+                    project,
+                    *revision,
+                    ledger,
+                    &options,
+                    Caller::Agent,
+                    cmds,
+                )?;
+                let typed = plan.outcomes().to_vec();
+                let committed_at = plan.take_next().map(|next| {
+                    *project = next;
+                    *revision += 1;
+                    *revision
+                });
+                let write = plan.finish(committed_at, ledger);
+                Ok(CommandsResult {
+                    write,
+                    outcomes: Vec::new(),
+                    typed_outcomes: typed,
+                })
+            })
+        }
+        fn render_png(&self, _time_secs: f64, _preset: ExportPreset) -> Result<Vec<u8>, String> {
+            Err("no rendering in tests".into())
+        }
+    }
+
+    fn add_track(name: &str) -> Value {
+        serde_json::json!({ "command": "AddTrack", "kind": "caption", "name": name })
+    }
+
+    #[test]
+    fn edit_reports_the_new_revision_and_what_changed() {
+        let host = MemHost::new();
+        let text = tauri::async_runtime::block_on(run_edit(
+            &host,
+            vec![add_track("Subs")],
+            WriteOptions::default(),
+        ))
+        .unwrap_or_else(|e| panic!("{e}"));
+        assert!(text.contains("project_revision is now 1"), "{text}");
+        assert!(text.contains("Changed: created"), "{text}");
+        // The warning nudges the model to send expected_revision next time.
+        assert!(text.contains("Warning:"), "{text}");
+        assert!(run_timeline(&host, None)
+            .unwrap_or_default()
+            .starts_with("project_revision: 1"));
+    }
+
+    #[test]
+    fn edit_rejects_a_stale_revision_and_applies_nothing() {
+        let host = MemHost::new();
+        tauri::async_runtime::block_on(run_edit(
+            &host,
+            vec![add_track("A")],
+            WriteOptions::default(),
+        ))
+        .unwrap_or_else(|e| panic!("{e}"));
+        let stale = WriteOptions {
+            expected_revision: Some(0),
+            ..WriteOptions::default()
+        };
+        let err = tauri::async_runtime::block_on(run_edit(&host, vec![add_track("B")], stale))
+            .err()
+            .unwrap_or_else(|| panic!("stale edit was accepted"));
+        assert_eq!(err.code, EditErrorCode::RevisionConflict);
+        assert_eq!(host.project().map(|p| p.tracks.len()).unwrap_or(0), 1);
+        assert_eq!(host.revision(), 1);
+    }
+
+    #[test]
+    fn dry_run_edit_says_nothing_changed() {
+        let host = MemHost::new();
+        let dry = WriteOptions {
+            dry_run: true,
+            ..WriteOptions::default()
+        };
+        let text = tauri::async_runtime::block_on(run_edit(&host, vec![add_track("Preview")], dry))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(text.contains("nothing was changed"), "{text}");
+        assert!(text.contains("project_revision is still 0"), "{text}");
+        assert_eq!(host.project().map(|p| p.tracks.len()).unwrap_or(1), 0);
+    }
+
+    #[test]
+    fn agent_deletion_is_refused_until_allowed_with_exact_ids() {
+        let host = MemHost::new();
+        tauri::async_runtime::block_on(run_edit(
+            &host,
+            vec![add_track("Trash")],
+            WriteOptions::default(),
+        ))
+        .unwrap_or_else(|e| panic!("{e}"));
+        let track = host.project().map(|p| p.tracks[0].id).unwrap_or_default();
+        let delete = serde_json::json!({ "command": "DeleteTrack", "track_id": track });
+
+        let err = tauri::async_runtime::block_on(run_edit(
+            &host,
+            vec![delete.clone()],
+            WriteOptions::default(),
+        ))
+        .err()
+        .unwrap_or_else(|| panic!("deletion without allow_deletion was accepted"));
+        assert_eq!(err.code, EditErrorCode::DeletionNotAllowed);
+        assert!(edit_error_text(&err).contains("deletion_not_allowed"));
+
+        let allowed = options_from(
+            None,
+            false,
+            None,
+            Some(&AllowDeletionArg {
+                reason: "cleanup".into(),
+                ids: vec![track.to_string()],
+            }),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        tauri::async_runtime::block_on(run_edit(&host, vec![delete], allowed))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(host.project().map(|p| p.tracks.is_empty()).unwrap_or(false));
     }
 
     #[test]

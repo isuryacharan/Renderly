@@ -4,14 +4,18 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use renderly_core::commands::{Command, ExportPreset};
+use renderly_core::edit_contract::{
+    plan_write, AllowDeletion, Caller, WriteLedger, WriteOptions, WriteResult,
+};
 use renderly_core::export::export_project_with_progress;
-use renderly_core::history::History;
 use renderly_core::otio::{
     export_otio_with_options, import_otio, probe_media, ExportOptions, ImportOptions,
 };
 use renderly_core::project::{Project, Settings};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use uuid::Uuid;
 
 #[derive(Parser)]
 #[command(
@@ -47,15 +51,20 @@ enum CliCommand {
         path: PathBuf,
         /// A single Command as a JSON object, e.g. '{"command":"AddTrack","kind":"video","name":"V1"}'
         command_json: String,
+        #[command(flatten)]
+        write: WriteFlags,
     },
-    /// Apply a JSON array of commands from a script file, in order, and save the result.
+    /// Apply a JSON array of commands from a script file, in order, and save the result. All or
+    /// nothing: if any command fails, the file is not written.
     ApplyScript {
         /// Path to the project JSON file (modified in place).
         path: PathBuf,
         /// Path to a JSON file containing an array of Command objects.
         script: PathBuf,
+        #[command(flatten)]
+        write: WriteFlags,
     },
-    /// Print the project state as pretty JSON.
+    /// Print the project as pretty JSON, with its project_revision.
     Show { path: PathBuf },
     /// Render the project to a video file (requires ffmpeg on PATH).
     Export {
@@ -184,14 +193,129 @@ fn save_project(path: &PathBuf, project: &Project) -> Result<()> {
     fs::write(path, data).with_context(|| format!("writing {}", path.display()))
 }
 
-fn apply_and_report(project: &mut Project, cmd: Command) -> Result<()> {
-    match renderly_core::apply_command(project, cmd) {
-        Ok(outcome) => {
-            println!("{:?}", outcome);
-            Ok(())
-        }
-        Err(e) => bail!("command failed: {e}"),
+/// The edit-contract envelope flags, shared by `apply` and `apply-script`.
+#[derive(clap::Args, Debug, Clone, Default)]
+struct WriteFlags {
+    /// Check the command(s) and report what would change, without writing the project.
+    #[arg(long)]
+    dry_run: bool,
+    /// The project_revision you last read (`renderly show` prints it). If the project has moved
+    /// on, nothing is applied and the error says what the current revision is.
+    #[arg(long, value_name = "REVISION")]
+    expected_revision: Option<u64>,
+    /// Idempotency key. Retrying the same id with the same command(s) returns the original result.
+    #[arg(long, value_name = "ID")]
+    request_id: Option<String>,
+    /// Why clips, tracks, media or sequences may be deleted. Required with --allow-deletion-id.
+    #[arg(long, value_name = "TEXT")]
+    allow_deletion_reason: Option<String>,
+    /// A full id this write may delete. Repeat for each id; the list must match a --dry-run's
+    /// `changed.deleted` exactly.
+    #[arg(long = "allow-deletion-id", value_name = "UUID")]
+    allow_deletion_ids: Vec<String>,
+}
+
+impl WriteFlags {
+    fn options(&self) -> Result<WriteOptions> {
+        let ids = self
+            .allow_deletion_ids
+            .iter()
+            .map(|raw| {
+                Uuid::parse_str(raw.trim())
+                    .with_context(|| format!("--allow-deletion-id '{raw}' is not a full id"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let allow_deletion = match (&self.allow_deletion_reason, ids.is_empty()) {
+            (None, true) => None,
+            (reason, _) => Some(AllowDeletion {
+                reason: reason.clone().unwrap_or_default(),
+                ids,
+            }),
+        };
+        Ok(WriteOptions {
+            expected_revision: self.expected_revision,
+            dry_run: self.dry_run,
+            request_id: self.request_id.clone(),
+            allow_deletion,
+        })
     }
+}
+
+/// The headless state kept next to a project file: its revision and recent request ids. The
+/// project JSON itself has no revision, so each CLI call reads this to continue the count.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct CliState {
+    revision: u64,
+    ledger: WriteLedger,
+}
+
+fn state_path(path: &std::path::Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".state.json");
+    PathBuf::from(name)
+}
+
+fn load_state(path: &std::path::Path) -> Result<CliState> {
+    let file = state_path(path);
+    match fs::read_to_string(&file) {
+        Ok(data) => serde_json::from_str(&data)
+            .with_context(|| format!("reading revision state {}", file.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(CliState::default()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", file.display())),
+    }
+}
+
+fn save_state(path: &std::path::Path, state: &CliState) -> Result<()> {
+    let file = state_path(path);
+    let data = serde_json::to_string_pretty(state)?;
+    fs::write(&file, data).with_context(|| format!("writing {}", file.display()))
+}
+
+/// Check and apply `commands` to the project at `path` through the edit contract (the same one
+/// the app and MCP use), then save the project when something changed.
+/// Returns the contract result and the outcome of each command (for example the ids created).
+fn run_write(
+    path: &PathBuf,
+    commands: Vec<Command>,
+    flags: &WriteFlags,
+) -> Result<(WriteResult, Vec<String>)> {
+    let options = flags.options()?;
+    let project = load_project(path)?;
+    let mut state = load_state(path)?;
+    // CLI calls are automation, so the deletion guard applies (`Caller::Agent`).
+    let mut plan = plan_write(
+        &project,
+        state.revision,
+        &state.ledger,
+        &options,
+        Caller::Agent,
+        commands,
+    )
+    .map_err(|e| anyhow::anyhow!("{}", serde_json::to_string_pretty(&e).unwrap_or_default()))?;
+
+    let outcomes: Vec<String> = plan.outcomes().iter().map(|o| format!("{o:?}")).collect();
+    let committed_at = match plan.take_next() {
+        Some(next) => {
+            save_project(path, &next)?;
+            state.revision += 1;
+            Some(state.revision)
+        }
+        None => None,
+    };
+    let result = plan.finish(committed_at, &mut state.ledger);
+    if committed_at.is_some() {
+        save_state(path, &state)?;
+    }
+    Ok((result, outcomes))
+}
+
+fn print_write_result(result: &WriteResult, outcomes: &[String]) -> Result<()> {
+    let mut value = serde_json::to_value(result)?;
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("outcomes".into(), serde_json::json!(outcomes));
+    }
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -220,44 +344,39 @@ fn main() -> Result<()> {
             save_project(&path, &project)?;
             println!("created project {}", path.display());
         }
-        CliCommand::Apply { path, command_json } => {
-            let mut project = load_project(&path)?;
+        CliCommand::Apply {
+            path,
+            command_json,
+            write,
+        } => {
             let cmd: Command =
                 serde_json::from_str(&command_json).context("parsing command JSON")?;
-            apply_and_report(&mut project, cmd)?;
-            save_project(&path, &project)?;
+            let (result, outcomes) = run_write(&path, vec![cmd], &write)?;
+            print_write_result(&result, &outcomes)?;
         }
-        CliCommand::ApplyScript { path, script } => {
-            let mut project = load_project(&path)?;
+        CliCommand::ApplyScript {
+            path,
+            script,
+            write,
+        } => {
             let script_data = fs::read_to_string(&script)
                 .with_context(|| format!("reading {}", script.display()))?;
-            let raw: Vec<serde_json::Value> =
+            let cmds: Vec<Command> =
                 serde_json::from_str(&script_data).context("parsing script JSON")?;
-            // The whole script is one transaction (docs/command-api.md): any failing command
-            // rolls it back, and the file is only written when every command succeeded.
-            let mut history: History<Project> = History::new();
-            history.begin("apply-script");
-            for value in raw {
-                let name = value
-                    .get("command")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("Command")
-                    .to_string();
-                let cmd: Command = serde_json::from_value(value).context("parsing script JSON")?;
-                let before = project.clone();
-                if let Err(e) = apply_and_report(&mut project, cmd) {
-                    // Nothing is saved on failure: the rolled-back state is never written.
-                    history.rollback();
-                    return Err(e);
-                }
-                history.record(before, [name], None, std::time::Instant::now());
-            }
-            history.commit();
-            save_project(&path, &project)?;
+            // The whole script is one batch: any failing command applies nothing, and the file
+            // is only written when every command succeeded (docs/command-api.md).
+            let (result, outcomes) = run_write(&path, cmds, &write)?;
+            print_write_result(&result, &outcomes)?;
         }
         CliCommand::Show { path } => {
             let project = load_project(&path)?;
-            println!("{}", serde_json::to_string_pretty(&project)?);
+            let state = load_state(&path)?;
+            // The project JSON, plus `project_revision` at its top level (as renderly-mcp returns).
+            let mut shown = serde_json::to_value(&project)?;
+            if let Some(obj) = shown.as_object_mut() {
+                obj.insert("project_revision".into(), serde_json::json!(state.revision));
+            }
+            println!("{}", serde_json::to_string_pretty(&shown)?);
         }
         CliCommand::Export {
             path,
@@ -371,20 +490,150 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    fn cmd(json: &str) -> Command {
+        serde_json::from_str(json).unwrap()
+    }
+
+    fn fresh_project(tag: &str) -> PathBuf {
+        let path = temp_project_path(tag);
+        save_project(&path, &test_project()).unwrap();
+        path
+    }
+
+    fn cleanup(path: &PathBuf) {
+        std::fs::remove_file(path).ok();
+        std::fs::remove_file(state_path(path)).ok();
+    }
+
     #[test]
     fn apply_command_json_matches_apply_subcommand_path() {
         // Same deserialization the `apply` subcommand uses: JSON string -> Command.
-        let path = temp_project_path("apply");
-        let mut project = test_project();
-        let cmd: Command =
-            serde_json::from_str(r#"{"command":"AddTrack","kind":"video","name":"V1"}"#).unwrap();
-        apply_and_report(&mut project, cmd).unwrap();
-        assert_eq!(project.tracks.len(), 1);
-        assert_eq!(project.tracks[0].name, "V1");
-        save_project(&path, &project).unwrap();
+        let path = fresh_project("apply");
+        let (result, _) = run_write(
+            &path,
+            vec![cmd(r#"{"command":"AddTrack","kind":"video","name":"V1"}"#)],
+            &WriteFlags::default(),
+        )
+        .unwrap();
+        assert!(result.committed);
+        assert_eq!(result.revision, 1);
         let reloaded = load_project(&path).unwrap();
         assert_eq!(reloaded.tracks.len(), 1);
-        std::fs::remove_file(&path).ok();
+        assert_eq!(reloaded.tracks[0].name, "V1");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn dry_run_prints_the_result_and_leaves_the_file_and_revision_alone() {
+        let path = fresh_project("dry");
+        let before = std::fs::read(&path).unwrap();
+        let flags = WriteFlags {
+            dry_run: true,
+            ..WriteFlags::default()
+        };
+        let (result, _) = run_write(
+            &path,
+            vec![cmd(r#"{"command":"AddTrack","kind":"video","name":"V1"}"#)],
+            &flags,
+        )
+        .unwrap();
+        assert!(!result.committed && result.dry_run);
+        assert!(!result.patch.0.is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(load_state(&path).unwrap().revision, 0);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn expected_revision_must_match_the_saved_revision() {
+        let path = fresh_project("expected");
+        let add = || cmd(r#"{"command":"AddTrack","kind":"video","name":"V1"}"#);
+        run_write(&path, vec![add()], &WriteFlags::default()).unwrap();
+        // Revision is now 1; a write that read revision 0 is stale.
+        let stale = WriteFlags {
+            expected_revision: Some(0),
+            ..WriteFlags::default()
+        };
+        let err = run_write(&path, vec![add()], &stale).unwrap_err();
+        assert!(err.to_string().contains("revision_conflict"), "{err}");
+        assert_eq!(load_project(&path).unwrap().tracks.len(), 1);
+        let fresh = WriteFlags {
+            expected_revision: Some(1),
+            ..WriteFlags::default()
+        };
+        assert!(run_write(&path, vec![add()], &fresh).is_ok());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn request_id_retry_is_not_applied_twice() {
+        let path = fresh_project("request");
+        let flags = WriteFlags {
+            request_id: Some("r-1".into()),
+            ..WriteFlags::default()
+        };
+        let add = || cmd(r#"{"command":"AddTrack","kind":"video","name":"V1"}"#);
+        run_write(&path, vec![add()], &flags).unwrap();
+        let (replay, _) = run_write(&path, vec![add()], &flags).unwrap();
+        assert!(replay.replayed);
+        assert_eq!(load_project(&path).unwrap().tracks.len(), 1);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn deletion_needs_reason_and_exact_ids() {
+        let path = fresh_project("delete");
+        run_write(
+            &path,
+            vec![cmd(r#"{"command":"CreateSequence","name":"Inner"}"#)],
+            &WriteFlags::default(),
+        )
+        .unwrap();
+        let project = load_project(&path).unwrap();
+        let sequence = project.sequences[0].id.to_string();
+        let delete = || {
+            cmd(&format!(
+                r#"{{"command":"DeleteSequence","sequence_id":"{sequence}"}}"#
+            ))
+        };
+
+        // No allow flags: refused, with the error naming the deletion rule.
+        let err = run_write(&path, vec![delete()], &WriteFlags::default()).unwrap_err();
+        assert!(err.to_string().contains("deletion_not_allowed"), "{err}");
+
+        // The sequence's own id alone misses its media item: still refused.
+        let partial = WriteFlags {
+            allow_deletion_reason: Some("cleanup".into()),
+            allow_deletion_ids: vec![sequence.clone()],
+            ..WriteFlags::default()
+        };
+        assert!(run_write(&path, vec![delete()], &partial).is_err());
+
+        // The exact set (the sequence and its media item) is accepted.
+        let media = project
+            .media
+            .iter()
+            .find(|m| m.sequence_id.is_some())
+            .unwrap()
+            .id;
+        let exact = WriteFlags {
+            allow_deletion_reason: Some("cleanup".into()),
+            allow_deletion_ids: vec![sequence.clone(), media.to_string()],
+            ..WriteFlags::default()
+        };
+        let (result, _) = run_write(&path, vec![delete()], &exact).unwrap();
+        assert!(result.committed);
+        assert!(load_project(&path).unwrap().sequences.is_empty());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn write_flags_reject_a_malformed_deletion_id() {
+        let flags = WriteFlags {
+            allow_deletion_ids: vec!["not-an-id".into()],
+            ..WriteFlags::default()
+        };
+        assert!(flags.options().is_err());
     }
 
     #[test]

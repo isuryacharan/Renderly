@@ -4637,6 +4637,7 @@ dependencies = [
  "ffmpeg-the-third",
  "getrandom 0.2.17",
  "image",
+ "json-patch 4.2.0",
  "naga",
  "nnnoiseless",
  "pollster",

@@ -139,6 +139,28 @@ struct JsonRpcResponse {
 #[derive(Debug, Deserialize)]
 struct JsonRpcError {
     message: String,
+    /// The app's typed edit-contract error (`{code, message, hint, data?}`) for writes.
+    #[serde(default)]
+    data: Option<Value>,
+}
+
+/// Why a bridge call failed. `Rpc` keeps the JSON-RPC `data` payload, which carries the typed
+/// edit-contract error for writes; `Transport` covers everything before a response arrives.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CallFailure {
+    Rpc {
+        message: String,
+        data: Option<Value>,
+    },
+    Transport(String),
+}
+
+impl std::fmt::Display for CallFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rpc { message, .. } | Self::Transport(message) => f.write_str(message),
+        }
+    }
 }
 
 impl BridgeClient {
@@ -155,7 +177,20 @@ impl BridgeClient {
         })
     }
 
-    pub async fn call(&mut self, method: &str, mut params: Value) -> Result<Value, String> {
+    pub async fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        self.call_checked(method, params)
+            .await
+            .map_err(|f| f.to_string())
+    }
+
+    /// Like [`call`](Self::call), but a JSON-RPC error keeps its `data` (the typed edit-contract
+    /// error for writes) instead of collapsing to a message.
+    pub async fn call_checked(
+        &mut self,
+        method: &str,
+        mut params: Value,
+    ) -> Result<Value, CallFailure> {
+        let transport = CallFailure::Transport;
         if !params.is_object() {
             params = json!({});
         }
@@ -173,29 +208,32 @@ impl BridgeClient {
         self.ws
             .send(Message::Text(req.to_string().into()))
             .await
-            .map_err(|e| format!("bridge send: {e}"))?;
+            .map_err(|e| transport(format!("bridge send: {e}")))?;
 
         let deadline = Duration::from_secs(120);
         let started = std::time::Instant::now();
         while started.elapsed() < deadline {
             let msg = tokio::time::timeout(Duration::from_secs(30), self.ws.next())
                 .await
-                .map_err(|_| "bridge recv timed out".to_string())?
-                .ok_or_else(|| "bridge closed".to_string())?
-                .map_err(|e| format!("bridge recv: {e}"))?;
+                .map_err(|_| transport("bridge recv timed out".to_string()))?
+                .ok_or_else(|| transport("bridge closed".to_string()))?
+                .map_err(|e| transport(format!("bridge recv: {e}")))?;
             let Message::Text(text) = msg else {
                 continue;
             };
             let resp: JsonRpcResponse =
-                serde_json::from_str(&text).map_err(|e| format!("bridge parse: {e}"))?;
+                serde_json::from_str(&text).map_err(|e| transport(format!("bridge parse: {e}")))?;
             if let Some(err) = resp.error {
-                return Err(err.message);
+                return Err(CallFailure::Rpc {
+                    message: err.message,
+                    data: err.data,
+                });
             }
             return resp
                 .result
-                .ok_or_else(|| "bridge response missing result".to_string());
+                .ok_or_else(|| transport("bridge response missing result".to_string()));
         }
-        Err("bridge call timed out".into())
+        Err(transport("bridge call timed out".into()))
     }
 }
 
@@ -231,6 +269,8 @@ pub struct EditorStatusHeadless {
     pub project_path: Option<String>,
     pub playhead: Option<f64>,
     pub selection: Option<Value>,
+    /// The headless session's revision (committed writes since it was opened).
+    pub project_revision: Option<u64>,
 }
 
 #[cfg(test)]

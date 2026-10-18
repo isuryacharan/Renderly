@@ -9,6 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use rand::RngCore;
 use renderly_core::compose::PreviewOverride;
+use renderly_core::edit_contract::{Caller, EditError, WriteOptions};
 use renderly_core::project::Id;
 use renderly_core::{
     commands::ExportPreset, export_project_with_settings, ExportError, ExportSettings,
@@ -82,6 +83,9 @@ struct JsonRpcResponse {
 struct JsonRpcError {
     code: i32,
     message: String,
+    /// The typed edit-contract error for writes (`{code, message, hint, data?}`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
 }
 
 /// Shared auth + discovery bookkeeping for the running bridge.
@@ -159,13 +163,78 @@ fn check_token(expected: &str, params: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// A failed bridge call: the JSON-RPC message and, for writes, the typed edit-contract error
+/// (`{code, message, hint, data?}`) in the JSON-RPC `error.data`.
+struct RpcFailure {
+    message: String,
+    data: Option<Value>,
+}
+
+impl From<String> for RpcFailure {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            data: None,
+        }
+    }
+}
+
+impl From<EditError> for RpcFailure {
+    fn from(err: EditError) -> Self {
+        Self {
+            message: err.message.clone(),
+            data: serde_json::to_value(&err).ok(),
+        }
+    }
+}
+
 async fn dispatch(
     app: &AppHandle,
     token: &str,
     method: &str,
     params: Value,
-) -> Result<Value, String> {
+) -> Result<Value, RpcFailure> {
     check_token(token, &params)?;
+    match method {
+        "apply_command" | "apply_commands" => dispatch_write(app, method, params).await,
+        _ => dispatch_other(app, method, params)
+            .await
+            .map_err(RpcFailure::from),
+    }
+}
+
+/// The write methods: the edit contract's envelope (`expected_revision`, `dry_run`,
+/// `request_id`, `allow_deletion`) is read from the same params object as the command(s). Agents
+/// call the bridge, so the deletion guard applies (`Caller::Agent`).
+async fn dispatch_write(app: &AppHandle, method: &str, params: Value) -> Result<Value, RpcFailure> {
+    let state = app.state::<AppState>();
+    let options: WriteOptions = serde_json::from_value(params.clone())
+        .map_err(|e| EditError::invalid(format!("invalid write options: {e}")))?;
+    let merge_key = optional_string(&params, "merge_key");
+    // No mutation_id — GUI must refetch on project:changed (external edit).
+    if method == "apply_command" {
+        let command = params
+            .get("command")
+            .cloned()
+            .ok_or_else(|| EditError::invalid("params.command required"))?;
+        let result = state
+            .apply_command_inner(app, command, None, merge_key, options, Caller::Agent)
+            .await?;
+        return serde_json::to_value(result).map_err(|e| EditError::internal(e.to_string()).into());
+    }
+    let commands = params
+        .get("commands")
+        .cloned()
+        .ok_or_else(|| EditError::invalid("params.commands required"))?;
+    let commands: Vec<Value> = serde_json::from_value(commands)
+        .map_err(|e| EditError::invalid(format!("params.commands must be an array: {e}")))?;
+    let result = state
+        .apply_commands_inner(app, commands, None, merge_key, options, Caller::Agent)
+        .await?;
+    serde_json::to_value(result).map_err(|e| EditError::internal(e.to_string()).into())
+}
+
+async fn dispatch_other(app: &AppHandle, method: &str, params: Value) -> Result<Value, String> {
     let state = app.state::<AppState>();
 
     match method {
@@ -175,31 +244,6 @@ async fn dispatch(
                 "project": &*project,
                 "revision": state.revision_value(),
             }))
-        }
-        "apply_command" => {
-            let command = params
-                .get("command")
-                .cloned()
-                .ok_or_else(|| "params.command required".to_string())?;
-            let merge_key = optional_string(&params, "merge_key");
-            // No mutation_id — GUI must refetch on project:changed (external edit).
-            let result = state
-                .apply_command_inner(app, command, None, merge_key)
-                .await?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
-        }
-        "apply_commands" => {
-            let commands = params
-                .get("commands")
-                .cloned()
-                .ok_or_else(|| "params.commands required".to_string())?;
-            let commands: Vec<Value> = serde_json::from_value(commands)
-                .map_err(|e| format!("params.commands must be an array: {e}"))?;
-            let merge_key = optional_string(&params, "merge_key");
-            let result = state
-                .apply_commands_inner(app, commands, None, merge_key)
-                .await?;
-            serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "undo" => {
             let status = state.undo_inner(app, None).await?;
@@ -363,6 +407,7 @@ async fn dispatch(
                 "playing": state.playback.is_playing(),
                 "selection": state.selection_json(),
                 "revision": state.revision_value(),
+                "project_revision": state.revision_value(),
             }))
         }
         other => Err(format!("unknown method '{other}'")),
@@ -415,6 +460,7 @@ async fn handle_connection(app: AppHandle, token: String, stream: TcpStream) {
                     error: Some(JsonRpcError {
                         code: -32700,
                         message: format!("parse error: {e}"),
+                        data: None,
                     }),
                 };
                 let _ = write
@@ -436,13 +482,14 @@ async fn handle_connection(app: AppHandle, token: String, stream: TcpStream) {
                 result: Some(value),
                 error: None,
             },
-            Err(message) => JsonRpcResponse {
+            Err(failure) => JsonRpcResponse {
                 jsonrpc: "2.0",
                 id: req.id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32000,
-                    message,
+                    message: failure.message,
+                    data: failure.data,
                 }),
             },
         };
@@ -574,5 +621,43 @@ mod tests {
         assert_eq!(base64_encode(b"fo"), "Zm8=");
         assert_eq!(base64_encode(b"foo"), "Zm9v");
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn write_failures_carry_the_typed_error_in_rpc_data() {
+        let failure = RpcFailure::from(EditError::revision_conflict(1, 4));
+        let response = JsonRpcResponse {
+            jsonrpc: "2.0",
+            id: Some(json!(7)),
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32000,
+                message: failure.message.clone(),
+                data: failure.data.clone(),
+            }),
+        };
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(wire["error"]["data"]["code"], "revision_conflict");
+        assert_eq!(wire["error"]["data"]["data"]["current_revision"], 4);
+        assert_eq!(
+            wire["error"]["data"]["hint"],
+            "re-read with timeline, then retry"
+        );
+        assert!(wire["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("stale")));
+    }
+
+    #[test]
+    fn plain_failures_have_no_data_field() {
+        let failure = RpcFailure::from("bridge says no".to_string());
+        let wire = serde_json::to_value(JsonRpcError {
+            code: -32000,
+            message: failure.message,
+            data: failure.data,
+        })
+        .unwrap();
+        assert!(wire.get("data").is_none());
+        assert_eq!(wire["message"], "bridge says no");
     }
 }

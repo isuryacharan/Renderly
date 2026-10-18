@@ -177,6 +177,13 @@ cover window inside a source that overflows (-1 to 1; 0 is centred).
 timeline outline and send the full list with your change. Params you omit use their defaults.
 - Speed: SetClipSpeed changes playback rate; the timeline span shrinks or grows accordingly.
 - Undo: all edits in one message are one undo step, and the user can revert the whole turn.
+- Stale ids: timeline and edit report project_revision. Pass expected_revision to edit with the \
+revision from your latest timeline read. If it fails with revision_conflict, call timeline and retry.
+- Big or destructive edits: send dry_run: true first, check what it lists under changed, then send \
+the same commands without dry_run.
+- Deleting clips, tracks, media or sequences is refused unless allow_deletion gives a reason and \
+the exact full ids a dry run lists under deleted. Without the user's clear request to delete, \
+offer the deletion and wait.
 - Never edit the project file yourself. Never run shell commands; you have no shell.
 
 Replies: one or two short sentences saying what you did or what you need. The app shows the \

@@ -247,16 +247,36 @@ export type JsonPatchOp = {
   value?: unknown;
 };
 
-/** App-IPC result of `apply_command` (B3) — not part of the core Command enum. */
-export interface CommandResult {
+/** The edit-contract result every write returns (docs/command-api.md "Edit contract"). */
+export interface WriteResult {
+  /** True when this call changed the project. */
+  committed: boolean;
+  /** Project revision after the call. */
   revision: number;
+  changed: { created: string[]; modified: string[]; deleted: string[] };
+  /** Plain-language lines: one per command, then what changed. */
+  summary: string[];
+  warnings: string[];
+  /** RFC-6902 patch from the pre-write project to the post-write project. */
   patch: JsonPatchOp[];
+  dry_run: boolean;
+  /** True when this is the original result of a replayed `request_id`. */
+  replayed: boolean;
+}
+
+/** Optional edit-contract envelope for a write from the webview. */
+export interface WriteEnvelope {
+  expectedRevision?: number;
+  dryRun?: boolean;
+  requestId?: string;
+}
+
+/** App-IPC result of `apply_command` (B3) — not part of the core Command enum. */
+export interface CommandResult extends WriteResult {
   outcome: string;
 }
 
-export interface CommandsResult {
-  revision: number;
-  patch: JsonPatchOp[];
+export interface CommandsResult extends WriteResult {
   outcomes: string[];
 }
 
@@ -281,8 +301,9 @@ export function applyCommand(
   command: Record<string, unknown>,
   mutationId?: string,
   mergeKey?: string,
+  envelope?: WriteEnvelope,
 ): Promise<CommandResult> {
-  return invoke<CommandResult>("apply_command", { command, mutationId, mergeKey });
+  return invoke<CommandResult>("apply_command", { command, mutationId, mergeKey, ...envelope });
 }
 
 /// Atomic batch — all-or-nothing, one undo step. For gestures that are logically a
@@ -291,8 +312,9 @@ export function applyCommands(
   commands: Record<string, unknown>[],
   mutationId?: string,
   mergeKey?: string,
+  envelope?: WriteEnvelope,
 ): Promise<CommandsResult> {
-  return invoke<CommandsResult>("apply_commands", { commands, mutationId, mergeKey });
+  return invoke<CommandsResult>("apply_commands", { commands, mutationId, mergeKey, ...envelope });
 }
 
 export function undo(mutationId?: string): Promise<HistoryResult> {

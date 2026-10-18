@@ -245,7 +245,10 @@ fn stdio_session_new_apply_get_project() {
         "apply_command",
         json!({ "command": { "command": "Bogus" } }),
     );
-    assert!(text.starts_with("error:"), "{text}");
+    // Typed contract error: JSON with a code and a hint.
+    let err: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    assert_eq!(err["code"], "invalid_command", "{text}");
+    assert!(err["hint"].is_string(), "{text}");
 
     let (_, text) = mcp.call_tool("get_project", json!({}));
     let project: Value = serde_json::from_str(&text).unwrap();
@@ -538,7 +541,9 @@ fn stdio_proxies_to_live_bridge_when_discovery_matches_session() {
         "apply_command",
         json!({ "command": json!({ "command": "AddTrack", "kind": "video", "name": "V9" }).to_string() }),
     );
-    assert_eq!(text, "LiveOutcome");
+    // The live bridge's edit-contract result comes back as JSON, with its outcome.
+    let written: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(written["outcome"], "LiveOutcome", "{text}");
 
     // get_editor_status is proxied and annotated with path_match against the session.
     let (_, text) = mcp.call_tool("get_editor_status", json!({}));
@@ -612,4 +617,116 @@ fn stdio_does_not_attach_to_the_app_without_an_open_project() {
         log.iter().all(|r| r["method"] == "get_editor_status"),
         "only the status call may reach the app: {log:?}"
     );
+}
+
+#[test]
+fn stdio_edit_contract_over_the_wire() {
+    let dir = TempDir::new();
+    let project_path = dir.0.join("contract.renderly.json");
+    let mut mcp = McpProcess::spawn(&missing_discovery(&dir));
+    mcp.handshake();
+
+    let (is_err, text) = mcp.call_tool(
+        "new_project",
+        json!({ "path": project_path.to_string_lossy(), "name": "contract" }),
+    );
+    assert!(!is_err, "{text}");
+
+    // describe_commands names the capability set and the deletion rule.
+    let (_, text) = mcp.call_tool("describe_commands", json!({}));
+    assert!(text.contains("renderly.capabilities.v1"), "{text}");
+    assert!(text.contains("deletion_rule"), "{text}");
+
+    // Reads carry project_revision.
+    let (_, text) = mcp.call_tool("get_project", json!({}));
+    let project: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(project["project_revision"], 0);
+
+    // A committed write returns the contract result with the new revision.
+    let (is_err, text) = mcp.call_tool(
+        "apply_command",
+        json!({
+            "command": { "command": "AddTrack", "kind": "caption", "name": "Subs" },
+            "expected_revision": 0,
+            "request_id": "wire-1"
+        }),
+    );
+    assert!(!is_err, "{text}");
+    let written: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(written["committed"], true);
+    assert_eq!(written["revision"], 1);
+    assert_eq!(written["changed"]["created"].as_array().unwrap().len(), 1);
+    let track_id = written["changed"]["created"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // A stale expected_revision is a tool error with a typed code; nothing changes on disk.
+    let before = std::fs::read(&project_path).unwrap();
+    let (is_err, text) = mcp.call_tool(
+        "apply_command",
+        json!({
+            "command": { "command": "RenameTrack", "track_id": track_id, "name": "X" },
+            "expected_revision": 0
+        }),
+    );
+    assert!(is_err, "{text}");
+    let err: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(err["code"], "revision_conflict");
+    assert_eq!(err["data"]["current_revision"], 1);
+    assert_eq!(std::fs::read(&project_path).unwrap(), before);
+
+    // A dry run returns the patch and changes nothing.
+    let (is_err, text) = mcp.call_tool(
+        "apply_command",
+        json!({
+            "command": { "command": "RenameTrack", "track_id": track_id, "name": "Preview" },
+            "expected_revision": 1,
+            "dry_run": true
+        }),
+    );
+    assert!(!is_err, "{text}");
+    let dry: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(dry["committed"], false);
+    assert!(!dry["patch"].as_array().unwrap().is_empty());
+    assert_eq!(std::fs::read(&project_path).unwrap(), before);
+
+    // A retry of a committed request is a replay, not a second write.
+    let (_, text) = mcp.call_tool(
+        "apply_command",
+        json!({
+            "command": { "command": "AddTrack", "kind": "caption", "name": "Subs" },
+            "expected_revision": 0,
+            "request_id": "wire-1"
+        }),
+    );
+    let replay: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(replay["revision"], 1);
+
+    // Deleting a track needs allow_deletion with its exact ids.
+    let (is_err, text) = mcp.call_tool(
+        "apply_command",
+        json!({
+            "command": { "command": "DeleteTrack", "track_id": track_id },
+            "expected_revision": 1
+        }),
+    );
+    assert!(is_err, "{text}");
+    let refused: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(refused["code"], "deletion_not_allowed");
+    assert!(refused["message"].as_str().unwrap().contains(&track_id));
+
+    let (is_err, text) = mcp.call_tool(
+        "apply_command",
+        json!({
+            "command": { "command": "DeleteTrack", "track_id": track_id },
+            "expected_revision": 1,
+            "allow_deletion": { "reason": "cleanup", "ids": [track_id] }
+        }),
+    );
+    assert!(!is_err, "{text}");
+    let deleted: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(deleted["revision"], 2);
+    assert_eq!(deleted["changed"]["deleted"][0], track_id);
 }

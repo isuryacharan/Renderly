@@ -51,6 +51,7 @@ use super::models::{
 use super::permission::Decision;
 use super::tools::{self, ToolHost};
 use base64::Engine;
+use renderly_core::edit_contract::{EditError, WriteOptions};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -90,6 +91,10 @@ Rules:
 - Act directly when the request is clear. If it is ambiguous (which clip, how long, which style), \
 ask one short question instead.
 - One request can need several calls. Each call is one undo step for that call.
+- Pass expected_revision to edit with the project_revision from your latest timeline. If an edit \
+fails with revision_conflict, call timeline and retry. For a big edit, use dry_run first.
+- Deleting needs allow_deletion with a reason and the exact full ids a dry run lists. Without a \
+clear request to delete, ask first.
 - You have no shell and no file access. Never claim to have run a command.
 
 Replies: one or two short sentences saying what you did or what you need. Do not list ids, JSON \
@@ -338,9 +343,16 @@ pub fn tool_definitions(vision: bool) -> Vec<Value> {
         ),
         tool(
             "edit",
-            "Any other command, applied as one undo step. Call edit_help first for the command names and fields.",
+            "Any other command, applied as one undo step. Call edit_help first for the command names and fields. Pass expected_revision from the last timeline's project_revision. Use dry_run to preview. To delete, set allow_deletion to a reason and the exact ids a dry run lists.",
             json!({ "type": "object", "properties": {
                 "commands": { "type": "array", "items": { "type": "object" } },
+                "expected_revision": { "type": "integer", "description": "project_revision from the last timeline." },
+                "dry_run": { "type": "boolean", "description": "Preview only; change nothing." },
+                "request_id": { "type": "string", "description": "Retry key; the same id returns the earlier result." },
+                "allow_deletion": { "type": "object", "description": "Needed to delete anything.", "properties": {
+                    "reason": { "type": "string" },
+                    "ids": { "type": "array", "items": { "type": "string" } },
+                }, "required": ["reason", "ids"] },
             }, "required": ["commands"] }),
         ),
         tool(
@@ -1021,6 +1033,28 @@ async fn run_call(ctx: &TurnCtx, call: &Value) {
 
 /// Execute an allowed tool. Returns the text for the model, whether it failed, and an optional
 /// PNG (base64) to attach.
+/// The edit-contract envelope from the `edit` tool's arguments. Absent fields keep their defaults.
+fn edit_options(args: &Value) -> Result<WriteOptions, EditError> {
+    let allow = match args.get("allow_deletion").filter(|v| !v.is_null()) {
+        None => None,
+        Some(raw) => Some(
+            serde_json::from_value::<tools::AllowDeletionArg>(raw.clone()).map_err(|e| {
+                EditError::invalid(format!("allow_deletion needs a reason and ids: {e}"))
+            })?,
+        ),
+    };
+    tools::options_from(
+        args.get("expected_revision").and_then(Value::as_u64),
+        args.get("dry_run")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        args.get("request_id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        allow.as_ref(),
+    )
+}
+
 async fn execute(
     ctx: &TurnCtx,
     name: &str,
@@ -1029,9 +1063,13 @@ async fn execute(
 ) -> (String, bool, Option<String>) {
     let host: &dyn ToolHost = ctx.tool_host.as_ref();
     if let Some(Ok(commands)) = edit_commands {
-        return match tools::run_edit(host, commands).await {
+        let options = match edit_options(args) {
+            Ok(options) => options,
+            Err(e) => return (tools::edit_error_text(&e), true, None),
+        };
+        return match tools::run_edit(host, commands, options).await {
             Ok(text) => (text, false, None),
-            Err(e) => (e, true, None),
+            Err(e) => (tools::edit_error_text(&e), true, None),
         };
     }
     match name {
@@ -1207,8 +1245,12 @@ mod tests {
             .find(|t| t["function"]["name"] == "edit")
             .unwrap();
         let params = &edit["function"]["parameters"];
-        assert_eq!(params["properties"].as_object().unwrap().len(), 1);
-        assert!(params["properties"]["commands"].is_object());
+        // The commands list plus the edit-contract envelope (command-api.md "Edit contract").
+        let props = params["properties"].as_object().unwrap();
+        assert_eq!(props.len(), 5, "{props:?}");
+        assert!(props["commands"].is_object());
+        assert!(props.contains_key("expected_revision") && props.contains_key("dry_run"));
+        assert_eq!(params["required"], serde_json::json!(["commands"]));
     }
 
     #[test]

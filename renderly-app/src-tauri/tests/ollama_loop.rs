@@ -8,9 +8,8 @@ use renderly_app_lib::agent_chat::models::ModelStatus;
 use renderly_app_lib::agent_chat::ollama::{self, OllamaDriver};
 use renderly_app_lib::agent_chat::permission::PermissionBroker;
 use renderly_app_lib::agent_chat::tools::{BoxFut, ToolHost};
-use renderly_core::commands::apply_command;
 use renderly_core::project::{Id, Project, Settings, Track, TrackKind};
-use renderly_core::{Command, CommandOutcome};
+use renderly_core::Command;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -26,6 +25,8 @@ const CAPTION_TRACK: &str = "00000000-0000-0000-0000-0000000000c1";
 
 struct TestHost {
     project: Mutex<Arc<Project>>,
+    revision: Mutex<u64>,
+    ledger: Mutex<renderly_core::edit_contract::WriteLedger>,
 }
 
 impl TestHost {
@@ -36,6 +37,8 @@ impl TestHost {
         project.tracks.push(track);
         Arc::new(Self {
             project: Mutex::new(Arc::new(project)),
+            revision: Mutex::new(0),
+            ledger: Mutex::new(renderly_core::edit_contract::WriteLedger::new()),
         })
     }
 
@@ -65,20 +68,67 @@ impl ToolHost for TestHost {
         None
     }
 
-    fn apply_commands(
+    fn revision(&self) -> u64 {
+        self.revision.lock().map(|g| *g).unwrap_or(0)
+    }
+
+    fn apply_write(
         &self,
         commands: Vec<Value>,
-    ) -> BoxFut<'_, Result<Vec<CommandOutcome>, String>> {
+        options: renderly_core::edit_contract::WriteOptions,
+    ) -> BoxFut<'_, Result<renderly_app_lib::CommandsResult, renderly_core::edit_contract::EditError>>
+    {
         Box::pin(async move {
-            let current = self.project()?;
-            let mut project = (*current).clone();
-            let mut outcomes = Vec::new();
-            for value in commands {
-                let cmd: Command = serde_json::from_value(value).map_err(|e| e.to_string())?;
-                outcomes.push(apply_command(&mut project, cmd).map_err(|e| e.to_string())?);
-            }
-            *self.project.lock().map_err(|e| e.to_string())? = Arc::new(project);
-            Ok(outcomes)
+            let cmds: Vec<Command> = commands
+                .into_iter()
+                .map(|v| {
+                    serde_json::from_value(v).map_err(|e| {
+                        renderly_core::edit_contract::EditError::invalid(e.to_string())
+                    })
+                })
+                .collect::<Result<_, _>>()?;
+            let current = self
+                .project()
+                .map_err(renderly_core::edit_contract::EditError::internal)?;
+            let revision = self.revision();
+            let mut plan = {
+                let ledger = self.ledger.lock().map_err(|e| {
+                    renderly_core::edit_contract::EditError::internal(e.to_string())
+                })?;
+                renderly_core::edit_contract::plan_write(
+                    &current,
+                    revision,
+                    &ledger,
+                    &options,
+                    renderly_core::edit_contract::Caller::Agent,
+                    cmds,
+                )?
+            };
+            let typed = plan.outcomes().to_vec();
+            let committed_at = match plan.take_next() {
+                Some(next) => {
+                    *self.project.lock().map_err(|e| {
+                        renderly_core::edit_contract::EditError::internal(e.to_string())
+                    })? = Arc::new(next);
+                    let mut rev = self.revision.lock().map_err(|e| {
+                        renderly_core::edit_contract::EditError::internal(e.to_string())
+                    })?;
+                    *rev += 1;
+                    Some(*rev)
+                }
+                None => None,
+            };
+            let write = {
+                let mut ledger = self.ledger.lock().map_err(|e| {
+                    renderly_core::edit_contract::EditError::internal(e.to_string())
+                })?;
+                plan.finish(committed_at, &mut ledger)
+            };
+            Ok(renderly_app_lib::CommandsResult {
+                write,
+                outcomes: typed.iter().map(|o| format!("{o:?}")).collect(),
+                typed_outcomes: typed,
+            })
         })
     }
 

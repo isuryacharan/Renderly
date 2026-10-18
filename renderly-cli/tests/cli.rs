@@ -166,7 +166,7 @@ fn apply_core_failure_fails_unchanged() {
     })
     .to_string();
     let out = apply(&p, &cmd);
-    assert_fails_unchanged(&p, &out, "command failed");
+    assert_fails_unchanged(&p, &out, "\"code\": \"not_found\"");
 }
 
 #[test]
@@ -220,9 +220,9 @@ fn apply_script_failure_midway_leaves_file_unchanged() {
     ]);
     std::fs::write(&script, cmds.to_string()).unwrap();
     let out = run(&["apply-script".as_ref(), p.as_os_str(), script.as_os_str()]);
-    assert_fails_unchanged(&p, &out, "command failed");
-    // The first command did run (reported) but was not persisted.
-    assert!(stdout(&out).contains("TrackAdded"));
+    assert_fails_unchanged(&p, &out, "\"code\": \"rolled_back\"");
+    // A batch is all or nothing: the first command is not applied, reported or persisted.
+    assert!(!stdout(&out).contains("TrackAdded"), "{}", stdout(&out));
     assert!(read_json(&p)["tracks"].as_array().unwrap().is_empty());
 }
 
@@ -265,6 +265,10 @@ fn show_round_trips_to_file() {
     let text = stdout(&out);
     assert!(text.contains("\n  "), "expected pretty-printed JSON");
     let shown: Value = serde_json::from_str(&text).unwrap();
+    // `show` adds project_revision at the top level; the rest is the project file as written.
+    assert!(shown["project_revision"].is_u64(), "{text}");
+    let mut shown = shown;
+    shown.as_object_mut().unwrap().remove("project_revision");
     assert_eq!(shown, read_json(&p));
     assert_eq!(shown["name"], "shown");
 }
@@ -659,4 +663,113 @@ fn import_otio_rejects_non_otio_and_writes_nothing() {
         out_path.as_os_str(),
     ]);
     assert!(!out.status.success());
+}
+
+// ---- edit contract flags (docs/command-api.md "Edit contract") ----------------------------
+
+const ADD_V1: &str = r#"{"command":"AddTrack","kind":"video","name":"V1"}"#;
+
+fn state_file(p: &Path) -> PathBuf {
+    let mut name = p.as_os_str().to_owned();
+    name.push(".state.json");
+    PathBuf::from(name)
+}
+
+#[test]
+fn apply_dry_run_reports_the_change_and_writes_nothing() {
+    let dir = TempDir::new();
+    let p = new_project(&dir, &[]);
+    let before = std::fs::read(&p).unwrap();
+    let out = run(&[
+        "apply".as_ref(),
+        p.as_os_str(),
+        ADD_V1.as_ref(),
+        "--dry-run".as_ref(),
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let result: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(result["committed"], false);
+    assert_eq!(result["dry_run"], true);
+    assert!(!result["patch"].as_array().unwrap().is_empty());
+    assert_eq!(std::fs::read(&p).unwrap(), before);
+    assert!(!state_file(&p).exists(), "a dry run writes no state");
+}
+
+#[test]
+fn apply_expected_revision_rejects_a_stale_read() {
+    let dir = TempDir::new();
+    let p = new_project(&dir, &[]);
+    assert!(apply(&p, ADD_V1).status.success());
+    // The project is at revision 1 now; a write that read revision 0 is stale.
+    let audio = r#"{"command":"AddTrack","kind":"audio","name":"A1"}"#;
+    let out = run(&[
+        "apply".as_ref(),
+        p.as_os_str(),
+        audio.as_ref(),
+        "--expected-revision".as_ref(),
+        "0".as_ref(),
+    ]);
+    assert_fails_unchanged(&p, &out, "\"code\": \"revision_conflict\"");
+    let out = run(&[
+        "apply".as_ref(),
+        p.as_os_str(),
+        audio.as_ref(),
+        "--expected-revision".as_ref(),
+        "1".as_ref(),
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let result: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(result["revision"], 2);
+}
+
+#[test]
+fn apply_delete_needs_a_reason_and_the_exact_ids() {
+    let dir = TempDir::new();
+    let p = new_project(&dir, &[]);
+    assert!(apply(&p, ADD_V1).status.success());
+    let track = read_json(&p)["tracks"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let delete = format!(r#"{{"command":"DeleteTrack","track_id":"{track}"}}"#);
+
+    let out = apply(&p, &delete);
+    assert_fails_unchanged(&p, &out, "\"code\": \"deletion_not_allowed\"");
+
+    // Ids without a reason are still refused.
+    let out = run(&[
+        "apply".as_ref(),
+        p.as_os_str(),
+        delete.as_ref(),
+        "--allow-deletion-id".as_ref(),
+        track.as_ref(),
+    ]);
+    assert_fails_unchanged(&p, &out, "reason is empty");
+
+    let out = run(&[
+        "apply".as_ref(),
+        p.as_os_str(),
+        delete.as_ref(),
+        "--allow-deletion-reason".as_ref(),
+        "cleanup".as_ref(),
+        "--allow-deletion-id".as_ref(),
+        track.as_ref(),
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(read_json(&p)["tracks"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn apply_rejects_a_malformed_deletion_id() {
+    let dir = TempDir::new();
+    let p = new_project(&dir, &[]);
+    let out = run(&[
+        "apply".as_ref(),
+        p.as_os_str(),
+        ADD_V1.as_ref(),
+        "--allow-deletion-id".as_ref(),
+        "nope".as_ref(),
+    ]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("not a full id"), "{}", stderr(&out));
 }
