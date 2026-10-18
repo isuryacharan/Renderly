@@ -1,4 +1,25 @@
-//! Declarative asset packs (`pack.json` + assets). See docs/asset-pack.md.
+//! Declarative asset packs (`pack.json` + assets). See docs/asset-pack.md (format 1) and
+//! docs/effect-pack-format.md (format 2: typed items, versions, hashes, refs).
+//!
+//! - [`load_pack`] reads either format; format 1 keeps its original behaviour and is also
+//!   viewed as items ([`LoadedPack::items`]), format 2 is loaded by [`format2`].
+//! - [`refs`]: `pack:` / `builtin:` item refs and the resolver (pure).
+//! - [`item`]: one loaded item and the builtin items.
+//! - [`describe`]: the catalogue that `describe_commands` / `describe_effects` print, and the
+//!   per-item report of `renderly pack validate` (pure).
+
+pub mod describe;
+pub mod format2;
+#[cfg(not(target_arch = "wasm32"))]
+mod hash;
+pub mod item;
+pub mod refs;
+
+pub use item::{builtin_items, ItemState, LoadedItem};
+
+/// Engine features this build supports, for item `requires` (see docs/effect-pack-format.md,
+/// "Feature requirements"). Items that need anything else are installed but disabled.
+pub const FEATURES: &[&str] = crate::compose::runtime::FEATURES;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::frame::RgbaFrame;
@@ -122,8 +143,33 @@ pub struct PackSfx {
 #[derive(Debug, Clone)]
 pub struct LoadedPack {
     pub root: PathBuf,
+    /// The format-1 view of the manifest. For format 2 it carries the id, name, release and
+    /// the LUTs that loaded; `caption_styles`, `stickers`, `sfx`, `templates` and `transitions`
+    /// stay empty (format 2 has items instead).
     pub manifest: PackManifest,
+    /// Loaded `.cube` LUTs by item id (only items that loaded).
     pub luts: BTreeMap<String, CubeLut>,
+    /// Pack format this was read from: 1 (no `format` field) or 2.
+    pub format: u32,
+    /// The id refs use: `manifest.id` for format 2; `local.<id>` for a format-1 id that has no
+    /// publisher. Refs may name either (see [`refs::pack_matches`]).
+    pub canonical_id: String,
+    pub meta: PackMeta,
+    /// Every item in pack order, including skipped and failed ones.
+    pub items: Vec<LoadedItem>,
+}
+
+/// Pack-level fields that do not affect loading. Empty for format 1.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PackMeta {
+    pub release: Option<String>,
+    pub license: Option<String>,
+    pub authors: Vec<String>,
+    pub description: String,
+    pub tags: Vec<String>,
+    /// `requires.renderly` as declared. A pack whose requirement this build does not meet has
+    /// every item disabled.
+    pub requires_renderly: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -144,8 +190,25 @@ pub fn load_pack(root: &Path) -> Result<LoadedPack, String> {
     let manifest_path = root.join("pack.json");
     let text = std::fs::read_to_string(&manifest_path)
         .map_err(|e| format!("read {}: {e}", manifest_path.display()))?;
-    let manifest: PackManifest =
+    let value: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("pack.json: {e}"))?;
+    match value.get("format") {
+        None => load_format1(root, &text),
+        Some(f) => match f.as_u64() {
+            Some(1) => load_format1(root, &text),
+            Some(2) => format2::load(root, &text),
+            _ => Err(format!(
+                "pack.json: unsupported pack format {f} (this build reads formats 1 and 2)"
+            )),
+        },
+    }
+}
+
+/// Format 1: the original loader. A broken LUT still fails the whole pack, as it always has.
+#[cfg(not(target_arch = "wasm32"))]
+fn load_format1(root: &Path, text: &str) -> Result<LoadedPack, String> {
+    let manifest: PackManifest =
+        serde_json::from_str(text).map_err(|e| format!("pack.json: {e}"))?;
     if manifest.id.trim().is_empty() {
         return Err("pack id must be non-empty".into());
     }
@@ -155,11 +218,64 @@ pub fn load_pack(root: &Path) -> Result<LoadedPack, String> {
         let cube = parse_cube(&path).map_err(|e| format!("lut '{}': {e}", lut.id))?;
         luts.insert(lut.id.clone(), cube);
     }
+    let items = items_from_format1(&manifest, &luts);
+    let canonical_id = if manifest.id.contains('.') {
+        manifest.id.clone()
+    } else {
+        format!("local.{}", manifest.id)
+    };
     Ok(LoadedPack {
         root: root.to_path_buf(),
         manifest,
         luts,
+        format: 1,
+        canonical_id,
+        meta: PackMeta::default(),
+        items,
     })
+}
+
+/// A format-1 manifest as items, in memory: LUTs, stickers, sfx, caption styles, templates,
+/// and the `transitions` aliases of builtin transition kinds. Every item is version 1.
+pub fn items_from_format1(
+    manifest: &PackManifest,
+    luts: &BTreeMap<String, CubeLut>,
+) -> Vec<LoadedItem> {
+    let ok = |kind: &str, id: &str, label: &str| {
+        let mut item = LoadedItem::with_state(kind, id, 1, ItemState::Ok);
+        item.label = label.to_string();
+        item
+    };
+    let mut items = Vec::new();
+    for lut in &manifest.luts {
+        if luts.contains_key(&lut.id) {
+            let mut item = ok("lut", &lut.id, &lut.label);
+            item.path = Some(lut.path.clone());
+            items.push(item);
+        }
+    }
+    for s in &manifest.stickers {
+        let mut item = ok("sticker", &s.id, &s.label);
+        item.path = Some(s.path.clone());
+        items.push(item);
+    }
+    for s in &manifest.sfx {
+        let mut item = ok("sfx", &s.id, &s.label);
+        item.path = Some(s.path.clone());
+        items.push(item);
+    }
+    for s in &manifest.caption_styles {
+        items.push(ok("caption_style", &s.id, &s.label));
+    }
+    for t in &manifest.templates {
+        items.push(ok("template", &t.id, &t.label));
+    }
+    for t in &manifest.transitions {
+        let mut item = ok("transition", &t.id, &t.label);
+        item.alias_of = Some(t.kind.clone());
+        items.push(item);
+    }
+    items
 }
 
 impl LoadedPack {
@@ -190,6 +306,14 @@ impl LoadedPack {
             root: PathBuf::new(),
             manifest,
             luts,
+            format: 1,
+            canonical_id: if pack_id.contains('.') {
+                pack_id.to_string()
+            } else {
+                format!("local.{pack_id}")
+            },
+            meta: PackMeta::default(),
+            items: Vec::new(),
         }
     }
 }

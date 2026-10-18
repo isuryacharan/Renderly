@@ -1,0 +1,11 @@
+{
+  "format": 1,
+  "id": "broken",
+  "version": 1,
+  "kind": "effect",
+  "label": "Broken WGSL",
+  "params": [],
+  "passes": [
+    { "type": "fragment", "shader": "broken.wgsl", "inputs": ["src"], "output": "out" }
+  ]
+}

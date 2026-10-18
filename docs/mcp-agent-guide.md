@@ -148,8 +148,11 @@ what the `hint` says. Codes: `invalid_command`, `not_found`, `revision_conflict`
 `request_id_reused`, `deletion_not_allowed`, `busy`, `rolled_back`, `internal`. A batch that fails
 part-way reports `rolled_back`, and nothing from it was applied.
 
-`describe_commands` returns the capabilities (`renderly.capabilities.v1`) and every command's
-shape. Renderly's ready-made workflows for Claude Code are in `skills/` (see `skills/README.md`).
+`describe_commands` returns the capabilities (`renderly.capabilities.v1`), every command's
+shape, and the effects, filters, transitions and LUTs it can apply (the builtins plus the open
+project's packs). `describe_effects { packs?: [folder] }` lists the same catalogue for pack
+folders you name, without a project; each line gives the ref, kind, label, state and params.
+Pack item states and refs are described in [asset-pack.md](asset-pack.md#pack-format-2-effects-filters-transitions-luts). Renderly's ready-made workflows for Claude Code are in `skills/` (see `skills/README.md`).
 
 ## Worked example: script + footage → export
 

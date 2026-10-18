@@ -1,0 +1,11 @@
+# Test LUT: a 2x2x2 cube that pulls red down and lifts blue.
+TITLE "cool"
+LUT_3D_SIZE 2
+0.0 0.0 0.0
+0.8 0.0 0.0
+0.0 0.9 0.0
+0.8 0.9 0.0
+0.0 0.0 1.0
+0.8 0.0 1.0
+0.0 0.9 1.0
+0.8 0.9 1.0

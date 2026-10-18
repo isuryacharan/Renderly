@@ -369,6 +369,8 @@ pub struct ParamSpec {
     pub max: f64,
     pub step: Option<f64>,
     pub default: ParamValue,
+    /// Value written when the effect is added (the manifest's `initial`, else `default`).
+    pub initial: ParamValue,
     pub options: Vec<ChoiceOption>,
     pub animatable: bool,
     pub(crate) uniform: Option<Compiled>,
@@ -507,6 +509,8 @@ struct RawParam {
     step: Option<f64>,
     #[serde(default)]
     default: Option<serde_json::Value>,
+    #[serde(default)]
+    initial: Option<serde_json::Value>,
     #[serde(default)]
     options: Vec<RawOption>,
     #[serde(default)]
@@ -674,7 +678,7 @@ impl EffectManifest {
         };
         for feature in &requires {
             if !FEATURES.contains(&feature.as_str()) {
-                return Err(ManifestError::NeedsNewer(format!("feature {feature}")));
+                return Err(ManifestError::NeedsNewer(format!("feature `{feature}`")));
             }
         }
 
@@ -941,8 +945,14 @@ fn parse_params(raw: &[RawParam]) -> Result<Vec<ParamSpec>, ManifestError> {
                 )))
             }
         };
-        let spec = parse_one_param(r, kind)?;
-        out.push(spec);
+        let spec = parse_one_param(r, kind, r.default.as_ref())?;
+        // `initial` is the value written when the effect is added. Absent, it is the default.
+        // It goes through the same validation as a default (range, shape).
+        let initial = match r.initial.as_ref() {
+            None => spec.default.clone(),
+            Some(v) => parse_one_param(r, kind, Some(v))?.default,
+        };
+        out.push(ParamSpec { initial, ..spec });
     }
     let lut_count = out.iter().filter(|p| p.kind == ParamKind::Lut).count();
     if lut_count > MAX_LUT_PARAMS {
@@ -951,7 +961,11 @@ fn parse_params(raw: &[RawParam]) -> Result<Vec<ParamSpec>, ManifestError> {
     Ok(out)
 }
 
-fn parse_one_param(r: &RawParam, kind: ParamKind) -> Result<ParamSpec, ManifestError> {
+fn parse_one_param(
+    r: &RawParam,
+    kind: ParamKind,
+    given_default: Option<&serde_json::Value>,
+) -> Result<ParamSpec, ManifestError> {
     let key = &r.key;
     let mut options = Vec::new();
     let (min, max, default, step);
@@ -965,7 +979,7 @@ fn parse_one_param(r: &RawParam, kind: ParamKind) -> Result<ParamSpec, ManifestE
             }
             min = lo;
             max = hi;
-            let d = match &r.default {
+            let d = match given_default {
                 None => lo,
                 Some(v) => number(v).ok_or_else(|| {
                     ManifestError::Invalid(format!("default of '{key}' must be a number"))
@@ -984,7 +998,7 @@ fn parse_one_param(r: &RawParam, kind: ParamKind) -> Result<ParamSpec, ManifestE
             min = 0.0;
             max = 1.0;
             step = None;
-            let b = match &r.default {
+            let b = match given_default {
                 None => false,
                 Some(v) => v.as_bool().ok_or_else(|| {
                     ManifestError::Invalid(format!("default of '{key}' must be a bool"))
@@ -1009,7 +1023,7 @@ fn parse_one_param(r: &RawParam, kind: ParamKind) -> Result<ParamSpec, ManifestE
             min = 0.0;
             max = (options.len() - 1) as f64;
             step = Some(1.0);
-            let d = match &r.default {
+            let d = match given_default {
                 None => 0.0,
                 Some(v) => number(v).ok_or_else(|| {
                     ManifestError::Invalid(format!("default of '{key}' must be an option index"))
@@ -1025,7 +1039,7 @@ fn parse_one_param(r: &RawParam, kind: ParamKind) -> Result<ParamSpec, ManifestE
             max = 1.0;
             step = None;
             let n = kind.components();
-            let d = match &r.default {
+            let d = match given_default {
                 None => vec![0.0; n],
                 Some(v) => {
                     let arr = v.as_array().ok_or_else(|| {
@@ -1070,6 +1084,7 @@ fn parse_one_param(r: &RawParam, kind: ParamKind) -> Result<ParamSpec, ManifestE
         min,
         max,
         step,
+        initial: default.clone(),
         default,
         options,
         animatable: r.animatable.unwrap_or(kind != ParamKind::Lut),

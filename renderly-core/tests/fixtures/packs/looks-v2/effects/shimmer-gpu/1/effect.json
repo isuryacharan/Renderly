@@ -1,0 +1,12 @@
+{
+  "format": 1,
+  "id": "shimmer",
+  "version": 1,
+  "kind": "effect",
+  "label": "Shimmer (needs compute)",
+  "requires": ["gpu.fragment", "gpu.compute"],
+  "params": [],
+  "passes": [
+    { "type": "fragment", "shader": "shimmer.wgsl", "inputs": ["src"], "output": "out" }
+  ]
+}

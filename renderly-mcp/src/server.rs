@@ -332,6 +332,13 @@ pub struct ImportOtioRequest {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DescribeEffectsRequest {
+    /// Pack folders (each holds pack.json) to describe. Omit to describe the open project's packs.
+    #[serde(default)]
+    pub packs: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ProbeMediaRequest {
     pub path: String,
 }
@@ -863,12 +870,51 @@ impl RenderlyMcp {
     }
 
     #[tool(
-        description = "The edit contract (renderly.capabilities.v1: revisions, dry_run, request_id, typed errors, the deletion rule) followed by the exact shape of every Command apply_command accepts (variant names, field names and types). Read-only; needs no project."
+        description = "The edit contract (renderly.capabilities.v1: revisions, dry_run, request_id, typed errors, the deletion rule) followed by the exact shape of every Command apply_command accepts (variant names, field names and types), and the effects it can apply (builtins plus the open project's packs). Read-only; works without a project."
     )]
     fn describe_commands(&self) -> String {
         let capabilities = serde_json::to_string_pretty(&edit_contract::capabilities())
             .unwrap_or_else(|_| "{}".to_string());
-        format!("{capabilities}\n\n{}", command_reference())
+        let packs = self.open_project_packs();
+        format!("{capabilities}\n\n{}", command_reference(&packs))
+    }
+
+    #[tool(
+        description = "Effects, filters, transitions and LUTs the engine can apply: the builtins, plus the packs you name by folder (each holds pack.json), or the open project's packs when none are named. One line per item: ref, kind, label, state (ok; disabled or error with the reason; skipped), then params (type, range, default, initial). Read-only; needs no project."
+    )]
+    fn describe_effects(&self, Parameters(req): Parameters<DescribeEffectsRequest>) -> String {
+        if req.packs.is_empty() {
+            return renderly_core::packs::describe::catalogue_text(&self.open_project_packs());
+        }
+        let mut packs = Vec::new();
+        let mut errors = Vec::new();
+        for dir in &req.packs {
+            match renderly_core::packs::load_pack(std::path::Path::new(dir)) {
+                Ok(pack) => packs.push(pack),
+                Err(e) => errors.push(format!("not loaded: {dir}: {e}")),
+            }
+        }
+        let mut text = renderly_core::packs::describe::catalogue_text(&packs);
+        for line in errors {
+            text.push_str(&line);
+            text.push('\n');
+        }
+        text
+    }
+
+    /// The packs of the open project, loaded for perception. A pack that fails to load is left
+    /// out; `describe_effects` with an explicit folder reports the error.
+    fn open_project_packs(&self) -> Vec<renderly_core::packs::LoadedPack> {
+        let paths: Vec<PathBuf> = self
+            .session
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|s| s.project.asset_pack_paths.clone()))
+            .unwrap_or_default();
+        paths
+            .iter()
+            .filter_map(|p| renderly_core::packs::load_pack(p).ok())
+            .collect()
     }
 
     #[tool(
@@ -1049,7 +1095,7 @@ fn project_dir(path: &std::path::Path) -> Option<PathBuf> {
 /// The command reference `describe_commands` returns: the `Command` enum block from
 /// docs/command-api.md (the spec this server dispatches to), plus how it maps to JSON. Agents
 /// otherwise guess field names from error messages one at a time.
-fn command_reference() -> String {
+fn command_reference(packs: &[renderly_core::packs::LoadedPack]) -> String {
     const DOC: &str = include_str!("../../docs/command-api.md");
     let block = DOC
         .find("pub enum Command {")
@@ -1060,14 +1106,6 @@ fn command_reference() -> String {
         })
         .unwrap_or("(command reference unavailable: docs/command-api.md changed shape)");
 
-    let effects: Vec<String> = renderly_core::compose::BUILTIN_EFFECT_IDS
-        .iter()
-        .map(|id| {
-            let params = renderly_core::compose::default_params(id);
-            let params = serde_json::to_string(&params).unwrap_or_default();
-            format!("- {id} (params and defaults: {params})")
-        })
-        .collect();
     let transitions: Vec<&str> = renderly_core::project::TransitionKind::ALL
         .iter()
         .map(|k| k.as_str())
@@ -1106,9 +1144,9 @@ fn command_reference() -> String {
          Pack effects (LUTs) are \"pack:<pack_id>:lut:<lut_id>\" for packs the project has \
          loaded.\n\n",
     );
-    out.push_str("Built-in effects:\n");
-    out.push_str(&effects.join("\n"));
-    out.push_str("\n\nTransition kinds: ");
+    out.push_str("Effects, filters, transitions and LUTs (also describe_effects):\n");
+    out.push_str(&renderly_core::packs::describe::catalogue_text(packs));
+    out.push_str("Transition kinds: ");
     out.push_str(&transitions.join(", "));
     out.push_str("\nCaption style ids: ");
     out.push_str(&styles);
@@ -1184,7 +1222,7 @@ mod tests {
 
     #[test]
     fn describe_commands_returns_the_real_command_enum() {
-        let text = command_reference();
+        let text = command_reference(&[]);
         assert!(text.contains("pub enum Command {"), "{text}");
         assert!(
             text.contains("AddCaption {") && text.contains("style_id"),
@@ -1565,6 +1603,7 @@ mod tests {
             "undo",
             "detect_scenes",
             "describe_commands",
+            "describe_effects",
             "detect_silence",
             "download_model",
             "export",
@@ -2487,6 +2526,30 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("pub enum Command"));
+    }
+
+    #[test]
+    fn describe_effects_lists_packs_named_by_folder_beside_the_builtins() {
+        let mcp = RenderlyMcp::new();
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../renderly-core/tests/fixtures/packs/looks-v2"
+        );
+        let text = mcp.describe_effects(Parameters(DescribeEffectsRequest {
+            packs: vec![dir.to_string()],
+        }));
+        assert!(text.contains("pack:fixture.looks/tint@2 effect"), "{text}");
+        assert!(text.contains("builtin:blur@1 effect"), "{text}");
+        assert!(text.contains("shimmer@1 effect"), "{text}");
+
+        let open_only = mcp.describe_effects(Parameters(DescribeEffectsRequest { packs: vec![] }));
+        assert!(!open_only.contains("pack:fixture.looks"), "{open_only}");
+        assert!(open_only.contains("builtin:blur@1"), "{open_only}");
+
+        let missing = mcp.describe_effects(Parameters(DescribeEffectsRequest {
+            packs: vec!["no/such/pack".to_string()],
+        }));
+        assert!(missing.contains("not loaded: no/such/pack"), "{missing}");
     }
 
     #[test]

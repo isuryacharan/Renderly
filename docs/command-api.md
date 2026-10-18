@@ -685,6 +685,9 @@ commands, the live bridge ([bridge-protocol.md](bridge-protocol.md)), `renderly-
 ([mcp-agent-guide.md](mcp-agent-guide.md)), the in-app agent tools, and `renderly-cli`. There is
 one implementation: `plan_write` in core. No surface re-implements a rule. Capabilities are
 reported as `renderly.capabilities.v1` (`describe_commands`; core `edit_contract::capabilities()`).
+`describe_commands` also lists the effects, filters, transitions and LUTs the engine can apply
+(builtins and the open project's packs, `renderly_core::packs::describe`); `describe_effects`
+lists them for pack folders named in the call.
 
 ### Envelope
 

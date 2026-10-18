@@ -1,0 +1,11 @@
+{
+  "id": "starter",
+  "name": "Starter v1",
+  "version": "1",
+  "luts": [
+    { "id": "punch", "label": "Punch", "path": "luts/punch.cube" }
+  ],
+  "transitions": [
+    { "id": "quick-wipe", "label": "Quick wipe", "kind": "wipe_left", "default_duration_secs": 0.35 }
+  ]
+}

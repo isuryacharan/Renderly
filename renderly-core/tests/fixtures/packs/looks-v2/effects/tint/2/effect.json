@@ -1,0 +1,13 @@
+{
+  "format": 1,
+  "id": "tint",
+  "version": 2,
+  "kind": "effect",
+  "label": "Tint (desaturate)",
+  "params": [
+    { "key": "amount", "type": "float", "label": "Amount", "min": 0, "max": 1, "default": 0, "initial": 0.5 }
+  ],
+  "passes": [
+    { "type": "fragment", "shader": "tint.wgsl", "inputs": ["src"], "output": "out" }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "format": 2,
+  "id": "fixture.looks",
+  "name": "Fixture Looks",
+  "release": "1.0.0",
+  "license": "CC0-1.0",
+  "authors": ["Renderly tests"],
+  "description": "Test fixture: two versions of one effect, a transition, an inline LUT and the failure cases.",
+  "tags": ["test"],
+  "items": [
+    { "kind": "effect", "path": "effects/tint/1" },
+    { "kind": "effect", "path": "effects/tint/2" },
+    { "kind": "transition", "path": "transitions/wash/1" },
+    { "kind": "lut", "id": "cool", "label": "Cool", "path": "luts/cool.cube" },
+    { "kind": "sparkle", "id": "glitter" },
+    { "kind": "effect", "path": "effects/shimmer-gpu/1" },
+    { "kind": "effect", "path": "effects/broken-wgsl/1" }
+  ]
+}

@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 const TOOLS: &[&str] = &[
     "apply_command",
     "describe_commands",
+    "describe_effects",
     "detect_scenes",
     "detect_silence",
     "download_model",

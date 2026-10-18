@@ -100,6 +100,25 @@ enum CliCommand {
         #[command(subcommand)]
         action: ModelsCommand,
     },
+    /// Work with declarative effect/asset packs (docs/effect-pack-format.md).
+    Pack {
+        #[command(subcommand)]
+        action: PackCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum PackCommand {
+    /// Load a pack folder (the one holding pack.json) and report every item as ok, skipped,
+    /// disabled or error, with its reason and content hash. Exits non-zero if the pack is
+    /// refused or any item failed to load.
+    Validate {
+        /// The pack folder.
+        dir: PathBuf,
+        /// Print the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -169,6 +188,56 @@ fn run_models(action: ModelsCommand) -> Result<()> {
             })?;
             eprintln!();
             println!("installed {}", path.display());
+        }
+    }
+    Ok(())
+}
+
+fn run_pack(action: PackCommand) -> Result<()> {
+    match action {
+        PackCommand::Validate { dir, json } => {
+            let pack = renderly_core::packs::load_pack(&dir)
+                .map_err(|e| anyhow::anyhow!("{}: {e}", dir.display()))?;
+            let report = renderly_core::packs::describe::pack_report(&pack);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "pack {} \"{}\" (format {}, release {}, license {})",
+                    report.id,
+                    report.name,
+                    report.format,
+                    report.release.as_deref().unwrap_or("-"),
+                    report.license.as_deref().unwrap_or("-")
+                );
+                for item in &report.items {
+                    let mut line = format!(
+                        "  {:<9} {:<13} {}@{} \"{}\"",
+                        item.state, item.kind, item.id, item.version, item.label
+                    );
+                    if let Some(reason) = &item.reason {
+                        line.push_str(": ");
+                        line.push_str(reason);
+                    }
+                    println!("{line}");
+                    if let Some(hash) = &item.hash {
+                        println!("{:>14}sha256 {hash}", "");
+                    }
+                }
+                let count = |state: &str| report.items.iter().filter(|i| i.state == state).count();
+                println!(
+                    "{} items: {} ok, {} disabled, {} skipped, {} error",
+                    report.items.len(),
+                    count("ok"),
+                    count("disabled"),
+                    count("skipped"),
+                    count("error")
+                );
+            }
+            let failed = report.items.iter().filter(|i| i.state == "error").count();
+            if failed > 0 {
+                bail!("{failed} item(s) failed to load");
+            }
         }
     }
     Ok(())
@@ -323,6 +392,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         CliCommand::Models { action } => run_models(action)?,
+        CliCommand::Pack { action } => run_pack(action)?,
         CliCommand::NewProject {
             path,
             name,
@@ -458,6 +528,33 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture_pack(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../renderly-core/tests/fixtures/packs")
+            .join(name)
+    }
+
+    #[test]
+    fn pack_validate_passes_a_clean_pack_and_fails_one_with_a_broken_item() {
+        // starter-v1 is format 1 and loads cleanly.
+        assert!(run_pack(PackCommand::Validate {
+            dir: fixture_pack("starter-v1"),
+            json: true,
+        })
+        .is_ok());
+        // looks-v2 has a WGSL item that fails to load, so validation exits non-zero.
+        assert!(run_pack(PackCommand::Validate {
+            dir: fixture_pack("looks-v2"),
+            json: false,
+        })
+        .is_err());
+        assert!(run_pack(PackCommand::Validate {
+            dir: fixture_pack("no-such-pack"),
+            json: false,
+        })
+        .is_err());
+    }
 
     fn temp_project_path(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
