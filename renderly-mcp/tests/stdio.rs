@@ -26,6 +26,7 @@ const TOOLS: &[&str] = &[
     "get_project",
     "get_transcript",
     "import_otio",
+    "list_library",
     "list_models",
     "new_project",
     "open_project",
