@@ -1,7 +1,8 @@
 {
   "id": "starter",
   "name": "Starter Pack",
-  "version": "1",
+  "version": "1.0.0",
+  "license": "AGPL-3.0-or-later",
   "caption_styles": [
     {
       "id": "starter-neon",

@@ -11,9 +11,14 @@
 pub mod describe;
 pub mod format2;
 #[cfg(not(target_arch = "wasm32"))]
-mod hash;
+pub(crate) mod hash;
 pub mod item;
 pub mod refs;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod rpack;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use rpack::build;
 
 pub use item::{builtin_items, ItemState, LoadedItem};
 
@@ -224,13 +229,20 @@ fn load_format1(root: &Path, text: &str) -> Result<LoadedPack, String> {
     } else {
         format!("local.{}", manifest.id)
     };
+    // `license` is optional in format 1 and read only here (the library records it).
+    let license = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("license")?.as_str().map(str::to_string));
     Ok(LoadedPack {
         root: root.to_path_buf(),
         manifest,
         luts,
         format: 1,
         canonical_id,
-        meta: PackMeta::default(),
+        meta: PackMeta {
+            license,
+            ..PackMeta::default()
+        },
         items,
     })
 }
@@ -279,6 +291,15 @@ pub fn items_from_format1(
 }
 
 impl LoadedPack {
+    /// The release this pack reports: `meta.release` for format 2, the manifest `version` for
+    /// format 1.
+    pub fn release(&self) -> String {
+        self.meta
+            .release
+            .clone()
+            .unwrap_or_else(|| self.manifest.version.clone())
+    }
+
     /// A minimal in-memory pack carrying only parsed LUTs - no filesystem, no manifest
     /// beyond its id. This is what the wasm preview builds from `.cube` text the webview
     /// fetched, so `find_cube_lut` / the effect processor resolve `pack:<id>:lut:<lut>` the

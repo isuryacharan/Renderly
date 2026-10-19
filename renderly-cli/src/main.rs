@@ -100,8 +100,12 @@ enum CliCommand {
         #[command(subcommand)]
         action: ModelsCommand,
     },
-    /// Work with declarative effect/asset packs (docs/effect-pack-format.md).
+    /// Work with declarative effect/asset packs (docs/effect-pack-format.md) and the user
+    /// library they install into (docs/community-store.md).
     Pack {
+        /// The library folder to use. Default: the user library, or RENDERLY_LIBRARY_DIR.
+        #[arg(long, global = true, value_name = "DIR")]
+        library: Option<PathBuf>,
         #[command(subcommand)]
         action: PackCommand,
     },
@@ -114,6 +118,55 @@ enum PackCommand {
     /// refused or any item failed to load.
     Validate {
         /// The pack folder.
+        dir: PathBuf,
+        /// Print the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Build a pack folder into a reproducible .rpack archive (same source, same bytes). Refuses
+    /// a pack that does not load or has an item that fails to load.
+    Build {
+        /// The pack folder (the one holding pack.json).
+        dir: PathBuf,
+        /// The .rpack file to write, or a folder to write <pack-id>-<release>.rpack into.
+        /// Default: the current folder.
+        #[arg(short, long, value_name = "PATH")]
+        out: Option<PathBuf>,
+        /// Print the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install a .rpack file or a pack folder into the library. Exits non-zero when refused: a
+    /// pack that does not load, a different file under the same release, or an item version
+    /// already published with other content. Items that fail are installed and reported.
+    Install {
+        /// A .rpack file or a pack folder.
+        source: PathBuf,
+        /// Print the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove an installed pack: every release, or only --release. Copies are deleted; a linked
+    /// dev folder is only forgotten, never deleted.
+    Uninstall {
+        /// The pack id, such as mira.film-looks or local.starter.
+        pack_id: String,
+        /// Only this release.
+        #[arg(long)]
+        release: Option<String>,
+        /// Print the removed releases as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the installed packs (and the builtin pack) with each one's items and their states.
+    List {
+        /// Print the list as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Link a pack folder for development: nothing is copied, and every load re-reads the folder.
+    Link {
+        /// The pack folder (the one holding pack.json).
         dir: PathBuf,
         /// Print the report as JSON.
         #[arg(long)]
@@ -193,7 +246,100 @@ fn run_models(action: ModelsCommand) -> Result<()> {
     Ok(())
 }
 
-fn run_pack(action: PackCommand) -> Result<()> {
+fn open_library(library: &Option<PathBuf>) -> Result<renderly_core::library::Library> {
+    let root = library
+        .clone()
+        .unwrap_or_else(renderly_core::library::default_root);
+    Ok(renderly_core::library::Library::open(&root)?)
+}
+
+fn print_install(
+    report: &renderly_core::library::InstallReport,
+    verb: &str,
+    json: bool,
+) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(report)?);
+        return Ok(());
+    }
+    let headline = if report.already_installed {
+        "already installed"
+    } else {
+        verb
+    };
+    println!(
+        "{headline} {} {} \"{}\" (format {}, from {})",
+        report.pack_id, report.release, report.name, report.format, report.source
+    );
+    if !report.items_added.is_empty() {
+        let counts: Vec<String> = report
+            .items_added
+            .iter()
+            .map(|(kind, n)| format!("{n} {kind}"))
+            .collect();
+        println!("  items: {}", counts.join(", "));
+    }
+    for item in report.items.iter().filter(|i| i.state != "ok") {
+        let mut line = format!(
+            "  {:<9} {}/{}@{}",
+            item.state, item.kind, item.id, item.version
+        );
+        if let Some(reason) = &item.reason {
+            line.push_str(": ");
+            line.push_str(reason);
+        }
+        println!("{line}");
+    }
+    if !report.other_releases.is_empty() {
+        println!(
+            "  other releases kept: {}",
+            report.other_releases.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn print_library(installs: &[renderly_core::library::Install]) {
+    for install in installs {
+        let state = if install.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        let source = if install.is_dev() {
+            "dev link"
+        } else {
+            install.source.as_str()
+        };
+        println!(
+            "{} {} {state} ({source}, format {})",
+            install.pack_id, install.release, install.format
+        );
+        if let Some(error) = &install.error {
+            println!("  error: {error}");
+        }
+        let mut counts: std::collections::BTreeMap<&str, usize> = Default::default();
+        for item in &install.items {
+            *counts.entry(item.state.as_str()).or_insert(0) += 1;
+        }
+        let summary: Vec<String> = counts.iter().map(|(s, n)| format!("{n} {s}")).collect();
+        if !summary.is_empty() {
+            println!("  items: {}", summary.join(", "));
+        }
+        for item in install.items.iter().filter(|i| i.state != "ok") {
+            println!(
+                "    {:<9} {}/{}@{}: {}",
+                item.state,
+                item.kind,
+                item.id,
+                item.version,
+                item.reason.as_deref().unwrap_or("")
+            );
+        }
+    }
+}
+
+fn run_pack(library: Option<PathBuf>, action: PackCommand) -> Result<()> {
     match action {
         PackCommand::Validate { dir, json } => {
             let pack = renderly_core::packs::load_pack(&dir)
@@ -238,9 +384,62 @@ fn run_pack(action: PackCommand) -> Result<()> {
             if failed > 0 {
                 bail!("{failed} item(s) failed to load");
             }
+            Ok(())
+        }
+        PackCommand::Build { dir, out, json } => {
+            let out = out.unwrap_or_else(|| PathBuf::from("."));
+            let report = renderly_core::packs::build(&dir, &out)
+                .map_err(|e| anyhow::anyhow!("{}: {e}", dir.display()))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "wrote {} ({} bytes, {} files)",
+                    report.path.display(),
+                    report.bytes,
+                    report.files
+                );
+                println!("sha256 {}", report.sha256);
+            }
+            Ok(())
+        }
+        PackCommand::Install { source, json } => {
+            let mut lib = open_library(&library)?;
+            let report = lib.install(&source)?;
+            print_install(&report, "installed", json)
+        }
+        PackCommand::Link { dir, json } => {
+            let mut lib = open_library(&library)?;
+            let report = lib.link_dev(&dir)?;
+            print_install(&report, "linked", json)
+        }
+        PackCommand::Uninstall {
+            pack_id,
+            release,
+            json,
+        } => {
+            let mut lib = open_library(&library)?;
+            let removed = lib.uninstall(&pack_id, release.as_deref())?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&removed)?);
+            } else {
+                for pair in &removed {
+                    println!("removed {pair}");
+                }
+            }
+            Ok(())
+        }
+        PackCommand::List { json } => {
+            let lib = open_library(&library)?;
+            let installs = lib.list();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&installs)?);
+            } else {
+                print_library(&installs);
+            }
+            Ok(())
         }
     }
-    Ok(())
 }
 
 /// Directory a project / .otio file lives in (relative media paths resolve against it).
@@ -392,7 +591,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         CliCommand::Models { action } => run_models(action)?,
-        CliCommand::Pack { action } => run_pack(action)?,
+        CliCommand::Pack { library, action } => run_pack(library, action)?,
         CliCommand::NewProject {
             path,
             name,
@@ -538,21 +737,30 @@ mod tests {
     #[test]
     fn pack_validate_passes_a_clean_pack_and_fails_one_with_a_broken_item() {
         // starter-v1 is format 1 and loads cleanly.
-        assert!(run_pack(PackCommand::Validate {
-            dir: fixture_pack("starter-v1"),
-            json: true,
-        })
+        assert!(run_pack(
+            None,
+            PackCommand::Validate {
+                dir: fixture_pack("starter-v1"),
+                json: true,
+            }
+        )
         .is_ok());
         // looks-v2 has a WGSL item that fails to load, so validation exits non-zero.
-        assert!(run_pack(PackCommand::Validate {
-            dir: fixture_pack("looks-v2"),
-            json: false,
-        })
+        assert!(run_pack(
+            None,
+            PackCommand::Validate {
+                dir: fixture_pack("looks-v2"),
+                json: false,
+            }
+        )
         .is_err());
-        assert!(run_pack(PackCommand::Validate {
-            dir: fixture_pack("no-such-pack"),
-            json: false,
-        })
+        assert!(run_pack(
+            None,
+            PackCommand::Validate {
+                dir: fixture_pack("no-such-pack"),
+                json: false,
+            }
+        )
         .is_err());
     }
 

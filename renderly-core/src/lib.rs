@@ -25,6 +25,8 @@ pub mod edit_contract;
 pub mod export;
 pub mod frame;
 pub mod history;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod library;
 pub mod mask;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod media;

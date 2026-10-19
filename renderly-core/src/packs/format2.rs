@@ -153,7 +153,7 @@ fn is_semver(s: &str) -> bool {
 }
 
 /// Parses `x`, `x.y` or `x.y.z` (a `-`/`+` suffix is ignored) into a comparable triple.
-fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
+pub fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
     let core = s.trim().split(['-', '+']).next()?;
     let mut nums = [0u64; 3];
     let parts: Vec<&str> = core.split('.').collect();

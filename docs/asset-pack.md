@@ -165,6 +165,53 @@ renderly pack validate <dir> --json   # the same report as JSON
 
 Exits non-zero if the pack is refused or any item is in the `error` state.
 
+### The library, `.rpack` and installing (what works now)
+
+Packs are installed into a per-user library, not referenced by project paths.
+Library location: `RENDERLY_LIBRARY_DIR` if set, else `<user data dir>/Renderly/library`
+(`%APPDATA%` on Windows, `~/Library/Application Support` on macOS, `$XDG_DATA_HOME` or
+`~/.local/share` elsewhere). Every command takes `--library <dir>` to use another folder.
+
+```
+renderly pack build <dir> [-o <file.rpack | folder>] [--json]  # reproducible .rpack
+renderly pack install <file.rpack | folder> [--json]           # validate, then copy in
+renderly pack uninstall <pack-id> [--release <R>] [--json]     # copies deleted
+renderly pack list [--json]                                    # releases, items, states
+renderly pack link <dir> [--json]                              # dev folder, read on every load
+```
+
+- A `.rpack` is a ZIP with `pack.json` at its root. `pack build` writes entries sorted, with
+  fixed timestamps, permissions and compression, so the same source gives the same bytes and
+  SHA-256. The default name is `<pack-id>-<release>.rpack`. The build refuses a pack that does
+  not load or has an item in the `error` state.
+- Archives are checked before extraction: at most 10,000 entries and 1 GiB uncompressed, no
+  entry over 100:1, no absolute paths, `..` or backslashes, no symbolic links, and a
+  `pack.json` at the top level (a wrapping folder is refused). Pack folders are held to the
+  same limits when copied.
+- Install runs the same loader as `pack validate`. A pack-level error refuses the install. An
+  item-level error installs the pack and reports that item, with its reason.
+- Refused: the same `id` and `release` with different content (`a different file claims to be
+  <name> <release>`), and an item version already installed from another release with a
+  different hash (published versions never change; make a new version). Installing the same
+  release with the same content again is a no-op (`already installed`).
+- Several releases of one pack can be installed side by side. A ref resolves to the release
+  whose hash matches, and when hashes do not decide, the newest release (semver compare).
+- `library.json` records each release: `pack_id`, `release`, `format`, `license`,
+  `archive_sha256` (file installs), `content_sha256`, `source` (`file`, `folder`,
+  `dev:<path>`, `builtin`), `installed_at`, `enabled` and the per-item states. `import` is
+  reserved.
+- A dev link is not copied. Every load reads its folder again, so edits show without a
+  reinstall. Uninstalling a dev link only forgets it; the folder is never deleted.
+- The builtin effects appear in `pack list` as a virtual `builtin` pack that cannot be removed.
+
+Not yet: store search and remote URLs, MCP install and uninstall (the app asks the user to
+confirm those), enabling and disabling from the CLI (the library has `set_enabled`), projects
+storing refs instead of pack paths (schema v8), and "Collect project".
+
+The starter pack stays a format-1 folder for now: format 2 does not yet load caption styles,
+templates, sticker or sfx items, or transition aliases. Its `.rpack` is built from that folder
+and installs as `local.starter` 1.0.0.
+
 ### Perception
 
 `describe_effects` (MCP) lists the builtins plus the packs you name by folder, or the open

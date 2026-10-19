@@ -108,6 +108,7 @@ Phase 1's `GenerateCaptions`, `GenerateVoiceover`, `SetAudioFade`, and `SetTrack
 | `detect_scenes` | Scene cuts in a `media_id` (FFmpeg scene filter) |
 | `get_audio_peaks` | Downsampled peak envelope for waveform display |
 | `get_background_matte_status` | `{track_id, clip_id}` -> `not_generated` / `ready` / `stale {reason}` for a clip's background-removal matte |
+| `list_library` | Packs installed in the user library: each release with its source, enabled state and item counts, the reason for every item that is not ok, and the builtin pack. Read-only, needs no project. Install and uninstall are not exposed: the app asks the user to confirm them (see [asset-pack.md](asset-pack.md)) |
 
 ### Local ML models
 

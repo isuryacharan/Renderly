@@ -191,6 +191,48 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
     tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(f))
 }
 
+/// One block per installed release: its id, release, state and source, the item count, and the
+/// reason for every item that is not ok. Compact on purpose: the agent reads it every turn.
+fn library_text(installs: &[renderly_core::library::Install]) -> String {
+    let mut out = String::new();
+    for install in installs {
+        let state = if install.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        let source = if install.is_dev() {
+            "dev link"
+        } else {
+            install.source.as_str()
+        };
+        out.push_str(&format!(
+            "{} {} {state} ({source}, format {})\n",
+            install.pack_id, install.release, install.format
+        ));
+        if let Some(error) = &install.error {
+            out.push_str(&format!("  error: {error}\n"));
+        }
+        let total = install.items.len();
+        let ok = install.items.iter().filter(|i| i.state == "ok").count();
+        out.push_str(&format!(
+            "  {total} items: {ok} ok, {} not ok\n",
+            total - ok
+        ));
+        for item in install.items.iter().filter(|i| i.state != "ok") {
+            out.push_str(&format!(
+                "    {} {}/{}@{}: {}\n",
+                item.state,
+                item.kind,
+                item.id,
+                item.version,
+                item.reason.as_deref().unwrap_or("")
+            ));
+        }
+    }
+    out
+}
+
 fn default_name() -> String {
     "untitled".into()
 }
@@ -918,6 +960,16 @@ impl RenderlyMcp {
     }
 
     #[tool(
+        description = "Packs installed in the user library (docs/community-store.md): each release with its source, enabled state and item counts, plus the reason for every item that is not ok, and the builtin pack. Read-only; needs no project. Installing and removing packs is not offered here: the app asks the user to confirm those."
+    )]
+    fn list_library(&self) -> String {
+        match renderly_core::library::Library::open(&renderly_core::library::default_root()) {
+            Ok(library) => library_text(&library.list()),
+            Err(e) => format!("error: {e}"),
+        }
+    }
+
+    #[tool(
         name = "undo",
         description = "Undo the last edit step. One step is one agent turn, one batch, or one coalesced slider drag. Needs the Renderly desktop app open on this project (its undo history is shared with the GUI)."
     )]
@@ -1614,6 +1666,7 @@ mod tests {
             "get_project",
             "get_transcript",
             "import_otio",
+            "list_library",
             "list_models",
             "new_project",
             "open_project",
