@@ -47,15 +47,25 @@ pub fn plugin_id_at(root: &Path) -> Option<String> {
     load_plugin_manifest(root).ok().map(|m| m.id)
 }
 
-pub fn effect_id_for_plugin(plugin_id: &str) -> String {
+pub fn plugin_ref(plugin_id: &str) -> String {
     format!("wasm:{plugin_id}")
 }
 
-pub fn known_effect_ids(project: &Project) -> HashSet<String> {
+/// The project's WASM plugin folders: the entries of `legacy_pack_paths` that hold a
+/// `plugin.json` (pack folders are installed into the user library instead).
+fn plugin_roots(project: &Project) -> impl Iterator<Item = &Path> {
+    project
+        .legacy_pack_paths
+        .iter()
+        .map(|p| p.as_path())
+        .filter(|p| p.join("plugin.json").is_file())
+}
+
+pub fn known_plugin_refs(project: &Project) -> HashSet<String> {
     let mut ids = HashSet::new();
-    for path in &project.wasm_plugin_paths {
+    for path in plugin_roots(project) {
         if let Ok(m) = load_plugin_manifest(path) {
-            ids.insert(effect_id_for_plugin(&m.id));
+            ids.insert(plugin_ref(&m.id));
         }
     }
     ids
@@ -109,7 +119,7 @@ impl PluginHost {
 
     pub fn for_project(project: &Project) -> Result<Self, String> {
         let mut host = Self::empty()?;
-        for path in &project.wasm_plugin_paths {
+        for path in plugin_roots(project) {
             host.add_dir(path)?;
         }
         Ok(host)
@@ -162,7 +172,7 @@ impl PluginHost {
         effects: &[EffectInstance],
     ) -> Result<(), String> {
         for effect in effects.iter().filter(|e| e.enabled) {
-            let Some(plugin_id) = effect.effect_id.strip_prefix("wasm:") else {
+            let Some(plugin_id) = effect.item_ref.strip_prefix("wasm:") else {
                 continue;
             };
             let Some(plugin) = self.plugins.iter().find(|p| p.id == plugin_id) else {
@@ -185,7 +195,7 @@ impl PluginHost {
         effects: &[EffectInstance],
     ) -> Result<(), String> {
         for effect in effects.iter().filter(|e| e.enabled) {
-            let Some(plugin_id) = effect.effect_id.strip_prefix("wasm:") else {
+            let Some(plugin_id) = effect.item_ref.strip_prefix("wasm:") else {
                 continue;
             };
             let Some(plugin) = self.plugins.iter().find(|p| p.id == plugin_id) else {
@@ -194,7 +204,7 @@ impl PluginHost {
             if !plugin.has_audio {
                 continue;
             }
-            let intensity = effect.params.get("intensity").copied().unwrap_or(1.0) as f32;
+            let intensity = effect.number("intensity").unwrap_or(1.0) as f32;
             self.run_process_audio(plugin, samples, sample_rate, channels, intensity)?;
         }
         Ok(())
@@ -418,7 +428,8 @@ mod tests {
         };
         let effect = EffectInstance {
             id: uuid::Uuid::new_v4(),
-            effect_id: "wasm:invert".into(),
+            item_ref: "wasm:invert".into(),
+            hash: None,
             enabled: true,
             params: Default::default(),
         };
@@ -445,9 +456,15 @@ mod tests {
         let mut samples = vec![0.5f32, -0.25, 1.0, 0.0];
         let effect = EffectInstance {
             id: uuid::Uuid::new_v4(),
-            effect_id: "wasm:gain".into(),
+            item_ref: "wasm:gain".into(),
+            hash: None,
             enabled: true,
-            params: [("intensity".into(), 0.5)].into_iter().collect(),
+            params: [(
+                "intensity".to_string(),
+                crate::project::EffectParam::Number(0.5),
+            )]
+            .into_iter()
+            .collect(),
         };
         host.apply_audio_effects(&mut samples, 48000, 2, &[effect])
             .unwrap();

@@ -27,6 +27,9 @@ pub struct CatalogueEntry {
     pub state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Where `SetClipEffects` puts it by default: `filter`, `key`, `adjust` or `effects`
+    /// (`transition` for `SetClipTransition`). Filters and LUTs may also go in `effects`.
+    pub slot: &'static str,
     /// Empty for LUTs and for items that did not compile.
     pub params: Vec<ParamEntry>,
 }
@@ -48,6 +51,9 @@ pub struct ParamEntry {
     /// Choice ids, in index order.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
+    /// True when the control can be keyframed (`effect:<id>/<key>`): numeric, colour and vec2
+    /// params not marked `animatable: false`.
+    pub animatable: bool,
 }
 
 /// Every builtin item, then every effect, filter, transition and LUT of the loaded packs, in
@@ -96,7 +102,25 @@ fn entry(item: &LoadedItem, reference: String, source: String) -> CatalogueEntry
         source,
         state: item.state.name(),
         reason: item.state.reason().map(str::to_string),
+        slot: default_slot(item),
         params,
+    }
+}
+
+/// The slot an item belongs in unless the caller says otherwise (docs/effect-pack-format.md
+/// "Stack slots"): filters and LUTs in `filter`, keying effects in `key`, the colour adjustment
+/// in `adjust`, transitions on the clip junction, everything else in `effects`.
+fn default_slot(item: &LoadedItem) -> &'static str {
+    let category = item
+        .compiled
+        .as_ref()
+        .and_then(|c| c.manifest().category.clone());
+    match item.kind.as_str() {
+        "transition" => "transition",
+        "filter" | "lut" => "filter",
+        _ if category.as_deref() == Some("key") => "key",
+        _ if category.as_deref() == Some("adjust") || item.id == "color_adjust" => "adjust",
+        _ => "effects",
     }
 }
 
@@ -110,6 +134,11 @@ fn param_entry(p: &ParamSpec) -> ParamEntry {
         default: value_json(&p.default),
         initial: value_json(&p.initial),
         options: p.options.iter().map(|o| o.id.clone()).collect(),
+        animatable: p.animatable
+            && matches!(
+                p.kind,
+                ParamKind::Float | ParamKind::Int | ParamKind::Color | ParamKind::Vec2
+            ),
     }
 }
 
@@ -138,8 +167,9 @@ fn value_json(v: &ParamValue) -> Value {
 pub fn catalogue_text(packs: &[LoadedPack]) -> String {
     let mut out = String::from(
         "Effects, filters, transitions and LUTs. Refs: builtin:<id>@<version>, \
-         pack:<pack>/<item>@<version>. Pack item refs take effect with project schema v8; \
-         SetClipEffects accepts builtin:<id> and pack:<pack>:lut:<lut> today.\n",
+         pack:<pack>/<item>@<version>. Apply with SetClipEffects (into the filter / key / adjust \
+         slot or the effects list; slot= is the usual one) or SetClipTransition. Slots run in \
+         the order filter, key, adjust, effects.\n",
     );
     for e in catalogue(packs) {
         let _ = write!(
@@ -147,6 +177,9 @@ pub fn catalogue_text(packs: &[LoadedPack]) -> String {
             "{} {} \"{}\" {}",
             e.reference, e.kind, e.label, e.state
         );
+        if e.state == "ok" && e.kind != "transition" {
+            let _ = write!(out, " slot={}", e.slot);
+        }
         if let Some(reason) = &e.reason {
             let _ = write!(out, ": {reason}");
         }
@@ -244,8 +277,18 @@ mod tests {
         assert_eq!(radius.ty, "float");
         assert_eq!(radius.max, Some(64.0));
         assert_eq!(radius.default, json!(0.0));
-        assert_eq!(radius.initial, radius.default);
+        // A freshly added blur is visible: `initial` differs from the identity `default`.
+        assert_eq!(radius.initial, json!(8.0));
+        assert!(radius.animatable, "numeric params can be keyframed");
         let text = catalogue_text(&[]);
-        assert!(text.contains("builtin:blur@1 effect \"Blur\" ok | radius:float 0..64 =0.0"));
+        assert!(text.contains(
+            "builtin:blur@1 effect \"Blur\" ok slot=effects | radius:float 0..64 =0.0 init=8.0"
+        ));
+        assert!(
+            text.contains("builtin:chroma_key@1 effect \"Chroma key\" ok slot=key"),
+            "{text}"
+        );
+        assert!(text.contains("builtin:color_adjust@1 effect \"Color adjust\" ok slot=adjust"));
+        assert!(text.contains("builtin:lut_filter@1 filter"));
     }
 }

@@ -21,13 +21,14 @@ call), `render_frame`. Renderly's engine does the cuts; you plan them from the d
 ## Procedure
 
 1. **Read the project.** `get_project` returns `project_revision` and the project. Note the track
-   id, the clip ids, `position_secs`, `source_in_secs`, `source_out_secs`, `media_id` and `speed`
+   id, the clip ids, `start_us`, `source_in_us`, `source_out_us`, `media_id` and `speed` (all times are integer
+   microseconds; pass times back as integers or strings like `"12.34s"`)
    for each clip you will cut.
 2. **Detect silence.** `detect_silence` with the clip's `media_id`. Use the defaults, with
-   `min_duration_secs` 0.6 so breaths are kept. Each span has `start_secs` and `end_secs`.
+   `min_duration` `"0.6s"` so breaths are kept. Each span has `start_us` and `end_us`.
 3. **Map to timeline time.** Keep spans that lie fully inside a clip's source range. Shrink each by
-   0.12 s on both sides, then convert:
-   `timeline_start = clip.position_secs + (span_start - source_in_secs)`, and the same for the end.
+   0.12 s (120000 µs) on both sides, then convert:
+   `timeline_start = clip.start_us + (span_start - source_in_us)`, and the same for the end.
    Drop what is shorter than 0.3 s afterwards. Sort the cuts by `timeline_start`, latest first.
 4. **Cut the pauses, latest first.** For each cut, in this order, one `apply_command` each:
    - `SplitClip` at the cut's end, on the clip that contains it.
@@ -39,13 +40,14 @@ call), `render_frame`. Renderly's engine does the cuts; you plan them from the d
    A split must fall strictly inside a clip. If a cut starts at a clip's first frame, skip the
    start split: the piece to delete is the clip that now starts at that time, which keeps the
    original id. If a cut ends at a clip's last frame, skip the end split. Find that piece with
-   `get_project` (its `position_secs` equals the cut start). If a cut covers a whole clip, skip
+   `get_project` (its `start_us` equals the cut start). If a cut covers a whole clip, skip
    both splits and delete that clip.
 5. **Delete the middle pieces, latest first.** For each recorded middle piece, one `DeleteClip`
    with `ripple: true` on its track, and `allow_deletion` with a `reason` such as "remove silences
    the user asked for" and `ids` set to that one clip id. Ripple shifts later clips on the same
    track only. Because you delete latest first, earlier positions stay valid. Dry-run the first
    deletion; if the error names different ids, use those.
+   On a `magnetic` track (see `get_project`) the gap closes whatever `ripple` says.
 6. **Keep audio in step.** A ripple moves only the track you delete from. If a clip has a linked
    audio clip on another track, repeat steps 4 and 5 on that track with the same timeline times,
    or the two drift apart.

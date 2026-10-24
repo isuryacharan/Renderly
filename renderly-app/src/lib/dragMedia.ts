@@ -8,16 +8,16 @@ export const MEDIA_DRAG_MIME = "application/x-renderly-media";
 export interface MediaDragPayload {
   mediaId: string;
   kind: MediaKind;
-  durationSecs: number;
+  durationUs: number;
 }
 
 export function startMediaDrag(
   e: React.DragEvent,
   mediaId: string,
   kind: MediaKind,
-  durationSecs: number,
+  durationUs: number,
 ) {
-  const payload: MediaDragPayload = { mediaId, kind, durationSecs };
+  const payload: MediaDragPayload = { mediaId, kind, durationUs };
   e.dataTransfer.setData(MEDIA_DRAG_MIME, JSON.stringify(payload));
   e.dataTransfer.effectAllowed = "copy";
 }

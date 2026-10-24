@@ -96,7 +96,7 @@ export function ContextMenu() {
       <button
         type="button"
         disabled={locked}
-        onClick={() => run(() => void dispatch(splitClip(menu.trackId, menu.clipId, menu.atSecs)))}
+        onClick={() => run(() => void dispatch(splitClip(menu.trackId, menu.clipId, menu.atUs)))}
       >
         Split at click
       </button>

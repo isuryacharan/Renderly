@@ -1,52 +1,16 @@
-import { useEffect, useState } from "react";
 import { Aperture } from "lucide-react";
-import { setClipEffects } from "../../lib/commands";
-import * as ipc from "../../lib/ipc";
-import type { ExtensionCatalog } from "../../lib/ipc";
-import type { EffectInstance, MediaClip } from "../../lib/types";
-import { activeTracks } from "../../lib/container";
-import { useEditorStore, type DispatchOptions } from "../../store/editorStore";
-import { EffectList } from "./EffectsPanel";
+import { useCatalogue } from "../../lib/useCatalogue";
+import { useSelectedClip } from "../../lib/useSelectedClip";
+import { EffectStack } from "../inspector/EffectStack";
+import { EffectGallery } from "./EffectGallery";
 
-const BUILTIN_LUTS: { id: string; label: string }[] = [
-  { id: "builtin:lut_contrast", label: "Contrast" },
-  { id: "builtin:lut_warm", label: "Warm" },
-];
-
-function newId(): string {
-  return crypto.randomUUID();
-}
-
+/// Filters tab: looks and LUTs (builtin and pack). A filter goes in the clip's single filter
+/// slot, so applying another replaces it.
 export function FiltersPanel() {
-  const project = useEditorStore((s) => s.project);
-  const selection = useEditorStore((s) => s.selection);
-  const dispatch = useEditorStore((s) => s.dispatch);
-  const [catalog, setCatalog] = useState<ExtensionCatalog | null>(null);
+  const catalogue = useCatalogue();
+  const selected = useSelectedClip();
 
-  useEffect(() => {
-    if (!project) {
-      setCatalog(null);
-      return;
-    }
-    void ipc.listExtensions().then(setCatalog).catch(() => setCatalog(null));
-  }, [project, project?.asset_pack_paths?.join("|")]);
-
-  const activeSequenceId = useEditorStore((s) => s.activeSequenceId);
-  const track = activeTracks(project, activeSequenceId).find((t) => t.id === selection?.trackId);
-  const clip = track?.clips.find((c) => c.id === selection?.clipId);
-  const mediaClip =
-    clip && clip.type !== "caption" ? (clip as MediaClip) : null;
-  const locked = track?.locked ?? true;
-
-  const packLuts =
-    catalog?.packs.flatMap((p) =>
-      p.luts.map((l) => ({
-        id: `pack:${p.id}:lut:${l.id}`,
-        label: `${p.name}: ${l.label}`,
-      })),
-    ) ?? [];
-
-  if (!mediaClip || !track || track.kind === "caption") {
+  if (!selected) {
     return (
       <div className="panel-body">
         <h3>Filters</h3>
@@ -54,7 +18,7 @@ export function FiltersPanel() {
       </div>
     );
   }
-
+  const { track, clip } = selected;
   if (track.kind === "audio") {
     return (
       <div className="panel-body">
@@ -63,50 +27,21 @@ export function FiltersPanel() {
       </div>
     );
   }
-
-  const effects = mediaClip.effects ?? [];
-
-  async function commit(next: EffectInstance[], opts?: DispatchOptions) {
-    await dispatch(setClipEffects(track!.id, mediaClip!.id, next), false, opts);
-  }
-
-  function addFilter(effectId: string) {
-    void commit([
-      ...effects,
-      {
-        id: newId(),
-        effect_id: effectId,
-        enabled: true,
-        params: { intensity: 1 },
-      },
-    ]);
-  }
+  const items = catalogue
+    .filter((e) => (e.kind === "filter" || e.kind === "lut") && e.state === "ok")
+    .map((e) => ({ ref: e.ref, label: e.label, entry: e }));
 
   return (
     <div className="panel-body effects-panel">
       <h3>Filters</h3>
-      <p className="empty-hint">Builtin and pack LUTs via SetClipEffects.</p>
-      <div className="effects-catalog">
-        {BUILTIN_LUTS.map((e) => (
-          <button key={e.id} type="button" disabled={locked} onClick={() => addFilter(e.id)}>
-            <Aperture size={14} strokeWidth={1.75} />
-            {e.label}
-          </button>
-        ))}
-        {packLuts.map((e) => (
-          <button key={e.id} type="button" disabled={locked} onClick={() => addFilter(e.id)}>
-            <Aperture size={14} strokeWidth={1.75} />
-            {e.label}
-          </button>
-        ))}
-      </div>
-      <EffectList
+      <p className="empty-hint">One filter per clip; hover to preview.</p>
+      <EffectGallery
+        items={items}
         track={track}
-        clip={mediaClip}
-        effects={effects}
-        locked={locked}
-        onCommit={commit}
+        clip={clip}
+        icon={<Aperture size={14} strokeWidth={1.75} />}
       />
+      <EffectStack track={track} clip={clip} slots={["filter"]} emptyHint="No filter on this clip." />
     </div>
   );
 }

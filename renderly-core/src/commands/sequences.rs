@@ -6,8 +6,7 @@
 
 use super::{check_no_overlap, CommandError, CommandOutcome};
 use crate::project::{
-    clone_effects_with_new_ids, AnimProperty, Clip, Id, MediaClip, MediaItem, MediaKind, Project,
-    Sequence, Track, TrackKind,
+    AnimProperty, Clip, Id, MediaClip, MediaItem, MediaKind, Project, Sequence, Track, TrackKind,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -65,7 +64,7 @@ fn sequence_media_item(media_id: Id, sequence_id: Id) -> MediaItem {
         id: media_id,
         path: PathBuf::new(),
         kind: MediaKind::Sequence,
-        duration_secs: None,
+        duration_us: None,
         width: None,
         height: None,
         fps: None,
@@ -160,7 +159,7 @@ fn nest_clips_inner(
         .container_of_track(first.track_id)
         .ok_or(CommandError::TrackNotFound(first.track_id))?;
 
-    let (mut start, mut end) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut start, mut end) = (i64::MAX, i64::MIN);
     let (mut has_video, mut has_audio) = (false, false);
     for r in &refs {
         if project.container_of_track(r.track_id) != Some(container) {
@@ -173,14 +172,14 @@ fn nest_clips_inner(
             .and_then(|t| t.find_clip(r.clip_id))
             .ok_or(CommandError::ClipNotFound(r.clip_id, r.track_id))?;
         match clip {
-            Clip::Video(_) | Clip::Adjustment(_) => has_video = true,
+            Clip::Video(_) | Clip::Adjustment(_) | Clip::Text(_) => has_video = true,
             Clip::Audio(_) => has_audio = true,
             Clip::Caption(_) => {
                 return Err(CommandError::UnsupportedForSequence("caption clips"));
             }
         }
-        start = start.min(clip.position_secs());
-        end = end.max(clip.end_secs());
+        start = start.min(clip.start_us());
+        end = end.max(clip.end_us());
     }
     let duration = end - start;
 
@@ -211,7 +210,7 @@ fn nest_clips_inner(
             .position(|c| c.id() == r.clip_id)
             .ok_or(CommandError::ClipNotFound(r.clip_id, r.track_id))?;
         let mut clip = track.clips.remove(idx);
-        clip.set_position_secs(clip.position_secs() - start);
+        clip.set_start_us(clip.start_us() - start);
         if let Some((_, dest)) = seq_tracks.iter_mut().find(|(tid, _)| *tid == r.track_id) {
             dest.clips.push(clip);
         }
@@ -285,15 +284,15 @@ fn place_outer_clip(
     kind: TrackKind,
     candidates: &[Id],
     media_id: Id,
-    start: f64,
-    duration: f64,
+    start: i64,
+    duration: i64,
 ) -> Result<Id, CommandError> {
     let media_clip = MediaClip {
         id: Id::new_v4(),
         media_id,
-        position_secs: start,
-        source_in_secs: 0.0,
-        source_out_secs: duration,
+        start_us: start,
+        source_in_us: 0,
+        source_out_us: duration,
         ..Default::default()
     };
     let clip_id = media_clip.id;
@@ -351,7 +350,7 @@ fn unnest_clip_inner(
     let (outer, is_audio) = match clip {
         Clip::Video(m) => (m.clone(), false),
         Clip::Audio(m) => (m.clone(), true),
-        Clip::Caption(_) | Clip::Adjustment(_) => {
+        Clip::Caption(_) | Clip::Text(_) | Clip::Adjustment(_) => {
             return Err(CommandError::CannotUnnest(
                 "the clip does not place a sequence".into(),
             ));
@@ -367,8 +366,8 @@ fn unnest_clip_inner(
         .keyframes
         .iter()
         .any(|k| k.property == AnimProperty::Speed && !k.keys.is_empty());
-    let reason = if outer.source_in_secs.abs() > 1e-6
-        || (outer.source_out_secs - project.sequence_duration(sequence_id)).abs() > 1e-6
+    let reason = if outer.source_in_us != 0
+        || outer.source_out_us != project.sequence_duration(sequence_id)
     {
         Some("the clip is trimmed")
     } else if (outer.speed - 1.0).abs() > 1e-9 || has_speed_keys {
@@ -387,8 +386,8 @@ fn unnest_clip_inner(
         Some("the clip has background removal")
     } else if is_audio
         && (outer.gain_db != 0.0
-            || outer.fade_in_secs > 0.0
-            || outer.fade_out_secs > 0.0
+            || outer.fade_in_us > 0
+            || outer.fade_out_us > 0
             || outer.audio_denoise.is_some())
     {
         Some("the clip has gain, fades or denoise")
@@ -417,16 +416,23 @@ fn unnest_clip_inner(
             match &mut c {
                 Clip::Video(m) | Clip::Audio(m) => {
                     m.id = Id::new_v4();
-                    m.effects = clone_effects_with_new_ids(&m.effects);
+                    let remap = m.reid_effects();
+                    crate::project::remap_effect_tracks(&mut m.keyframes, &remap);
                     m.multicam_group_id = None;
                 }
                 Clip::Adjustment(a) => {
                     a.id = Id::new_v4();
-                    a.effects = clone_effects_with_new_ids(&a.effects);
+                    let remap = a.reid_effects();
+                    crate::project::remap_effect_tracks(&mut a.keyframes, &remap);
+                }
+                Clip::Text(t) => {
+                    t.id = Id::new_v4();
+                    let remap = t.reid_effects();
+                    crate::project::remap_effect_tracks(&mut t.keyframes, &remap);
                 }
                 Clip::Caption(_) => continue,
             }
-            c.set_position_secs(c.position_secs() + outer.position_secs);
+            c.set_start_us(c.start_us() + outer.start_us);
             copy.clips.push(c);
         }
         if !copy.clips.is_empty() {
@@ -453,6 +459,7 @@ mod tests {
     use super::super::{apply_command, Command, CommandError, CommandOutcome};
     use super::*;
     use crate::project::Settings;
+    use crate::time::Time;
 
     fn project() -> Project {
         Project::new("seq-tests", Settings::default())
@@ -464,7 +471,7 @@ mod tests {
             id,
             path: "a.mp4".into(),
             kind: MediaKind::Video,
-            duration_secs: Some(duration),
+            duration_us: Some((duration * 1e6).round() as i64),
             width: Some(1920),
             height: Some(1080),
             fps: Some(30.0),
@@ -479,7 +486,7 @@ mod tests {
             id,
             path: "a.wav".into(),
             kind: MediaKind::Audio,
-            duration_secs: Some(duration),
+            duration_us: Some((duration * 1e6).round() as i64),
             width: None,
             height: None,
             fps: None,
@@ -496,6 +503,7 @@ mod tests {
                 name: "T".into(),
                 id: None,
                 sequence_id,
+                magnetic: Some(false),
             },
         )
         .unwrap();
@@ -511,9 +519,9 @@ mod tests {
             Command::AddClip {
                 track_id,
                 media_id,
-                position_secs: pos,
-                source_in_secs: 0.0,
-                source_out_secs: dur,
+                start: Time::Us((pos * 1e6).round() as i64),
+                source_in: Time::Us(0),
+                source_out: Time::Us((dur * 1e6).round() as i64),
             },
         )
         .unwrap();
@@ -730,6 +738,7 @@ mod tests {
                     name: "dup".into(),
                     id: Some(inner),
                     sequence_id: None,
+                    magnetic: Some(false),
                 }
             ),
             Err(CommandError::DuplicateTrackId(id)) if id == inner
@@ -744,6 +753,7 @@ mod tests {
                     name: "x".into(),
                     id: None,
                     sequence_id: Some(missing),
+                    magnetic: Some(false),
                 }
             ),
             Err(CommandError::SequenceNotFound(id)) if id == missing
@@ -756,6 +766,7 @@ mod tests {
                     name: "c".into(),
                     id: None,
                     sequence_id: Some(seq),
+                    magnetic: Some(false),
                 }
             ),
             Err(CommandError::UnsupportedForSequence(_))
@@ -807,7 +818,7 @@ mod tests {
         let (seq, media) = create_sequence(&mut p, "S");
         let inner = track(&mut p, TrackKind::Video, Some(seq));
         clip(&mut p, inner, v, 0.0, 4.0);
-        assert!((p.media_duration(media).unwrap() - 4.0).abs() < 1e-9);
+        assert!((p.media_duration(media).unwrap() - 4000000).abs() < 1);
 
         let vt = track(&mut p, TrackKind::Video, None);
         let at = track(&mut p, TrackKind::Audio, None);
@@ -830,12 +841,12 @@ mod tests {
                 Command::AddClip {
                     track_id: t2,
                     media_id: media,
-                    position_secs: 0.0,
-                    source_in_secs: 0.0,
-                    source_out_secs: 5.0,
+                    start: Time::Us(0),
+                    source_in: Time::Us(0),
+                    source_out: Time::Us(5000000),
                 }
             ),
-            Err(CommandError::ExceedsMediaDuration(d)) if (d - 4.0).abs() < 1e-9
+            Err(CommandError::ExceedsMediaDuration(d)) if (d - 4000000).abs() < 1
         ));
         // Sequences cannot go on caption tracks.
         let cap = track(&mut p, TrackKind::Caption, None);
@@ -845,9 +856,9 @@ mod tests {
                 Command::AddClip {
                     track_id: cap,
                     media_id: media,
-                    position_secs: 0.0,
-                    source_in_secs: 0.0,
-                    source_out_secs: 1.0,
+                    start: Time::Us(0),
+                    source_in: Time::Us(0),
+                    source_out: Time::Us(1000000),
                 }
             ),
             Err(CommandError::TrackKindMismatch(..))
@@ -872,9 +883,9 @@ mod tests {
             Command::AddClip {
                 track_id: ta,
                 media_id: a_media,
-                position_secs: 5.0,
-                source_in_secs: 0.0,
-                source_out_secs: 1.0,
+                start: Time::Us(5000000),
+                source_in: Time::Us(0),
+                source_out: Time::Us(1000000),
             },
         );
         assert!(matches!(direct, Err(CommandError::SequenceCycle(id)) if id == a));
@@ -886,9 +897,9 @@ mod tests {
             Command::AddClip {
                 track_id: tb,
                 media_id: a_media,
-                position_secs: 5.0,
-                source_in_secs: 0.0,
-                source_out_secs: 1.0,
+                start: Time::Us(5000000),
+                source_in: Time::Us(0),
+                source_out: Time::Us(1000000),
             },
         );
         assert!(matches!(transitive, Err(CommandError::SequenceCycle(id)) if id == a));
@@ -910,7 +921,7 @@ mod tests {
             Command::MoveClip {
                 track_id: root,
                 clip_id: placed,
-                new_position_secs: 5.0,
+                start: Time::Us(5000000),
                 new_track_id: Some(ta),
             },
         );
@@ -961,9 +972,9 @@ mod tests {
             vec![TrackKind::Video, TrackKind::Video, TrackKind::Audio]
         );
         // Relative timing: earliest clip starts at 0, the other keeps its 1 s offset.
-        assert!((seq.tracks[0].clips[0].position_secs() - 0.0).abs() < 1e-9);
-        assert!((seq.tracks[1].clips[0].position_secs() - 1.0).abs() < 1e-9);
-        assert!((seq.tracks[2].clips[0].position_secs() - 0.0).abs() < 1e-9);
+        assert_eq!(seq.tracks[0].clips[0].start_us(), 0);
+        assert!((seq.tracks[1].clips[0].start_us() - 1000000).abs() < 1);
+        assert_eq!(seq.tracks[2].clips[0].start_us(), 0);
         // Track ids stay globally unique; the moved clips keep their ids.
         assert_eq!(seq.tracks[0].clips[0].id(), c1);
         assert!(p.validate().is_ok());
@@ -975,8 +986,8 @@ mod tests {
             .unwrap();
         let Clip::Video(m) = placed else { panic!() };
         assert_eq!(m.media_id, media_id);
-        assert!((m.position_secs - 2.0).abs() < 1e-9);
-        assert!((m.timeline_duration_secs() - 5.0).abs() < 1e-9);
+        assert!((m.start_us - 2000000).abs() < 1);
+        assert!((m.timeline_duration_us() - 5000000).abs() < 1);
         let placed_audio = p
             .all_tracks()
             .find_map(|t| t.find_clip(audio_clip_id))
@@ -1001,10 +1012,11 @@ mod tests {
             &mut p,
             Command::AddCaption {
                 track_id: cap,
-                text: "hi".into(),
-                position_secs: 0.0,
-                duration_secs: 1.0,
-                style_id: "default".into(),
+                body: crate::commands::BodyInput::text("hi"),
+                start: Time::Us(0),
+                duration: Time::Us(1000000),
+                style: Some(crate::project::TextStyleRef::builtin("default")),
+                animations: None,
             },
         )
         .unwrap()
@@ -1128,8 +1140,8 @@ mod tests {
         assert_eq!(p.tracks.len(), 2);
         let restored = &p.tracks[1].clips;
         assert_eq!(restored.len(), 1);
-        assert!((restored[0].position_secs() - 3.0).abs() < 1e-9);
-        assert!((restored[0].duration_secs() - 2.0).abs() < 1e-9);
+        assert!((restored[0].start_us() - 3000000).abs() < 1);
+        assert!((restored[0].duration_us() - 2000000).abs() < 1);
         assert!(p.validate().is_ok());
     }
 

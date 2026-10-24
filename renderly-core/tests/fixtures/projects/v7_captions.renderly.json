@@ -1,0 +1,94 @@
+{
+  "schema_version": 7,
+  "id": "78787878-7878-4878-8878-787878787878",
+  "name": "fixture v7 captions",
+  "settings": {
+    "fps": 30.0,
+    "width": 1080,
+    "height": 1920,
+    "sample_rate": 48000,
+    "duck_db": -12.0
+  },
+  "media": [
+    {
+      "id": "a8000000-0000-4000-8000-000000000001",
+      "path": "media/talk.mp4",
+      "kind": "video",
+      "duration_secs": 30.0,
+      "width": 1920,
+      "height": 1080,
+      "fps": 30.0
+    }
+  ],
+  "tracks": [
+    {
+      "id": "b8000000-0000-4000-8000-000000000001",
+      "kind": "video",
+      "name": "V1",
+      "clips": [
+        {
+          "type": "video",
+          "id": "c8000000-0000-4000-8000-000000000001",
+          "media_id": "a8000000-0000-4000-8000-000000000001",
+          "position_secs": 0.0,
+          "source_in_secs": 0.0,
+          "source_out_secs": 10.0,
+          "gain_db": 0.0,
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "id": "b8000000-0000-4000-8000-000000000002",
+      "kind": "caption",
+      "name": "Shared style",
+      "clips": [
+        {
+          "type": "caption",
+          "id": "c8000000-0000-4000-8000-000000000002",
+          "text": "Hello there",
+          "position_secs": 0.5,
+          "duration_secs": 1.5,
+          "style_id": "tiktok-box"
+        },
+        {
+          "type": "caption",
+          "id": "c8000000-0000-4000-8000-000000000003",
+          "text": "General Kenobi",
+          "position_secs": 2.0,
+          "duration_secs": 2.0,
+          "style_id": "tiktok-box"
+        }
+      ]
+    },
+    {
+      "id": "b8000000-0000-4000-8000-000000000003",
+      "kind": "caption",
+      "name": "Mixed styles",
+      "clips": [
+        {
+          "type": "caption",
+          "id": "c8000000-0000-4000-8000-000000000004",
+          "text": "One",
+          "position_secs": 5.0,
+          "duration_secs": 1.0,
+          "style_id": "tiktok-minimal"
+        },
+        {
+          "type": "caption",
+          "id": "c8000000-0000-4000-8000-000000000005",
+          "text": "Two",
+          "position_secs": 6.0,
+          "duration_secs": 1.0,
+          "style_id": "My Pack Style"
+        }
+      ]
+    },
+    {
+      "id": "b8000000-0000-4000-8000-000000000004",
+      "kind": "caption",
+      "name": "Empty",
+      "clips": []
+    }
+  ]
+}

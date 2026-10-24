@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useEditorStore } from "../../store/editorStore";
 import { setClipMask } from "../../lib/commands";
 import { defaultMask, switchMaskShape } from "../../lib/maskMath";
-import type { AdjustmentClip, ClipMask, MediaClip, Track } from "../../lib/types";
+import type { ClipMask, EffectClip, Track } from "../../lib/types";
 
 /// Shared "Mask" disclosure: used by the media-clip inspector and the adjustment-layer
 /// inspector. Both clip kinds carry `mask` and take `SetClipMask`; the only difference is the
@@ -14,7 +14,7 @@ export function MaskSection({
   hint,
 }: {
   track: Track;
-  clip: MediaClip | AdjustmentClip;
+  clip: EffectClip;
   hint?: string;
 }) {
   const dispatch = useEditorStore((s) => s.dispatch);

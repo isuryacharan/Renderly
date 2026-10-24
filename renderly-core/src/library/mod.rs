@@ -288,11 +288,15 @@ impl Library {
     /// edits show without reinstalling. A release whose folder does not load is left out (see
     /// [`Library::list`] for why).
     pub fn load_all(&self) -> Vec<LoadedPack> {
-        self.installs
+        let mut packs: Vec<LoadedPack> = self
+            .installs
             .iter()
             .filter(|i| i.enabled)
             .filter_map(|i| load_pack(&self.location(i)).ok())
-            .collect()
+            .collect();
+        // Newest release first, so a ref held by several releases resolves to the newest.
+        packs.sort_by_key(|p| std::cmp::Reverse(release_key(p)));
+        packs
     }
 
     /// Resolves `item_ref` across every enabled release. When several releases hold the ref,
@@ -433,5 +437,129 @@ mod tests {
         assert!(!safe_segment("a/b"));
         assert!(!safe_segment("a\\b"));
         assert!(!safe_segment(".hidden"));
+    }
+}
+
+/// What [`adopt_legacy_paths`] did with a project's transitional `legacy_pack_paths`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct AdoptReport {
+    /// Pack folders now in the library, as `local.<id>` (or their own id) packs. Their paths
+    /// were removed from the project.
+    pub installed: Vec<String>,
+    /// Folders left in `legacy_pack_paths`, with why: WASM plugin folders (plugins are not
+    /// library items yet), missing folders, and packs that would not install.
+    pub kept: Vec<(String, String)>,
+}
+
+impl AdoptReport {
+    /// True when the project's list changed (so a host should mark it modified).
+    pub fn changed(&self) -> bool {
+        !self.installed.is_empty()
+    }
+}
+
+/// Install the pack folders a v7 project listed (`legacy_pack_paths`, schema v8's transitional
+/// field) into `library` as `local.<id>` packs and remove them from the project; hosts call this
+/// when they open a project, so refs rewritten by the migration (`pack:local.<id>/<item>@1`)
+/// resolve. Relative paths resolve against `base_dir` (the project file's folder). Folders that
+/// hold a `plugin.json` (WASM plugins) stay in the list until plugins move into packs; folders
+/// that are missing or do not install stay too, and are reported. Installing the same release
+/// twice is a no-op, so running this on every open is safe.
+///
+/// Core's `Project::from_json` never calls this: loading stays pure.
+pub fn adopt_legacy_paths(
+    project: &mut crate::project::Project,
+    library: &mut Library,
+    base_dir: Option<&Path>,
+) -> AdoptReport {
+    let mut report = AdoptReport::default();
+    let mut kept_paths = Vec::new();
+    for path in std::mem::take(&mut project.legacy_pack_paths) {
+        let resolved = if path.is_absolute() {
+            path.clone()
+        } else {
+            base_dir.map_or_else(|| path.clone(), |b| b.join(&path))
+        };
+        let shown = path.display().to_string();
+        if resolved.join("plugin.json").is_file() && !resolved.join("pack.json").is_file() {
+            report.kept.push((
+                shown,
+                "WASM plugin folder (plugins are not library items yet)".into(),
+            ));
+            kept_paths.push(path);
+            continue;
+        }
+        if !resolved.join("pack.json").is_file() {
+            report
+                .kept
+                .push((shown, "no pack.json in this folder".into()));
+            kept_paths.push(path);
+            continue;
+        }
+        match library.install(&resolved) {
+            Ok(installed) => report.installed.push(installed.pack_id),
+            Err(e) => {
+                report.kept.push((shown, e.to_string()));
+                kept_paths.push(path);
+            }
+        }
+    }
+    project.legacy_pack_paths = kept_paths;
+    report
+}
+
+/// [`adopt_legacy_paths`] against the default library (`RENDERLY_LIBRARY_DIR` or the user
+/// folder). A library that cannot be opened keeps every path and says why.
+pub fn adopt_legacy_paths_default(
+    project: &mut crate::project::Project,
+    base_dir: Option<&Path>,
+) -> AdoptReport {
+    if project.legacy_pack_paths.is_empty() {
+        return AdoptReport::default();
+    }
+    match Library::open(&default_root()) {
+        Ok(mut library) => adopt_legacy_paths(project, &mut library, base_dir),
+        Err(e) => AdoptReport {
+            installed: Vec::new(),
+            kept: project
+                .legacy_pack_paths
+                .iter()
+                .map(|p| (p.display().to_string(), e.to_string()))
+                .collect(),
+        },
+    }
+}
+
+/// Test support: run against a throw-away library folder. `RENDERLY_LIBRARY_DIR` is
+/// process-wide, so holders serialise on one lock; the folder and the variable are cleaned up
+/// when the guard drops.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::path::PathBuf;
+    use std::sync::{Mutex, MutexGuard};
+
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    pub(crate) struct IsolatedLibrary {
+        _guard: MutexGuard<'static, ()>,
+        pub(crate) root: PathBuf,
+    }
+
+    pub(crate) fn isolated_library() -> IsolatedLibrary {
+        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("renderly-lib-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("create temp library");
+        std::env::set_var("RENDERLY_LIBRARY_DIR", &root);
+        IsolatedLibrary {
+            _guard: guard,
+            root,
+        }
+    }
+
+    impl Drop for IsolatedLibrary {
+        fn drop(&mut self) {
+            std::env::remove_var("RENDERLY_LIBRARY_DIR");
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
     }
 }

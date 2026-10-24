@@ -2,6 +2,7 @@
 
 use crate::media::{ffmpeg_available, ffmpeg_path, FfmpegCliError};
 use crate::proc::SerialSpawn;
+use crate::time::seconds_to_us;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
@@ -16,20 +17,20 @@ pub enum AnalysisError {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SilenceSpan {
-    pub start_secs: f64,
-    pub end_secs: f64,
-    pub duration_secs: f64,
+    pub start_us: i64,
+    pub end_us: i64,
+    pub duration_us: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SceneCut {
-    pub time_secs: f64,
+    pub time_us: i64,
     pub score: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioPeaks {
-    pub bucket_secs: f64,
+    pub bucket_us: i64,
     pub peaks: Vec<f32>,
 }
 
@@ -37,13 +38,16 @@ pub struct AudioPeaks {
 pub fn detect_silence(
     path: &Path,
     noise_db: f64,
-    min_duration_secs: f64,
+    min_duration_us: i64,
 ) -> Result<Vec<SilenceSpan>, AnalysisError> {
     if !ffmpeg_available() {
         return Err(FfmpegCliError::NotFound.into());
     }
 
-    let filter = format!("silencedetect=noise={noise_db}dB:d={min_duration_secs}");
+    let filter = format!(
+        "silencedetect=noise={noise_db}dB:d={:.6}",
+        crate::time::us_to_seconds(min_duration_us)
+    );
     let output = crate::proc::command(ffmpeg_path()?)
         .args(["-hide_banner", "-i"])
         .arg(path)
@@ -70,10 +74,12 @@ fn parse_silence(stderr: &str) -> Result<Vec<SilenceSpan>, AnalysisError> {
         if let Some(rest) = line.split("silence_end:").nth(1) {
             let end_str = rest.split('|').next().unwrap_or(rest).trim();
             if let (Some(s), Ok(end)) = (start.take(), end_str.parse::<f64>()) {
+                let start_us = seconds_to_us(s);
+                let end_us = seconds_to_us(end);
                 spans.push(SilenceSpan {
-                    start_secs: s,
-                    end_secs: end,
-                    duration_secs: end - s,
+                    start_us,
+                    end_us,
+                    duration_us: end_us - start_us,
                 });
             }
         }
@@ -120,7 +126,7 @@ fn parse_scenes(stderr: &str, threshold: f64) -> Result<Vec<SceneCut>, AnalysisE
         if line.contains("showinfo") && line.contains("pts_time:") {
             if let Some(t) = pending_time.take() {
                 cuts.push(SceneCut {
-                    time_secs: t,
+                    time_us: seconds_to_us(t),
                     score: pending_score.take().unwrap_or(threshold),
                 });
             }
@@ -138,7 +144,7 @@ fn parse_scenes(stderr: &str, threshold: f64) -> Result<Vec<SceneCut>, AnalysisE
     }
     if let Some(t) = pending_time {
         cuts.push(SceneCut {
-            time_secs: t,
+            time_us: seconds_to_us(t),
             score: pending_score.unwrap_or(threshold),
         });
     }
@@ -162,8 +168,8 @@ pub fn audio_peaks(path: &Path, buckets: u32) -> Result<AudioPeaks, AnalysisErro
         return Err(AnalysisError::Parse("buckets must be > 0".into()));
     }
 
-    let duration = media_duration(path).max(0.1);
-    let bucket_secs = duration / buckets as f64;
+    let duration_us = media_duration(path).max(100_000);
+    let bucket_us = (duration_us as f64 / buckets as f64).round() as i64;
 
     // ~6 PCM samples per UI bucket is enough for an envelope. Cap the rate so short clips
     // still get enough resolution and long clips stay cheap to decode. The signal is
@@ -172,7 +178,8 @@ pub fn audio_peaks(path: &Path, buckets: u32) -> Result<AudioPeaks, AnalysisErro
     // drew them flat. Rectified, the resampler keeps the amplitude envelope (the mean of
     // |signal| — about 0.64 of the peak for a sine), which is what a waveform view needs.
     let target_samples = (buckets as f64 * 6.0).max(buckets as f64);
-    let sample_rate = ((target_samples / duration).ceil() as u32).clamp(50, 4_000);
+    let sample_rate =
+        ((target_samples / (duration_us as f64 / 1_000_000.0)).ceil() as u32).clamp(50, 4_000);
 
     let output = crate::proc::command(ffmpeg_path()?)
         .args(["-hide_banner", "-loglevel", "error", "-i"])
@@ -205,7 +212,7 @@ pub fn audio_peaks(path: &Path, buckets: u32) -> Result<AudioPeaks, AnalysisErro
             || stderr.contains("matches no streams")
         {
             return Ok(AudioPeaks {
-                bucket_secs,
+                bucket_us,
                 peaks: Vec::new(),
             });
         }
@@ -222,7 +229,7 @@ pub fn audio_peaks(path: &Path, buckets: u32) -> Result<AudioPeaks, AnalysisErro
     let samples: &[f32] = bytemuck::cast_slice(&output.stdout);
     let peaks = bucket_peaks(samples, buckets);
 
-    Ok(AudioPeaks { bucket_secs, peaks })
+    Ok(AudioPeaks { bucket_us, peaks })
 }
 
 /// Downsample `samples` into `buckets` peak values. Boundaries are computed as exact
@@ -250,16 +257,16 @@ fn bucket_peaks(samples: &[f32], buckets: u32) -> Vec<f32> {
     peaks
 }
 
-fn media_duration(path: &Path) -> f64 {
+fn media_duration(path: &Path) -> i64 {
     if let Ok(p) = crate::media::probe(path) {
-        if let Some(d) = p.duration_secs {
+        if let Some(d) = p.duration_us {
             return d;
         }
     }
     if let Ok(v) = crate::media::probe_video(path) {
-        return v.duration_secs;
+        return v.duration_us;
     }
-    60.0
+    60_000_000
 }
 
 #[cfg(test)]
@@ -271,7 +278,7 @@ mod tests {
         let stderr = "[silencedetect @ 0x1] silence_start: 1.5\n[silencedetect @ 0x1] silence_end: 3.0 | silence_duration: 1.5\n";
         let spans = parse_silence(stderr).unwrap();
         assert_eq!(spans.len(), 1);
-        assert!((spans[0].duration_secs - 1.5).abs() < 1e-9);
+        assert!((spans[0].duration_us - 1500000).abs() < 1);
     }
 
     /// Regression: a steady 440 Hz tone over a long clip used to come back nearly flat
@@ -364,9 +371,9 @@ mod tests {
 ";
         let cuts = parse_scenes(stderr, 0.4).unwrap();
         assert_eq!(cuts.len(), 2);
-        assert!((cuts[0].time_secs - 0.0).abs() < 1e-9);
+        assert_eq!(cuts[0].time_us, 0);
         assert!((cuts[0].score - 0.812345).abs() < 1e-6);
-        assert!((cuts[1].time_secs - 1.1).abs() < 1e-9);
+        assert!((cuts[1].time_us - 1100000).abs() < 1);
         assert!((cuts[1].score - 0.4).abs() < 1e-9);
     }
 }

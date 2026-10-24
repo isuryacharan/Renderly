@@ -129,14 +129,23 @@ manifest, shader text, decoded textures and LUTs arrive as data.
   (a pack `.cube` LUT as its `lut` param). Transitions: `crossfade`, `fade_black`,
   `wipe_left/right/up/down`, `slide_left/right`, `iris`, `blur_dissolve`. Item ids are the
   bare names (`builtin:<name>@1`).
-- `compose/effects` and `compose/transition.rs` resolve the project's ids onto those items:
-  `builtin:<name>` (locked v7 ids, `BUILTIN_EFFECT_IDS`) to `<name>`, a pack LUT
-  `pack:<pack>:lut:<id>` to `lut_filter` with the cube bound as `lut`, and a `TransitionKind`
-  to the item of the same name (`TransitionKind::as_str`). Effects run in list order, as
-  before; each is skipped when it resolves to nothing or its `bypass` holds.
-- Defaults, ranges and the id lists come from the manifests: `default_params` and
-  `clamp_effect_params` read them, and unit tests check that `BUILTIN_EFFECT_IDS` and
-  `TransitionKind::ALL` agree with the builtin items.
+- `compose/effects` and `compose/transition.rs` resolve the project's refs onto items through
+  `packs::status::resolve_target` (the same resolver for builtins, installed pack items and LUTs):
+  `builtin:<name>@1` to the compiled builtin, `pack:<pack>/<item>@<v>` to that pack's compiled
+  item (the host passes the loaded packs into the compositor, which stays pure), a pack LUT to
+  `lut_filter` with the cube bound as `lut`, a LUT-typed param to a bound 3D texture, and a
+  format-1 transition alias to the builtin it names. The stack arrives already flattened in
+  render order (filter, key, adjust, `effects[]`) with effect-parameter keyframes evaluated
+  (`compose::eval`), so the compositor runs one list; an instance that resolves to nothing
+  (`missing`, `disabled`, a `wasm:*` plugin) or whose `bypass` holds is skipped and the picture
+  passes through. Each run gets the clip's effect clock (`FxTiming`: seconds since the effect
+  started, following clip speed, duration, frame, speed) and a per-instance seed.
+- Blend modes: a layer with `blend_mode` other than `normal` is drawn by a second composite
+  pipeline that reads a copy of the accumulation (premultiplied) and writes the W3C blend; an
+  adjustment layer blends its adjusted picture over the unadjusted one (`blend.wgsl`).
+- Defaults, ranges and the ref lists come from the manifests: `default_params`,
+  `manifest_params` and `validate_params` read them, and unit tests check that
+  `BUILTIN_EFFECT_REFS` and `builtins::transition_ids()` agree with the builtin items.
 - `bypass` (format extension, optional): a boolean `expr.v1` over the params (no host values).
   When it holds, the item is the identity and runs no passes (for example blur at radius below
   0.5). Without it, the builtins would cost passes at their defaults.
@@ -320,15 +329,15 @@ backend is audio + tick-clock duties, owning two long-lived workers managed from
 `scrub_audio`) never block the async runtime's worker pool for more than a clone + a
 channel send:
 
-- A **play-session worker thread**, spawned by `play(time_secs)` and torn down by
+- A **play-session worker thread**, spawned by `play(time_us)` and torn down by
   `pause()`/a new `play()`/session switch. It pre-mixes timeline audio **once**, for
-  `[time_secs, duration)`, into a temp WAV via `mix_timeline_audio_range_to_file` (a
+  `[time_us, duration)`, into a temp WAV via `mix_timeline_audio_range_to_file` (a
   single ffmpeg filtergraph, not one spawn per playback chunk), starts a rodio `Sink`
   on it, then loops: `t = start + clock`, where `clock` is `Sink::get_pos()` when audio
   is present (rodio quantizes this to buffer boundaries, so it's read directly rather
   than blended with a wall-clock delta) or `Instant::elapsed()` when the timeline has
   no audio; emit `playback:tick` at ~30 Hz so the webview's own clock can slew to it.
-  A `seek(time_secs)` call while playing writes into a one-slot `Mutex<Option<f64>>`
+  A `seek(time_us)` call while playing writes into a one-slot `Mutex<Option<i64>>`
   that the loop checks every iteration and coalesces (a newer seek arriving before the
   loop observes an older one simply overwrites it) — on observing one it stops the sink,
   discards the temp WAV, and restarts the pre-mix/sink from the new position.
@@ -401,12 +410,12 @@ in `spawn_blocking`, outside any lock. Play/seek/refresh take `Arc::clone` of th
 
 | Event | Payload | Emitted by |
 |---|---|---|
-| `playback:tick` | `{ time_secs: f64, playing: bool }` | ~30 Hz while playing; once on seek/EOF |
-| `playback:state` | `{ playing: bool, time_secs: f64 }` | play start, pause, end-of-timeline |
+| `playback:tick` | `{ time_us: i64, playing: bool }` | ~30 Hz while playing; once on seek/EOF |
+| `playback:state` | `{ playing: bool, time_us: i64 }` | play start, pause, end-of-timeline |
 | `playback:error` | `{ message: string }` | audio pre-mix failure mid-play (toast, no crash) |
 | `project:changed` | `{ revision: u64, can_undo: bool, can_redo: bool }` | every successful `apply_command`, `undo`, `redo`, and on project open/new/quick-start |
-| `media:thumbnails-ready` | `{ media_id, strip_path, cols, rows, tile_width, tile_height, interval_secs }` | media asset worker, on import and on project open (cache hit or fresh generation) |
-| `media:waveform-ready` | `{ media_id, peaks: f32[], bucket_secs }` | media asset worker, same triggers as above |
+| `media:thumbnails-ready` | `{ media_id, strip_path, cols, rows, tile_width, tile_height, interval_us }` | media asset worker, on import and on project open (cache hit or fresh generation) |
+| `media:waveform-ready` | `{ media_id, peaks: f32[], bucket_us }` | media asset worker, same triggers as above |
 | `export:progress` | `{ phase: "video"\|"audio"\|"mux", frame, total_frames, fraction }` | ~10 Hz during `export_project`; `cancel_export` stops at the next checkpoint |
 
 ### Tauri command surface (M7)
@@ -458,7 +467,7 @@ or opening a project with many items never slows down `apply_command`/`undo`/`re
   (`lib/ipc.ts::assetUrl`), not base64-encoded over IPC.
 - **Frontend rendering:** `timeline/renderer.ts` tiles the strip image across a video
   clip's rectangle, sampling the tile nearest each on-screen column's source time (mapped
-  through `source_in_secs`/`source_out_secs`, so a trimmed clip shows only its trimmed
+  through `source_in_us`/`source_out_us`, so a trimmed clip shows only its trimmed
   sub-range); audio clips draw a `Path2D`-free (plain `fillRect` bars) waveform sliced the
   same way from the peaks array. `MediaPanel.tsx`'s bin cards show a hover-scrub
   filmstrip (mouse X position selects which strip tile to display via CSS
@@ -573,8 +582,9 @@ Users of transactions:
   base-index bookkeeping.
 - **Batches** (`apply_commands`): one record per batch. The batch is already atomic, so it is
   a record rather than a transaction.
-- **Batch "apply to all"** (later, see docs/schema-v8-design.md): one command applying to many
-  targets is one record.
+- **Batch "apply to all"** (`targets` on `SetClipEffects`, `SetClipTransition` and
+  `SetClipTransform`): one command applying to many targets is one record, and it is atomic (a
+  bad target changes none).
 - **CLI `apply-script`**: one transaction. Any failing command rolls the whole script back.
 
 ### Coalescing
@@ -612,8 +622,11 @@ change: it is not saved, not in undo, and not a `Command`.
   - `opacity`: a value replacing the clip's opacity (adjustment layers use their own `opacity`
     field; media clips use `transform.opacity`).
   - `effects`: a full effect stack replacing the clip's `effects`, in `EffectInstance` shape
-    (`{id, effect_id, enabled, params}`). Hover preview sends the current stack plus one
+    (`{id, ref, enabled, params}`) in render order (filter, key, adjust, then `effects[]`);
+    it takes the place of every slot. Hover preview sends the current stack plus one
     temporary instance.
+  - `transition`: a full `ClipTransition` (`{ref, duration_us, params, easing}`) replacing the
+    clip's outgoing transition (media clips only). Hover preview of a transition sets it.
 - API (core): `PreviewOverrides` with `set(target, override)`, `clear(target)`, `clear_all()`,
   `is_empty()` and `apply(&Project) -> Cow<Project>`. `apply` borrows when there are no
   overrides, so the common path costs nothing. Unknown targets are ignored.

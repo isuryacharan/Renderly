@@ -1,34 +1,25 @@
-import { useEditorStore } from "../../store/editorStore";
-import { setClipEffects } from "../../lib/commands";
-import type { AdjustmentClip, MediaClip, Track } from "../../lib/types";
-import { EffectList } from "../leftpanel/EffectsPanel";
+import { stackItems } from "../../lib/effects";
+import type { EffectClip, Track } from "../../lib/types";
+import { EffectStack } from "./EffectStack";
 
-/// Shared "Effects · N" disclosure with the editable effect stack: used by the media-clip
-/// inspector and the adjustment-layer inspector (both take `SetClipEffects`). Effects are added
-/// from the left-panel Effects tab, which offers the right catalog for the selected clip kind.
+/// Shared "Effects · N" disclosure with the editable effect stack (filter / key / adjust slots,
+/// then the effects list): used by the media-clip inspector and the adjustment-layer inspector.
+/// Effects are added from the left-panel Effects / Filters / Adjust tabs, which offer the right
+/// catalogue items for the selected clip kind.
 export function EffectStackSection({
   track,
   clip,
 }: {
   track: Track;
-  clip: MediaClip | AdjustmentClip;
+  clip: EffectClip;
 }) {
-  const dispatch = useEditorStore((s) => s.dispatch);
-  const effects = clip.effects ?? [];
-  if (effects.length === 0) return null;
+  const count = stackItems(clip).length;
+  if (count === 0) return null;
   return (
     <details className="insp-disclosure" open>
-      <summary>Effects · {effects.length}</summary>
+      <summary>Effects · {count}</summary>
       <div className="inspector-section insp-disclosure-body">
-        <EffectList
-          track={track}
-          clip={clip}
-          effects={effects}
-          locked={track.locked}
-          onCommit={async (next, opts) => {
-            await dispatch(setClipEffects(track.id, clip.id, next), false, opts);
-          }}
-        />
+        <EffectStack track={track} clip={clip} />
       </div>
     </details>
   );

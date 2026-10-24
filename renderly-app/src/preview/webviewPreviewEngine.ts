@@ -16,10 +16,11 @@
 // pre-seek, and seek-correction logic below are shared by both modes.
 
 import type { Clip, ClipTransform, MediaClip, MediaItem, Project, Track } from "../lib/types";
-import { IDENTITY_TRANSFORM, clipDurationSecs } from "../lib/types";
+import { IDENTITY_TRANSFORM, clipDurationUs } from "../lib/types";
+import { fpsToNumber, normalizeFps, usToSecs } from "../lib/time";
 import { containerView } from "../lib/container";
 import { PreviewAssetSync } from "./previewAssets";
-import type { PreviewAssetBackend } from "./previewAssets";
+import type { PackTexture, PreviewAssetBackend } from "./previewAssets";
 
 /// Minimal structural type for renderly-wasm's WasmCompositor (the real .d.ts lives in the
 /// gitignored generated pkg, so we don't import its types at build time).
@@ -32,17 +33,18 @@ interface WasmCompositorLike {
   /// Open a nested sequence for preview (`undefined`/null = root timeline). Absent on a wasm
   /// package built before the sequences UI - the engine then simply keeps showing the root.
   set_active_sequence?(sequenceId: string | undefined): void;
-  render(timeSecs: number, sources: object): void;
+  /// Times passed to the compositor are integer µs (schema v8).
+  render(timeUs: number, sources: object): void;
   /// JSON describing every media element a frame needs, including layers inside nested
   /// sequences (schema v7) — see `NestedLayerInfo` and renderly-wasm's `active_media_layers`.
-  active_media_layers(timeSecs: number): string;
-  // Host-supplied assets (previewAssets.ts): file-backed mattes and pack .cube LUTs.
+  active_media_layers(timeUs: number): string;
+  // Host-supplied assets (previewAssets.ts): file-backed mattes and pack item files.
   required_assets(): string;
-  required_frame_mattes?(timeSecs: number): string;
+  required_frame_mattes?(timeUs: number): string;
   set_matte(key: string, width: number, height: number, rgba: Uint8Array): void;
   remove_matte(key: string): void;
-  set_pack_lut(packId: string, lutId: string, cubeText: string): void;
-  clear_pack_luts(): void;
+  set_pack_item(itemJson: string, textures: PackTexture[] | undefined): void;
+  clear_pack_items(): void;
   free(): void;
 }
 
@@ -84,6 +86,7 @@ type NestedLayerInfo = {
   /// layers: the same media can be live twice in one frame at different source times).
   key: string;
   media_id: string;
+  /// Media time to show, in integer µs (convert to seconds for `video.currentTime`).
   source_time: number;
   /// Media seconds per timeline second (clip speed x enclosing sequence-clip speeds).
   rate: number;
@@ -95,6 +98,7 @@ type ActiveLayer = {
   trackId: string;
   clip: MediaClip;
   media: MediaItem;
+  /// Media time in SECONDS (an HTMLMediaElement `currentTime` value).
   sourceTimeSecs: number;
   /// True when this layer must be tracked on the SECONDARY pooled element for its media id
   /// (see `secondaryVideoPool`) rather than the primary one — set for a transition-incoming
@@ -114,17 +118,17 @@ function activeLayersAt(project: Project, t: number): ActiveLayer[] {
     let best: MediaClip | null = null;
     for (const clip of track.clips as Clip[]) {
       if (clip.type !== "video" || !clip.enabled) continue;
-      const dur = clipDurationSecs(clip);
-      const end = clip.position_secs + dur;
-      if (t >= clip.position_secs && t < end) {
-        if (!best || clip.position_secs > best.position_secs) best = clip;
+      const dur = clipDurationUs(clip);
+      const end = clip.start_us + dur;
+      if (t >= clip.start_us && t < end) {
+        if (!best || clip.start_us > best.start_us) best = clip;
       }
     }
     if (!best) continue;
     const media = project.media.find((m) => m.id === best!.media_id);
     if (!media) continue;
     const speed = best.speed && best.speed > 0 ? best.speed : 1;
-    const sourceTimeSecs = best.source_in_secs + (t - best.position_secs) * speed;
+    const sourceTimeSecs = usToSecs(best.source_in_us + (t - best.start_us) * speed);
     layers.push({ trackId: track.id, clip: best, media, sourceTimeSecs });
   }
   return layers;
@@ -142,18 +146,18 @@ function transitionPairFor(
 ): { outgoing: MediaClip; windowStart: number } | null {
   const clips = (track.clips as Clip[])
     .filter((c): c is MediaClip => c.type === "video" && c.enabled)
-    .sort((a, b) => a.position_secs - b.position_secs);
+    .sort((a, b) => a.start_us - b.start_us);
   for (let i = 0; i < clips.length; i++) {
     const v = clips[i];
     const tr = v.outgoing_transition;
-    if (!tr || tr.duration_secs <= 0) continue;
+    if (!tr || tr.duration_us <= 0) continue;
     const incoming = clips[i + 1];
     if (!incoming || incoming.id !== clip.id) continue;
-    const end = v.position_secs + clipDurationSecs(v);
-    if (Math.abs(incoming.position_secs - end) > 0.05 && incoming.position_secs < end - 1e-6) {
+    const end = v.start_us + clipDurationUs(v);
+    if (Math.abs(incoming.start_us - end) > ADJACENT_TOLERANCE_US && incoming.start_us < end - 1) {
       continue;
     }
-    return { outgoing: v, windowStart: end - tr.duration_secs };
+    return { outgoing: v, windowStart: end - tr.duration_us };
   }
   return null;
 }
@@ -163,13 +167,13 @@ function transitionPairFor(
 ///
 /// BUG B fix: for a clip that is the INCOMING side of a transition, the frame that actually
 /// needs to be ready is the one at the transition WINDOW's start (`cut - duration`), which
-/// can be well before the clip's nominal `position_secs` for short transitions on a long
+/// can be well before the clip's nominal `start_us` for short transitions on a long
 /// clip run — `transitionIncomingLayers` starts managing/seeking the element the instant the
 /// window opens, so if pre-seek hasn't primed it by then the element is unready for that
 /// frame and the compositor silently drops that side of the blend (looks like "transition
 /// doesn't render"). Anchor the pre-seek horizon on the window start instead of the clip
 /// start for such clips.
-function upcomingLayers(project: Project, t: number, horizonSecs: number): ActiveLayer[] {
+function upcomingLayers(project: Project, t: number, horizonUs: number): ActiveLayer[] {
   const layers: ActiveLayer[] = [];
   for (const track of project.tracks) {
     if (track.kind !== "video" || track.hidden) continue;
@@ -179,9 +183,9 @@ function upcomingLayers(project: Project, t: number, horizonSecs: number): Activ
     for (const clip of track.clips as Clip[]) {
       if (clip.type !== "video" || !clip.enabled) continue;
       const pair = transitionPairFor(track, clip);
-      const anchor = pair?.windowStart ?? clip.position_secs;
+      const anchor = pair?.windowStart ?? clip.start_us;
       const startsIn = anchor - t;
-      if (startsIn > 0 && startsIn <= horizonSecs) {
+      if (startsIn > 0 && startsIn <= horizonUs) {
         if (!best || anchor < bestAnchor) {
           best = clip;
           bestAnchor = anchor;
@@ -196,7 +200,7 @@ function upcomingLayers(project: Project, t: number, horizonSecs: number): Activ
       trackId: track.id,
       clip: best,
       media,
-      sourceTimeSecs: best.source_in_secs,
+      sourceTimeSecs: usToSecs(best.source_in_us),
       useSecondary: bestUseSecondary,
     });
   }
@@ -223,17 +227,17 @@ function transitionIncomingLayers(project: Project, t: number): ActiveLayer[] {
     if (track.kind !== "video" || track.hidden) continue;
     const clips = (track.clips as Clip[])
       .filter((c): c is MediaClip => c.type === "video" && c.enabled)
-      .sort((a, b) => a.position_secs - b.position_secs);
+      .sort((a, b) => a.start_us - b.start_us);
     for (let i = 0; i < clips.length; i++) {
       const v = clips[i];
       const tr = v.outgoing_transition;
-      if (!tr || tr.duration_secs <= 0) continue;
-      const end = v.position_secs + clipDurationSecs(v);
-      const windowStart = end - tr.duration_secs;
+      if (!tr || tr.duration_us <= 0) continue;
+      const end = v.start_us + clipDurationUs(v);
+      const windowStart = end - tr.duration_us;
       if (t < windowStart || t >= end) continue;
       const incoming = clips[i + 1];
       if (!incoming) continue;
-      if (Math.abs(incoming.position_secs - end) > 0.05 && incoming.position_secs < end - 1e-6) {
+      if (Math.abs(incoming.start_us - end) > ADJACENT_TOLERANCE_US && incoming.start_us < end - 1) {
         continue;
       }
       const media = project.media.find((m) => m.id === incoming.media_id);
@@ -243,7 +247,7 @@ function transitionIncomingLayers(project: Project, t: number): ActiveLayer[] {
         trackId: track.id,
         clip: incoming,
         media,
-        sourceTimeSecs: incoming.source_in_secs + (t - windowStart) * speed,
+        sourceTimeSecs: usToSecs(incoming.source_in_us + (t - windowStart) * speed),
         useSecondary: v.media_id === incoming.media_id,
       });
       break;
@@ -280,9 +284,13 @@ function coverSourceRect(
   return { sx: ((srcW - sw) * (1 + fx)) / 2, sy: ((srcH - sh) * (1 + fy)) / 2, sw, sh };
 }
 
+/// Media-element drift tolerance (seconds: compared against `video.currentTime`).
 const SEEK_CORRECT_THRESHOLD_SECS = 0.08;
-const PRESEEK_HORIZON_SECS = 0.5;
-const DRIFT_SNAP_THRESHOLD_SECS = 0.25;
+/// Timeline-clock constants are integer µs like every other timeline time.
+const PRESEEK_HORIZON_US = 500_000;
+const DRIFT_SNAP_THRESHOLD_US = 250_000;
+/// Two clips count as adjacent for a transition when their gap is within this (µs).
+const ADJACENT_TOLERANCE_US = 50_000;
 const DRIFT_SLEW_FACTOR = 0.2;
 /// BUG 3 fix: a `seek()` call while playing only rebases the local clock when the target
 /// is at least this far from where the clock already predicts playback to be. Ordinary
@@ -290,7 +298,7 @@ const DRIFT_SLEW_FACTOR = 0.2;
 /// tracking correctly" means) and must NOT re-trigger a rebase — only `onTick`'s slew
 /// should touch the clock for those. A user scrub produces a large, instantaneous jump,
 /// which is what this threshold is tuned to catch.
-const SEEK_REBASE_THRESHOLD_SECS = 0.15;
+const SEEK_REBASE_THRESHOLD_US = 150_000;
 /// After a scrub-during-playback rebase, give the <video> elements this long to actually
 /// seek and settle before `manageElements`' per-frame drift correction resumes hard-seeking
 /// them — without this, the rebase and the immediate next frame's drift correction (video
@@ -359,9 +367,10 @@ export class WebviewPreviewEngine {
   private nestedImageKeys = new Map<string, string>();
 
   private playing = false;
-  private clockBaseSecs = 0;
+  /// Playback clock in timeline µs; `clockBasePerf` is the `performance.now()` (ms) it was set at.
+  private clockBaseUs = 0;
   private clockBasePerf = 0;
-  private pausedTimeSecs = 0;
+  private pausedTimeUs = 0;
 
   /// `performance.now()` timestamp before which `manageElements`' per-frame drift
   /// correction should hold off — set by `seek()` right after a scrub-during-playback
@@ -490,9 +499,7 @@ export class WebviewPreviewEngine {
       this.assets = new PreviewAssetSync(
         this.gpu,
         this.assetBackend,
-        () => this.drawFrame(this.currentTimeSecs()),
-        undefined,
-        () => this.project?.asset_pack_paths ?? [],
+        () => this.drawFrame(this.currentTimeUs()),
       );
       void this.assets.sync();
     }
@@ -504,7 +511,7 @@ export class WebviewPreviewEngine {
       this.applyCanvasTransform();
     }
     this.ready = true;
-    this.drawFrame(this.currentTimeSecs());
+    this.drawFrame(this.currentTimeUs());
   }
 
   private applyCanvasTransform(): void {
@@ -532,7 +539,7 @@ export class WebviewPreviewEngine {
     this.cssW = cssW;
     this.cssH = cssH;
     // Repaint immediately at the current time so a resize doesn't show a stale frame.
-    this.drawFrame(this.currentTimeSecs());
+    this.drawFrame(this.currentTimeUs());
   }
 
   /// Follow the editor's open sequence (null = root): render and manage elements for that
@@ -547,10 +554,13 @@ export class WebviewPreviewEngine {
         console.error("[preview] set_active_sequence failed:", err);
       }
     }
-    this.drawFrame(this.currentTimeSecs());
+    this.drawFrame(this.currentTimeUs());
   }
 
   setProject(project: Project | null): void {
+    // A different project (or none): forget the registered pack items so nothing of the old
+    // one lingers; the new project's own are fetched by the sync below.
+    if ((this.project?.id ?? null) !== (project?.id ?? null)) this.assets?.invalidatePackItems();
     this.project = project;
     this.reconcileMediaElements();
     if (this.gpu && project) {
@@ -566,7 +576,7 @@ export class WebviewPreviewEngine {
         console.error("[preview] set_project failed:", err);
       }
     }
-    this.drawFrame(this.currentTimeSecs());
+    this.drawFrame(this.currentTimeUs());
   }
 
   /// Render-only per-clip overrides (live drags, hover preview): the store's full set. Never
@@ -575,7 +585,19 @@ export class WebviewPreviewEngine {
   setPreviewOverrides(overrides: Record<string, object>): void {
     this.overrides = overrides;
     this.pushPreviewOverrides();
-    this.drawFrame(this.currentTimeSecs());
+    this.drawFrame(this.currentTimeUs());
+  }
+
+  /// The installed library changed (pack installed, updated or removed): refetch pack items.
+  invalidatePackItems(): void {
+    this.assets?.invalidatePackItems();
+    void this.assets?.sync();
+  }
+
+  /// Hover preview of installed pack items the project does not use yet: fetch their files so
+  /// the override that names them renders (resolves once the repaint was requested).
+  async ensurePackItems(refs: readonly string[]): Promise<void> {
+    await this.assets?.ensurePackItems(refs);
   }
 
   private pushPreviewOverrides(): void {
@@ -611,7 +633,7 @@ export class WebviewPreviewEngine {
           // element wasn't seekable yet when `manageElements` first set currentTime).
           const onReady = () => {
             if (this.disposed || this.playing) return;
-            this.drawFrame(this.pausedTimeSecs);
+            this.drawFrame(this.pausedTimeUs);
           };
           el.addEventListener("seeked", onReady);
           el.addEventListener("loadeddata", onReady);
@@ -666,7 +688,7 @@ export class WebviewPreviewEngine {
     document.body.appendChild(el);
     const onReady = () => {
       if (this.disposed || this.playing) return;
-      this.drawFrame(this.pausedTimeSecs);
+      this.drawFrame(this.pausedTimeUs);
     };
     el.addEventListener("seeked", onReady);
     el.addEventListener("loadeddata", onReady);
@@ -734,10 +756,11 @@ export class WebviewPreviewEngine {
       }
       const rate = layer.rate > 0 && Number.isFinite(layer.rate) ? layer.rate : 1;
       if (video.playbackRate !== rate) video.playbackRate = rate;
-      const drift = Math.abs(video.currentTime - layer.source_time);
+      const sourceSecs = usToSecs(layer.source_time);
+      const drift = Math.abs(video.currentTime - sourceSecs);
       if (!suppressDrift && drift > SEEK_CORRECT_THRESHOLD_SECS) {
         try {
-          video.currentTime = layer.source_time;
+          video.currentTime = sourceSecs;
           if (!this.playing) this.scheduleVideoFrameCallback(video);
         } catch {
           /* not seekable yet - next frame retries */
@@ -749,16 +772,17 @@ export class WebviewPreviewEngine {
     }
 
     // Pre-seek instances about to go live so a cut inside a sequence is gapless.
-    for (const layer of parse(t + PRESEEK_HORIZON_SECS)) {
+    for (const layer of parse(t + PRESEEK_HORIZON_US)) {
       if (liveKeys.has(layer.key)) continue;
       const media = project.media.find((m) => m.id === layer.media_id);
       if (!media || media.kind !== "video") continue;
       const video = this.ensureNestedVideo(layer.key, media);
       const entry = this.nestedPool.get(layer.key);
       if (entry) entry.lastNeeded = now;
-      if (Math.abs(video.currentTime - layer.source_time) > SEEK_CORRECT_THRESHOLD_SECS) {
+      const preSecs = usToSecs(layer.source_time);
+      if (Math.abs(video.currentTime - preSecs) > SEEK_CORRECT_THRESHOLD_SECS) {
         try {
-          video.currentTime = layer.source_time;
+          video.currentTime = preSecs;
         } catch {
           /* not seekable yet */
         }
@@ -793,7 +817,7 @@ export class WebviewPreviewEngine {
     this.secondaryVideoPool.set(mediaId, el);
     const onReady = () => {
       if (this.disposed || this.playing) return;
-      this.drawFrame(this.pausedTimeSecs);
+      this.drawFrame(this.pausedTimeUs);
     };
     el.addEventListener("seeked", onReady);
     el.addEventListener("loadeddata", onReady);
@@ -818,14 +842,14 @@ export class WebviewPreviewEngine {
     this.secondaryLastNeededPerf.delete(mediaId);
   }
 
-  private currentTimeSecs(): number {
-    if (!this.playing) return this.pausedTimeSecs;
-    return this.clockBaseSecs + (performance.now() - this.clockBasePerf) / 1000;
+  private currentTimeUs(): number {
+    if (!this.playing) return this.pausedTimeUs;
+    return Math.round(this.clockBaseUs + (performance.now() - this.clockBasePerf) * 1000);
   }
 
-  play(atSecs: number): void {
+  play(atUs: number): void {
     this.playing = true;
-    this.clockBaseSecs = atSecs;
+    this.clockBaseUs = atUs;
     this.clockBasePerf = performance.now();
     this.frameCount = 0;
     this.statsWindowStart = performance.now();
@@ -855,26 +879,26 @@ export class WebviewPreviewEngine {
     this.rafId = null;
   }
 
-  pause(atSecs: number): void {
+  pause(atUs: number): void {
     this.playing = false;
-    this.pausedTimeSecs = atSecs;
+    this.pausedTimeUs = atUs;
     for (const v of this.videoPool.values()) v.pause();
     for (const entry of this.nestedPool.values()) entry.el.pause();
-    this.drawFrame(atSecs);
+    this.drawFrame(atUs);
   }
 
   /// Backend `playback:tick` arrives ~30Hz while the audio path is the master clock.
   /// Slews the local rAF clock toward the reported time (snaps if drift is large, e.g.
   /// after a seek) rather than following it directly, so playback stays visually smooth
   /// between ticks instead of stepping. In the browser harness (no backend), no ticks
-  /// ever arrive and the pure rAF clock (see `currentTimeSecs`) drives everything.
-  onTick(tickSecs: number): void {
+  /// ever arrive and the pure rAF clock (see `currentTimeUs`) drives everything.
+  onTick(tickUs: number): void {
     if (!this.playing) return;
     const now = performance.now();
-    const predicted = this.clockBaseSecs + (now - this.clockBasePerf) / 1000;
-    const drift = tickSecs - predicted;
-    this.clockBaseSecs =
-      Math.abs(drift) > DRIFT_SNAP_THRESHOLD_SECS ? tickSecs : predicted + drift * DRIFT_SLEW_FACTOR;
+    const predicted = this.clockBaseUs + (now - this.clockBasePerf) * 1000;
+    const drift = tickUs - predicted;
+    this.clockBaseUs =
+      Math.abs(drift) > DRIFT_SNAP_THRESHOLD_US ? tickUs : predicted + drift * DRIFT_SLEW_FACTOR;
     this.clockBasePerf = now;
   }
 
@@ -896,18 +920,18 @@ export class WebviewPreviewEngine {
   /// re-affirming a time close to the local prediction) rebases the clock immediately and
   /// briefly suppresses `manageElements`' drift correction so the `<video>` elements can
   /// seek and settle without being yanked again on the very next frame.
-  seek(atSecs: number): void {
-    this.pausedTimeSecs = atSecs;
+  seek(atUs: number): void {
+    this.pausedTimeUs = atUs;
     if (this.playing) {
-      const predicted = this.currentTimeSecs();
-      if (Math.abs(atSecs - predicted) > SEEK_REBASE_THRESHOLD_SECS) {
-        this.clockBaseSecs = atSecs;
+      const predicted = this.currentTimeUs();
+      if (Math.abs(atUs - predicted) > SEEK_REBASE_THRESHOLD_US) {
+        this.clockBaseUs = atUs;
         this.clockBasePerf = performance.now();
         this.suppressDriftUntilPerf = performance.now() + SEEK_SETTLE_MS;
       }
       return; // live playback frame will pick this up on its own
     }
-    this.drawFrame(atSecs);
+    this.drawFrame(atUs);
   }
 
   /// Called when the store's project changes while paused (e.g. a transform-handle drag
@@ -915,7 +939,7 @@ export class WebviewPreviewEngine {
   /// visible immediately, at full local frame rate, without any backend round trip.
   notifyProjectPatched(): void {
     if (this.playing) return;
-    this.drawFrame(this.pausedTimeSecs);
+    this.drawFrame(this.pausedTimeUs);
   }
 
   private loop = (): void => {
@@ -924,7 +948,7 @@ export class WebviewPreviewEngine {
       this.rafId = null;
       return;
     }
-    const t = this.currentTimeSecs();
+    const t = this.currentTimeUs();
     this.drawFrame(t);
     this.scheduleFrame();
   };
@@ -944,7 +968,7 @@ export class WebviewPreviewEngine {
     // path would clear-then-skip the layer (same visible black). Leave the canvas exactly
     // as it was; the `seeked`/`loadeddata` listeners (or rVFC) attached in
     // `reconcileMediaElements`/`manageElements` re-invoke `drawFrame` at
-    // `this.pausedTimeSecs` — always the LATEST scrub target, never a stale intermediate
+    // `this.pausedTimeUs` — always the LATEST scrub target, never a stale intermediate
     // one — once the real frame is ready, so scrub-storms coalesce onto the final position.
     if (!this.playing && !managedReady) {
       this.lastDrawT = performance.now() - drawStart;
@@ -1014,7 +1038,7 @@ export class WebviewPreviewEngine {
     this.frameCount += 1;
     if (this.lastFrameTime > 0) {
       const gap = drawStart - this.lastFrameTime;
-      const fps = this.project?.settings.fps || 60;
+      const fps = fpsToNumber(normalizeFps(this.project?.settings.fps));
       if (this.playing && gap > (1000 / fps) * 1.5) this.drops += 1;
     }
     this.lastFrameTime = drawStart;
@@ -1046,7 +1070,7 @@ export class WebviewPreviewEngine {
     if (typeof rvfc !== "function") return;
     rvfc.call(video, () => {
       if (this.disposed || this.playing) return;
-      this.drawFrame(this.pausedTimeSecs);
+      this.drawFrame(this.pausedTimeUs);
     });
   }
 
@@ -1064,7 +1088,7 @@ export class WebviewPreviewEngine {
   private manageElements(project: Project, t: number, active: ActiveLayer[]): boolean {
     const incoming = this.gpu ? transitionIncomingLayers(project, t) : [];
     const managed = this.gpu ? [...active, ...incoming] : active;
-    const upcoming = upcomingLayers(project, t, PRESEEK_HORIZON_SECS);
+    const upcoming = upcomingLayers(project, t, PRESEEK_HORIZON_US);
     // Pausing/activeness bookkeeping below is keyed by media id (not element identity): an
     // outgoing layer and a colliding same-media incoming layer share a media id, so this set
     // still correctly keeps the PRIMARY element unpaused for both — only the incoming side

@@ -76,7 +76,7 @@ project and talks to you while they work. Change the project with your tools; do
 steps instead of doing them.
 
 Tools:
-- add_caption, trim_clip, split_clip, move_clip, delete_clip, set_clip_effects, set_transition, \
+- add_caption, add_text, trim_clip, split_clip, move_clip, delete_clip, set_clip_effects, set_transition, \
 set_transform, add_track, import_media: typed edits. Use them for the common cases.
 - edit: any other command. Pass commands: a list of objects tagged by \"command\". Call edit_help \
 first to see the command names and fields.
@@ -84,10 +84,11 @@ first to see the command names and fields.
 - timeline: the outline of the open timeline with short ids. Call it before editing if you do not \
 have an id.
 - find_media: media files in a folder, for import_media.
-- assets: effects, transitions and caption style ids.
+- assets: effects, transitions and caption / text styles.
+- transcript: the word-level transcripts (word ids for ApplyTranscriptCuts).
 
 Rules:
-- Ids: use the short ids from the context or timeline. Times are seconds.
+- Ids: use the short ids from the context or timeline. Times are strings: \"1.5s\", \"250ms\" or \"90f\" (frames).
 - Act directly when the request is clear. If it is ambiguous (which clip, how long, which style), \
 ask one short question instead.
 - One request can need several calls. Each call is one undo step for that call.
@@ -258,42 +259,52 @@ fn tool(name: &str, description: &str, parameters: Value) -> Value {
 pub fn tool_definitions(vision: bool) -> Vec<Value> {
     let id =
         json!({ "type": "string", "description": "Short id (first 8 hex characters) or full id." });
-    let secs = |d: &str| json!({ "type": "number", "description": d });
+    let time = |d: &str| json!({ "type": "string", "description": format!("{d} Time like \"1.5s\", \"250ms\" or \"90f\".") });
     let mut tools = vec![
         tool(
             "add_caption",
-            "Add a caption on a caption track.",
+            "Add a caption on a caption track. Without style_ref it uses the track's caption style.",
             json!({ "type": "object", "properties": {
                 "track_id": id, "text": { "type": "string" },
-                "position_secs": secs("Start time in seconds."),
-                "duration_secs": secs("Length in seconds."),
-                "style_id": { "type": "string", "description": "Caption style id from assets. Default \"default\"." },
-            }, "required": ["track_id", "text", "position_secs", "duration_secs"] }),
+                "start": time("Start on the timeline."),
+                "duration": time("Length."),
+                "style_ref": { "type": "string", "description": "Style ref from assets, e.g. builtin:tiktok-box@1." },
+            }, "required": ["track_id", "text", "start", "duration"] }),
+        ),
+        tool(
+            "add_text",
+            "Add a title (text layer) on a video track. Move and animate it like a clip with set_transform.",
+            json!({ "type": "object", "properties": {
+                "track_id": id, "text": { "type": "string" },
+                "start": time("Start on the timeline."),
+                "duration": time("Length."),
+                "style_ref": { "type": "string", "description": "Style ref from assets, e.g. builtin:tiktok-minimal@1." },
+            }, "required": ["track_id", "text", "start", "duration"] }),
         ),
         tool(
             "trim_clip",
-            "Change a clip's source in and/or out point, in seconds of the source media.",
+            "Change a clip's source in and/or out point (times in the source media).",
             json!({ "type": "object", "properties": {
                 "track_id": id, "clip_id": id,
-                "new_source_in_secs": secs("New in point."),
-                "new_source_out_secs": secs("New out point."),
+                "source_in": time("New in point."),
+                "source_out": time("New out point."),
             }, "required": ["track_id", "clip_id"] }),
         ),
         tool(
             "split_clip",
             "Split a clip in two at a timeline time.",
             json!({ "type": "object", "properties": {
-                "track_id": id, "clip_id": id, "at_secs": secs("Timeline time to split at."),
-            }, "required": ["track_id", "clip_id", "at_secs"] }),
+                "track_id": id, "clip_id": id, "at": time("Timeline time to split at."),
+            }, "required": ["track_id", "clip_id", "at"] }),
         ),
         tool(
             "move_clip",
             "Move a clip to a new timeline position, optionally onto another track.",
             json!({ "type": "object", "properties": {
                 "track_id": id, "clip_id": id,
-                "new_position_secs": secs("New start time on the timeline."),
+                "start": time("New start on the timeline."),
                 "new_track_id": id,
-            }, "required": ["track_id", "clip_id", "new_position_secs"] }),
+            }, "required": ["track_id", "clip_id", "start"] }),
         ),
         tool(
             "delete_clip",
@@ -305,19 +316,24 @@ pub fn tool_definitions(vision: bool) -> Vec<Value> {
         ),
         tool(
             "set_clip_effects",
-            "Replace a clip's whole effect list. Each effect is an object; edit_help with command SetClipEffects shows the fields.",
+            "Apply effects to a clip by ref (assets lists refs, e.g. builtin:blur@1). Slots run in this order: filter, key, adjust, effects. Each slot is {ref, params} or null to clear; omitted slots are unchanged. effects is a list of {ref, params} and replaces the clip's effects list. blend_mode sets how the clip blends over what is below.",
             json!({ "type": "object", "properties": {
                 "track_id": id, "clip_id": id,
+                "filter": { "type": ["object", "null"] },
+                "key": { "type": ["object", "null"] },
+                "adjust": { "type": ["object", "null"] },
                 "effects": { "type": "array", "items": { "type": "object" } },
-            }, "required": ["track_id", "clip_id", "effects"] }),
+                "blend_mode": { "type": "string", "enum": ["normal", "multiply", "screen", "overlay", "darken", "lighten", "color_dodge", "color_burn", "soft_light", "hard_light", "difference", "exclusion", "add"] },
+            }, "required": ["track_id", "clip_id"] }),
         ),
         tool(
             "set_transition",
-            "Set or clear the transition on the clip's outgoing edge. Pass transition null to clear it.",
+            "Set or clear the transition on the clip's outgoing edge. ref is a transition ref such as builtin:crossfade@1 (assets lists them), or null to clear. duration is a time such as \"0.5s\".",
             json!({ "type": "object", "properties": {
                 "track_id": id, "clip_id": id,
-                "transition": { "type": ["object", "null"] },
-            }, "required": ["track_id", "clip_id", "transition"] }),
+                "ref": { "type": ["string", "null"] },
+                "duration": time("Transition length."),
+            }, "required": ["track_id", "clip_id", "ref"] }),
         ),
         tool(
             "set_transform",
@@ -379,8 +395,15 @@ pub fn tool_definitions(vision: bool) -> Vec<Value> {
             }, "required": ["dir"] }),
         ),
         tool(
+            "transcript",
+            "The word-level transcripts of the project's media, with word ids for ApplyTranscriptCuts.",
+            json!({ "type": "object", "properties": {
+                "id": { "type": "string", "description": "Optional transcript or media id." },
+            } }),
+        ),
+        tool(
             "assets",
-            "Effects with parameters, transitions, caption style ids and loaded packs.",
+            "Every effect, filter, transition and LUT you can apply by ref, with parameters, plus caption and text styles.",
             json!({ "type": "object", "properties": {} }),
         ),
     ];
@@ -389,7 +412,7 @@ pub fn tool_definitions(vision: bool) -> Vec<Value> {
             "look",
             "See the composited frame at a time. Defaults to the playhead.",
             json!({ "type": "object", "properties": {
-                "time_secs": secs("Time in seconds."),
+                "time": time("Timeline time."),
                 "max_width": { "type": "integer", "description": "Image width in pixels. Default 768." },
             } }),
         ));
@@ -414,33 +437,23 @@ pub fn typed_command(name: &str, args: &Value) -> Option<Result<Value, String>> 
         (
             "add_caption",
             "AddCaption",
-            &[
-                "track_id",
-                "text",
-                "position_secs",
-                "duration_secs",
-                "style_id",
-            ],
+            &["track_id", "text", "start", "duration", "style_ref"],
+        ),
+        (
+            "add_text",
+            "AddText",
+            &["track_id", "text", "start", "duration", "style_ref"],
         ),
         (
             "trim_clip",
             "TrimClip",
-            &[
-                "track_id",
-                "clip_id",
-                "new_source_in_secs",
-                "new_source_out_secs",
-            ],
+            &["track_id", "clip_id", "source_in", "source_out"],
         ),
-        (
-            "split_clip",
-            "SplitClip",
-            &["track_id", "clip_id", "at_secs"],
-        ),
+        ("split_clip", "SplitClip", &["track_id", "clip_id", "at"]),
         (
             "move_clip",
             "MoveClip",
-            &["track_id", "clip_id", "new_position_secs", "new_track_id"],
+            &["track_id", "clip_id", "start", "new_track_id"],
         ),
         (
             "delete_clip",
@@ -450,12 +463,20 @@ pub fn typed_command(name: &str, args: &Value) -> Option<Result<Value, String>> 
         (
             "set_clip_effects",
             "SetClipEffects",
-            &["track_id", "clip_id", "effects"],
+            &[
+                "track_id",
+                "clip_id",
+                "filter",
+                "key",
+                "adjust",
+                "effects",
+                "blend_mode",
+            ],
         ),
         (
             "set_transition",
             "SetClipTransition",
-            &["track_id", "clip_id", "transition"],
+            &["track_id", "clip_id", "ref", "duration"],
         ),
         (
             "set_transform",
@@ -475,14 +496,21 @@ pub fn typed_command(name: &str, args: &Value) -> Option<Result<Value, String>> 
     }
     // Defaults the core requires but the slim schema leaves optional.
     match *command {
-        "AddCaption" => {
-            out.entry("style_id").or_insert(json!("default"));
+        "AddCaption" | "AddText" => {
+            // The core takes a body object and a style object; the slim schema has flat fields.
+            if let Some(text) = out.remove("text") {
+                out.insert("body".into(), json!({ "text": text }));
+            }
+            if let Some(Value::String(r)) = out.remove("style_ref") {
+                out.insert("style".into(), json!({ "ref": r }));
+            }
         }
         "DeleteClip" => {
             out.entry("ripple").or_insert(json!(false));
         }
         "SetClipTransition" => {
-            out.entry("transition").or_insert(Value::Null);
+            // The core requires `ref`; null clears the transition.
+            out.entry("ref").or_insert(Value::Null);
         }
         _ => {}
     }
@@ -1088,6 +1116,10 @@ async fn execute(
             Ok(t) => (t, false, None),
             Err(e) => (e, true, None),
         },
+        "transcript" => match tools::run_transcript(host, args.get("id").and_then(Value::as_str)) {
+            Ok(t) => (t, false, None),
+            Err(e) => (e, true, None),
+        },
         "find_media" => {
             let Some(dir) = args.get("dir").and_then(Value::as_str) else {
                 return ("find_media needs dir".into(), true, None);
@@ -1109,7 +1141,16 @@ async fn execute(
             }
         }
         "look" if ctx.vision => {
-            let time = args.get("time_secs").and_then(Value::as_f64);
+            let fps = ctx
+                .tool_host
+                .project()
+                .map(|p| p.settings.fps)
+                .unwrap_or_default();
+            let time = args.get("time").and_then(Value::as_str).and_then(|t| {
+                renderly_core::time::Time::parse_str(t)
+                    .ok()
+                    .map(|t| t.resolve(fps))
+            });
             let width = args
                 .get("max_width")
                 .and_then(Value::as_u64)
@@ -1209,6 +1250,7 @@ mod tests {
             .collect();
         for n in [
             "add_caption",
+            "add_text",
             "trim_clip",
             "split_clip",
             "move_clip",
@@ -1223,6 +1265,7 @@ mod tests {
             "timeline",
             "find_media",
             "assets",
+            "transcript",
         ] {
             assert!(names.iter().any(|x| x == n), "missing {n}");
         }
@@ -1268,12 +1311,21 @@ mod tests {
     fn typed_calls_become_commands_with_the_core_field_names() {
         let c = typed_command(
             "add_caption",
-            &json!({ "track_id": "ab12cd34", "text": "Hi", "position_secs": 1.0, "duration_secs": 2.0 }),
+            &json!({ "track_id": "ab12cd34", "text": "Hi", "start": "1s", "duration": "2s" }),
         )
         .unwrap()
         .unwrap();
         assert_eq!(c["command"], "AddCaption");
-        assert_eq!(c["style_id"], "default");
+        assert_eq!(c["body"]["text"], "Hi");
+        assert!(c.get("style").is_none(), "no style: inherit the track");
+        let titled = typed_command(
+            "add_text",
+            &json!({ "track_id": "ab12cd34", "text": "Hi", "start": "1s", "duration": "2s", "style_ref": "builtin:tiktok-box@1" }),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(titled["command"], "AddText");
+        assert_eq!(titled["style"]["ref"], "builtin:tiktok-box@1");
         assert_eq!(c["track_id"], "ab12cd34");
         let d = typed_command("delete_clip", &json!({ "track_id": "t", "clip_id": "c" }))
             .unwrap()
@@ -1287,15 +1339,19 @@ mod tests {
         let cases = [
             (
                 "add_caption",
-                json!({ "track_id": "00000000-0000-0000-0000-000000000001", "text": "Hi", "position_secs": 0.0, "duration_secs": 1.0 }),
+                json!({ "track_id": "00000000-0000-0000-0000-000000000001", "text": "Hi", "start": 0, "duration": "1s" }),
+            ),
+            (
+                "add_text",
+                json!({ "track_id": "00000000-0000-0000-0000-000000000001", "text": "Hi", "start": 0, "duration": "1s", "style_ref": "builtin:tiktok-box@1" }),
             ),
             (
                 "trim_clip",
-                json!({ "track_id": "00000000-0000-0000-0000-000000000001", "clip_id": "00000000-0000-0000-0000-000000000002", "new_source_in_secs": 1.0 }),
+                json!({ "track_id": "00000000-0000-0000-0000-000000000001", "clip_id": "00000000-0000-0000-0000-000000000002", "source_in": "1s" }),
             ),
             (
                 "split_clip",
-                json!({ "track_id": "00000000-0000-0000-0000-000000000001", "clip_id": "00000000-0000-0000-0000-000000000002", "at_secs": 1.0 }),
+                json!({ "track_id": "00000000-0000-0000-0000-000000000001", "clip_id": "00000000-0000-0000-0000-000000000002", "at": "1s" }),
             ),
             (
                 "delete_clip",
@@ -1317,7 +1373,7 @@ mod tests {
     fn command_reference_lists_commands_and_describes_one() {
         let list = command_reference(None);
         assert!(list.contains("- AddCaption("), "{list}");
-        assert!(list.contains("text: string"), "{list}");
+        assert!(list.contains("body"), "{list}");
         let one = command_reference(Some("addcaption"));
         assert!(one.contains("AddCaption"), "{one}");
         assert!(command_reference(Some("Nope")).starts_with("No command named"));

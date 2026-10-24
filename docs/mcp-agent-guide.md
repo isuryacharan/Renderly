@@ -82,7 +82,7 @@ emit `project:changed` so the GUI updates live.
 |---|---|
 | `new_project` | Create and open a `.renderly.json` file |
 | `open_project` | Load an existing project |
-| `get_project` | Return `{ project_revision, project }` |
+| `get_project` | Return the project JSON with `project_revision` at its top level, plus `effect_status` when an effect or transition is `changed`, `missing` or `disabled` (see "Effects, slots and keyframes") |
 
 ### Editing (command API)
 
@@ -97,14 +97,26 @@ emit `project:changed` so the GUI updates live.
 All edit commands from [command-api.md](command-api.md) are available via `apply_command`, including
 Phase 1's `GenerateCaptions`, `GenerateVoiceover`, `SetAudioFade`, and `SetTrackAudioRole`.
 
+### Time
+
+Command parameters and perception tools take a `Time`: integer microseconds, or a string -
+`"1.5s"`, `"1500ms"`, `"90f"` (frame 90 at the project rate), `"00:00:01:15"` (non-drop
+timecode). Everything you read back (`get_project`, `detect_silence`, `get_transcript`,
+`render_frame`, ...) is integer microseconds in `*_us` fields, and `settings.fps` is a rational
+`{ "num": 30000, "den": 1001 }`. Frame-based positions are snapped to the project's frame grid, so
+asking for the same frame always yields the same value. The v7 float-second names
+(`position_secs`, `at_secs`, `time_secs`, `min_duration_secs`, ...) still work for one release;
+each use adds a deprecation warning to the result (`warnings`). Details:
+[command-api.md](command-api.md) "Time", [project-schema.md](project-schema.md) "Time".
+
 ### Perception (read-only)
 
 | Tool | Description |
 |---|---|
 | `probe_media` | Probe a file path (kind, duration, dimensions) |
-| `get_transcript` | Whisper transcript for a `media_id` in the open project |
-| `render_frame` | PNG preview at `time_secs` (returns JSON with `png_base64`) |
-| `detect_silence` | Silent spans in a `media_id` (FFmpeg `silencedetect`) |
+| `get_transcript` | Transcript of a `media_id`: the project's stored word-level transcript (`{source: "project", transcript}`: words with ids, source-time µs, `deleted` flags and `tags`) when `GenerateCaptions` made one, else a fresh local Whisper run (`{source: "whisper", ...}`; segments carry `words` when whisper.cpp reports token timings). `refresh: true` always runs Whisper |
+| `render_frame` | PNG preview at `time` (a Time such as `"12.5s"`, `"90f"` or integer µs; returns JSON with `time_us` and `png_base64`; the old `time_secs` float is a deprecated alias) |
+| `detect_silence` | Silent spans in a `media_id` (FFmpeg `silencedetect`); `noise_db`, `min_duration` (a Time, default `"0.5s"`; the old `min_duration_secs` float is a deprecated alias); spans carry `start_us`, `end_us`, `duration_us` |
 | `detect_scenes` | Scene cuts in a `media_id` (FFmpeg scene filter) |
 | `get_audio_peaks` | Downsampled peak envelope for waveform display |
 | `get_background_matte_status` | `{track_id, clip_id}` -> `not_generated` / `ready` / `stale {reason}` for a clip's background-removal matte |
@@ -150,9 +162,10 @@ what the `hint` says. Codes: `invalid_command`, `not_found`, `revision_conflict`
 part-way reports `rolled_back`, and nothing from it was applied.
 
 `describe_commands` returns the capabilities (`renderly.capabilities.v1`), every command's
-shape, and the effects, filters, transitions and LUTs it can apply (the builtins plus the open
-project's packs). `describe_effects { packs?: [folder] }` lists the same catalogue for pack
-folders you name, without a project; each line gives the ref, kind, label, state and params.
+shape, and the effects, filters, transitions and LUTs it can apply (the builtins plus the packs
+installed in the user library). `describe_effects { packs?: [folder] }` lists the same catalogue
+(or the pack folders you name, without a project); each line gives the ref, kind, label, state,
+the usual slot and params.
 Pack item states and refs are described in [asset-pack.md](asset-pack.md#pack-format-2-effects-filters-transitions-luts). Renderly's ready-made workflows for Claude Code are in `skills/` (see `skills/README.md`).
 
 ## Worked example: script + footage → export
@@ -164,14 +177,43 @@ Assume gameplay MP4s in `C:/footage/` and a project at `edit.renderly.json`.
 3. **Add tracks** — video track `V1`, audio `A1` (voiceover), `A2` (music), caption track `C1`
 4. **Set mix roles** — `SetTrackAudioRole` with `voiceover` on narration track, `music` on BGM track
 5. **Place clips** — `AddClip` per script beat (use `get_project` to read back `media_id` / `track_id`)
-6. **Voiceover** — `apply_command { command: { "command":"GenerateVoiceover", "text":"...", "track_id":"...", "position_secs": 0.0, "output_path": "voice.wav", "provider": { "provider": "piper_local" } } }`
-7. **Auto-caption** — `apply_command { command: { "command":"GenerateCaptions", ... } }`  
-   Or call `get_transcript` first to inspect timing, then batch `AddCaption` commands.
+6. **Voiceover** — `apply_command { command: { "command":"GenerateVoiceover", "text":"...", "track_id":"...", "start": 0, "output_path": "voice.wav", "provider": { "provider": "piper_local" } } }`
+7. **Auto-caption** — `apply_command { command: { "command":"GenerateCaptions", "media_id":"...", "track_id":"...", "timeline_offset": 0 } }`  
+   It stores a word-level transcript and gives each caption its `body.words`. Re-page them with
+   `SplitCaptions` (`max_chars`, `max_lines`, `max_duration`), restyle the whole track with
+   `SetTrackCaptionStyle`, or call `get_transcript` first and batch `AddCaption` commands.
 8. **Trim dead air** — `detect_silence` on raw footage, then `TrimClip` / `DeleteClip` as needed
-9. **Verify** — `render_frame { time_secs: 12.5, preset: "tiktok" }` (inspect PNG)
+9. **Verify** — `render_frame { time: "12.5s", preset: "tiktok" }` (inspect PNG)
 10. **Export** — `export { output_path: "out.mp4", preset: "tiktok" }`
 
-Built-in caption styles: `tiktok-bold-yellow`, `tiktok-minimal`, `tiktok-box`, `youtube-lower-thirds`.
+Built-in caption styles (refs `builtin:<id>@1`): `tiktok-bold-yellow`, `tiktok-minimal`, `tiktok-box`,
+`youtube-lower-thirds`.
+
+## Captions, titles, transcripts, markers and magnetic tracks (schema v8)
+
+- **Captions** are `body { text, runs, words }` plus `style` (a `{ref, params, overrides}` object, or
+  `null` to inherit the caption track's `caption_style`) and `animations`. Word timings are
+  relative to the clip start and are never rewritten by text edits. `AddCaption` / `SetCaption`
+  edit them (the old `text` / `style_id` parameters still work, with a warning), `SetTextBody`,
+  `SetTextStyle`, `SetTextAnimation` change many clips at once with `targets`,
+  `SetCaptionWords` / `SetWordEmphasis` set timing and key words, `SplitCaptions` re-pages.
+- **Titles**: `AddText` puts a text layer on a **video** track; it takes `SetClipTransform`,
+  `SetClipKeyframes`, `SetClipEffects`, `SetClipTransition`, `SetClipMask`, blend modes like any
+  clip. Move it with the transform; resize its time with `SetTextTiming`.
+- Today the pictures come from the four builtin styles; of a style's `overrides` only `fill`
+  (`#RRGGBB`), `size` (fraction of the frame height) and `anchor` change the picture.
+  `animations` and `params` are stored and validated, and render later. A style that is not
+  installed shows as `missing` in `get_project`'s `effect_status` and the caption falls back to
+  the track's or the default style.
+- **Transcripts**: `get_transcript` returns the stored word-level transcript. Delete words with
+  `ApplyTranscriptCuts { transcript_id, word_ids | tags }`: it marks them `deleted` and cuts them
+  out of every clip of that media, closing the gaps (a real edit; agents need `allow_deletion`
+  for the whole clips it removes). `RestoreTranscriptWords` puts them back.
+- **Markers**: `AddMarkers` / `RemoveMarkers`; timeline edits in the app snap to them.
+- **Magnetic tracks** (`magnetic: true`, the first video track of a new project): the clips stay
+  contiguous from 0 and `AddClip`, `MoveClip`, `DeleteClip`, `TrimClip` ripple for you; a clip's
+  `start` only picks its place in the order (it lands where its centre falls). Check the flag in
+  `get_project` before planning positions; `SetTrackFlags { magnetic: false }` turns it off.
 
 Music ducking is automatic when voice/dialog and music tracks are both present (`settings.duck_db`, default −12 dB).
 
@@ -206,7 +248,7 @@ so verify a sequence by placing it on the root.
   { "command": "CreateSequence", "name": "Lower third", "width": 1920, "height": 300, "id": "<seq-uuid>" },
   { "command": "AddTrack", "kind": "video", "name": "V1", "id": "<inner-track-uuid>", "sequence_id": "<seq-uuid>" },
   { "command": "AddClip", "track_id": "<inner-track-uuid>", "media_id": "<file-media-id>",
-    "position_secs": 0.0, "source_in_secs": 0.0, "source_out_secs": 3.0 }
+    "start": 0, "source_in": 0, "source_out": "3s" }
 ]
 ```
 
@@ -222,11 +264,10 @@ its alpha. `SequenceCycle` rejects putting a sequence inside itself; `SequenceIn
 
 ```jsonc
 [
-  { "command": "AddAdjustmentLayer", "track_id": "<video-track>", "position_secs": 4.0, "duration_secs": 6.0 },
+  { "command": "AddAdjustmentLayer", "track_id": "<video-track>", "start": "4s", "duration": "6s" },
   // then, with the clip_id returned in ClipAdded:
   { "command": "SetClipEffects", "track_id": "<video-track>", "clip_id": "<adj>",
-    "effects": [{ "id": "<new-uuid>", "effect_id": "builtin:color_adjust", "enabled": true,
-                  "params": { "saturation": 0.0, "contrast": 1.3 } }] },
+    "adjust": { "ref": "builtin:color_adjust@1", "params": { "saturation": 0.0, "contrast": 1.3 } } },
   { "command": "SetAdjustmentLayer", "track_id": "<video-track>", "clip_id": "<adj>", "opacity": 0.6 }
 ]
 ```
@@ -235,9 +276,49 @@ An adjustment layer applies its effect chain to the picture composited from **ev
 video track** (z-order = track order, first = bottom) for its duration, then mixes the result
 with the unadjusted picture by `opacity` (and `mask`, whose UVs are canvas coordinates
 here). Layers on higher tracks are untouched. It shares the track's no-overlap rule with media
-clips. Only builtin and pack-LUT effects work (WASM plugin effects are rejected), only
-`opacity` can be keyframed, and `TrimClip` does not apply (use `SetAdjustmentLayer`).
+clips. Builtin and pack effects work (WASM plugin effects are rejected), it has no `key` slot,
+only `opacity` and its own effects' parameters can be keyframed, and `TrimClip` does not apply
+(use `SetAdjustmentLayer`). A `blend_mode` blends the adjusted picture over the original.
 
 `TrackMotion`, `StabilizeClip`, `AutoReframeClip`, `GenerateBackgroundMatte`,
 `GenerateCaptions` and `SetClipAudioDenoise` reject sequence media with
 `UnsupportedForSequence`; run them on the inner clips instead.
+
+## Effects, slots and keyframes (schema v8)
+
+Effects are applied **by ref**, never by file path. Call `describe_effects` (or
+`describe_commands`) for what is installed: builtins are `builtin:<id>@1`; items from installed
+packs are `pack:<pack-id>/<item>@<version>`; a LUT is a pack item too. A clip has four places to
+put them, which always run in this order: `filter` (a LUT or look), `key` (chroma key), `adjust`
+(colour adjustment), then the `effects` list in list order; the clip mask and then the blend mode
+come after.
+
+```jsonc
+{ "command": "SetClipEffects", "track_id": "<track>", "clip_id": "<clip>",
+  "filter": { "ref": "pack:mira.film-looks/print@1", "params": { "intensity": 0.8 } },
+  "effects": [ { "ref": "builtin:blur@1", "params": { "radius": 8 } } ],
+  "blend_mode": "screen" }
+```
+
+- Omit a field to leave it alone; send `null` to clear it. `effects` replaces the whole list.
+  Give an instance's `id` (from `get_project`) to edit it in place and keep its keyframes.
+- Params are typed: numbers, bools, `[x, y]`, `[r, g, b, a]` (0..1), an option index for a choice,
+  a LUT ref string. Leave `params` out on a new instance to get the effect's initial values; a
+  value out of range is clamped and an unknown key is an error that lists the valid ones.
+- `targets: [{track_id, clip_id}, ...]` applies one change to many clips as one undo step (also on
+  `SetClipTransition` and `SetClipTransform`); a failure on any target changes none.
+- `SetClipTransition { ref: "builtin:crossfade@1", duration: "0.5s" }`; `ref: null` clears it.
+  `easing` is optional (`"ease_in_out"`, `{"bezier": [x1, y1, x2, y2]}`, `null` = the transition's
+  default).
+- **Status.** `get_project` adds `effect_status` when an instance or transition is `changed`
+  (the installed item differs from the one applied), `missing` (not installed: it renders as
+  nothing but keeps its params) or `disabled` (installed, this build cannot run it). Tell the
+  user which pack is missing instead of removing the effect; installing it restores the look.
+- **Animating.** `SetClipKeyframes` tracks take `property: "effect:<instance-id>/<param>"` with
+  numeric values, or arrays for color and vec2 params. Bool, choice and LUT params cannot be
+  animated. `SetKeyframeEasing { property, time, easing }` sets a span to `linear`, `hold`
+  (step), `auto` (smooth, no overshoot), a preset (`ease_in`, `ease_out`, `ease_in_out`) or CSS
+  Bezier points. Deleting an effect deletes its tracks.
+- The v7 shapes (`effect_id`, `transition: {kind, duration_us}`, `ease_in` keys) still work for
+  one release and add a deprecation warning to the result.
+

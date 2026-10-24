@@ -27,14 +27,16 @@ Written (current versions, verified against the
 and by loading the output with the real library — see [Validation](#validation)):
 `Timeline.1`, `Stack.1`, `Track.1`, `Clip.2` (`media_references` + `active_media_reference_key`),
 `Gap.1`, `Transition.1`, `Effect.1`, `LinearTimeWarp.1`, `ExternalReference.1`,
-`GeneratorReference.1`, `RationalTime.1`, `TimeRange.1`.
+`GeneratorReference.1`, `Marker.2`, `RationalTime.1`, `TimeRange.1`.
 
 Read: the above plus `Clip.1` (single `media_reference`), `Sequence.*` (old name of `Track`),
 `Filler.*` (old name of `Gap`), `SerializableCollection.1` (the first `Timeline` inside), a bare
 `Stack`/`Track`/`Clip` as the document root, `MissingReference`, `ImageSequenceReference`,
-`FreezeFrame`, `Marker.*` (ignored, counted), bare `NaN`/`Infinity` doubles. Schema *versions*
+`FreezeFrame`, `Marker.*` (root-stack markers become project markers), bare `NaN`/`Infinity`
+doubles. Schema *versions*
 are not checked: `Clip.9` is read as a `Clip` and unknown fields are ignored. An unknown schema
-in a track is a gap plus a warning. Renderly writes no `Marker`s (it has none).
+in a track is a gap plus a warning. Project markers are written as `Marker.2` on the root stack
+(see [markers](#markers-and-transcripts)).
 
 ## Mapping: Renderly → OTIO
 
@@ -44,13 +46,15 @@ in a track is a gap plus a warning. Renderly writes no `Marker`s (it has none).
 | root timeline (`tracks`) | the timeline's `Stack` (`name: "tracks"`). Track order is bottom-first in both (verified against *Timeline Structure*: "iterated from the bottom (the first entry in the stack) towards the top") |
 | video / audio track | `Track` with `kind` `Video` / `Audio`; `enabled` = not hidden (video) / not muted (audio) |
 | caption track | `Track` of kind `Video` tagged `metadata.renderly.track.kind = "caption"` — see [captions](#captions) |
+| text clip (title) | `Clip.2` with a `GeneratorReference` of kind `renderly.text`, effects as `Effect.1` — see [captions](#captions) |
+| project markers | `Marker.2` on the root stack — see [markers](#markers-and-transcripts) |
 | clip | `Clip.2` with `source_range` (frames at project fps) and one `ExternalReference` (`target_url`, plus `available_range` when the media duration is known) |
 | gap between clips | `Gap` (whole frames, never zero) |
 | `enabled: false` | `enabled: false` on the clip |
 | constant `speed` ≠ 1 | `LinearTimeWarp` effect, `time_scalar` = speed |
 | speed keyframes | `LinearTimeWarp` with the *average* scalar (source span ÷ timeline span); keyframes in metadata |
 | `outgoing_transition` | `Transition` between the two touching clips — see [transitions](#transitions) |
-| effects (`builtin:*`, pack) | `Effect.1` (`effect_name` = effect id; params in `metadata.renderly`) |
+| effects (`builtin:*`, `pack:*`) | `Effect.1` in render order (filter, key, adjust, `effects[]`); `effect_name` = the ref (`builtin:blur@1`); `id`, `ref`, `hash`, `slot` and `params` in `metadata.renderly` |
 | nested sequence clip | a `Stack` **in place** (name = sequence name) holding the sequence's tracks; `source_range` is the used part of the sequence |
 | adjustment layer | `Gap` carrying its effects as `Effect.1`; the whole layer in `metadata.renderly.adjustment` |
 | everything else | `metadata["renderly"]`, see [the metadata layout](#metadata-layout) |
@@ -86,10 +90,10 @@ transitions straddle a cut: `in_offset` = how much of the *previous* item it ove
 overlap is entirely in the outgoing clip, matching the window, and (as OTIO requires) the
 timeline length is unchanged.
 
-| `kind` | `transition_type` |
+| `ref` | `transition_type` |
 |---|---|
-| `crossfade` | `SMPTE_Dissolve` |
-| every other kind (`fade_black`, `wipe_*`, `slide_*`, `iris`, `blur_dissolve`) | `Custom_Transition`, kind in `metadata.renderly.transition` |
+| `builtin:crossfade@1` | `SMPTE_Dissolve` |
+| every other ref (`builtin:fade_black@1`, `wipe_*`, `slide_*`, `iris`, `blur_dissolve`, pack transitions) | `Custom_Transition`, the transition's `name` is the ref and `metadata.renderly.transition` holds the full `ClipTransition` (params, easing) |
 
 A transition is written only between two *touching* clips on a video track; one that Renderly
 keeps on a clip followed by a gap survives in the clip's metadata only.
@@ -97,7 +101,7 @@ keeps on a clip followed by a gap survives in the clip's metadata only.
 On import the duration is `in_offset + out_offset` (a centred 10+10-frame dissolve becomes a
 20-frame crossfade ending at the cut — the centring is lost), shortened to half the shorter
 adjacent clip (Renderly's rule) with a warning. `SMPTE_Dissolve` and any type containing
-"dissolve" → `crossfade`; other foreign types → `crossfade` with a warning. A transition with no
+"dissolve" → `builtin:crossfade@1`; a `Custom_Transition` whose name is a transition ref keeps it even without the metadata; other foreign types → `builtin:crossfade@1` with a warning. A transition with no
 clip on one side, or next to a gap, is dropped with a warning.
 
 ### Captions
@@ -106,11 +110,31 @@ OTIO has no caption primitive. Options considered: `Marker`s on the stack (loses
 structure and cannot be positioned per track), or clips with a `MissingReference` (other tools
 show them as offline media). Renderly writes each caption as a **`Clip.2` whose media reference is
 a `GeneratorReference`** — OTIO's own notion of synthesised media such as titles — with
-`generator_kind: "renderly.caption"` and `parameters: { text, style_id }`, `name` = the text and
-the exact clip in `metadata.renderly.caption`. Other tools therefore see a correctly timed, named
+`generator_kind: "renderly.caption"` and `parameters: { text, style_ref }` (`style_ref` is the
+clip's own style ref or `null`; schema 7 wrote `style_id`, still read), `name` = the text and
+the exact clip — `body` with its runs and word timings, style, animations, `transcript_ref` — in
+`metadata.renderly.caption`. Other tools therefore see a correctly timed, named
 title clip on a video track, and Renderly restores a caption track (the track is tagged in its
-metadata; without the tag, a track holding only such generators is still read as captions).
+metadata, which also carries `magnetic` and the track's `caption_style`; without the tag, a track
+holding only such generators is still read as captions).
 Foreign generators (`SMPTEBars`, `Slug`, …) cannot be rendered and become gaps with a warning.
+
+A **text clip** (a title on a video track) is the same shape with `generator_kind:
+"renderly.text"`, `parameters: { text, style_ref }`, the slot effects as `Effect.1`, `enabled`,
+a native `Transition` to the next clip when they touch, and the exact clip (transform, keyframes,
+blend mode, mask, style, animations) in `metadata.renderly.text`. Without that metadata a
+`renderly.text` generator is read as a text clip with the default style.
+
+### Markers and transcripts
+
+Each project marker is written as a `Marker.2` on the root `Stack`: `name` = the label,
+`marked_range` = a zero-length range at the marker's frame, `color` = the nearest OTIO colour
+(user markers without a colour are `RED`, beat markers `CYAN`), and the exact marker (id, time in
+µs, colour, kind) in `metadata.renderly.marker`. On import a marker with that metadata comes back
+exactly while it still sits on the frame it was written at; a foreign marker becomes a `user`
+marker at the start of its range with its label and its OTIO colour as a hex colour. Markers on
+tracks and clips are still dropped with a warning (Renderly's markers belong to the timeline).
+Project transcripts travel in the timeline metadata (`transcripts`).
 
 ### Nested sequences and adjustment layers
 
@@ -145,7 +169,9 @@ metadata it is just a gap.
 | `Track.source_range` | the track's content is trimmed to / shifted by that window. A window that misses all the content (some exporters write a record timecode there) is ignored with a warning rather than emptying the track |
 | `MissingReference`, `ImageSequenceReference`, non-`file:` URLs, unsupported generators, unknown references | **gap** (same length, so everything after keeps its position) + warning |
 | `Effect` (not ours) | dropped + warning |
-| `Marker`, track/stack markers | dropped + one warning per object |
+| `Marker` on the root stack | project marker (see [markers](#markers-and-transcripts)) |
+| `Marker` on a track or clip | dropped + one warning per object |
+| `GeneratorReference` of kind `renderly.caption` / `renderly.text` | caption / text clip |
 | `global_start_time` ≠ 0 | ignored + warning (the timeline starts at 0) |
 | unknown fields, unknown `metadata` | ignored |
 | bare `NaN` / `Infinity` doubles | read as missing values |
@@ -198,7 +224,8 @@ everything, names, settings (fps, size, sample rate, `duck_db`), media items (in
 paths, unused ones, and their order), tracks (order, flags, audio roles), clips (exact positions
 and source ranges even off the frame grid, speed incl. keyframes, transforms, keyframes, effects
 and their instance ids, masks, background removal, audio gain/fades/denoise, multicam ids,
-transitions of every kind), captions (text, style), adjustment layers (opacity, effects, mask,
+transitions of every kind), captions (body with runs and word timings, style, animations,
+transcript links), text clips, markers, transcripts, magnetic flags, adjustment layers (opacity, effects, mask,
 keyframes), sequences (placed once, many times, or never, with sizes), multicam groups, asset
 pack / plugin paths. Pinned by `renderly-core/tests/otio_roundtrip.rs`.
 
@@ -227,13 +254,15 @@ app counts them in a toast and logs them to the console.
 
 | Object | Keys |
 |---|---|
-| `Timeline` | `format`, `schema_version`, `project_id`, `settings`, `media` (all items, in order), `asset_pack_paths`, `wasm_plugin_paths`, `multicam_groups`, `segmentation_model_path`, `unplaced_sequences` |
-| `Track` | `track`: `{ id, kind, audio_role, muted, locked, hidden }` |
+| `Timeline` | `format`, `schema_version`, `project_id`, `settings`, `media` (all items, in order), `legacy_pack_paths` (older exports: `asset_pack_paths`, `wasm_plugin_paths`, merged on import), `multicam_groups`, `segmentation_model_path`, `unplaced_sequences`, `transcripts` |
+| `Track` | `track`: `{ id, kind, audio_role, muted, locked, hidden, magnetic, caption_style }` |
 | `Clip` / nested `Stack` | `clip`: the full `MediaClip`; nested `Stack` also `sequence`: `{ id, name, width, height }` |
 | caption `Clip` | `caption`: the full `CaptionClip` |
+| text `Clip` | `text`: the full `TextClip` |
+| `Marker` | `marker`: the full `Marker` |
 | adjustment `Gap` | `adjustment`: the full `AdjustmentClip` |
-| `Transition` | `transition`: the `ClipTransition` |
-| `Effect` | `id`, `params` |
+| `Transition` | `transition`: the `ClipTransition` (`ref`, `hash`, `duration_us`, `params`, `easing`) |
+| `Effect` | `id`, `ref`, `hash`, `slot` (`filter` / `key` / `adjust` / `effects`), `params` |
 
 ## Validation
 

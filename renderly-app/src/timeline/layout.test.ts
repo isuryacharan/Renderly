@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { audioClip, captionClip, project, track, videoClip } from "../test/fixtures";
+import { audioClip, captionClip, project, textClip, track, videoClip } from "../test/fixtures";
 import {
   CLIP_BOTTOM_PAD,
   CLIP_TOP_PAD,
@@ -18,59 +18,53 @@ import {
   nextVideoClipOnTrack,
   RULER_H,
   rowForTrackIndex,
-  secsFromCanvasX,
-  snapToFrame,
-  timelineDuration,
+  timelineDurationUs,
   TRACK_GAP,
   TRACK_H,
   TRACK_LABEL_W,
   trackLayout,
+  usFromCanvasX,
   zoneRowBounds,
 } from "./layout";
 
 describe("time <-> pixel conversion", () => {
   it("clipLeft offsets by the label gutter and padding", () => {
     expect(clipLeft(0, 100)).toBe(TRACK_LABEL_W + CONTENT_PAD_X);
-    expect(clipLeft(2, 50)).toBe(TRACK_LABEL_W + CONTENT_PAD_X + 100);
+    expect(clipLeft(2_000_000, 50)).toBe(TRACK_LABEL_W + CONTENT_PAD_X + 100);
   });
 
   it("clipLeft subtracts scroll", () => {
-    expect(clipLeft(1, 100, 30)).toBe(TRACK_LABEL_W + CONTENT_PAD_X + 70);
+    expect(clipLeft(1_000_000, 100, 30)).toBe(TRACK_LABEL_W + CONTENT_PAD_X + 70);
   });
 
-  it("secsFromCanvasX inverts clipLeft", () => {
-    for (const [secs, px, scroll] of [
+  it("usFromCanvasX inverts clipLeft to the exact integer µs", () => {
+    for (const [us, px, scroll] of [
       [0, 80, 0],
-      [3.25, 80, 0],
-      [12.5, 200, 340],
-      [0.04, 400, 10],
+      [3_250_000, 80, 0],
+      [12_500_000, 200, 340],
+      [40_000, 400, 10],
+      [33_333, 100, 0],
     ] as const) {
-      expect(secsFromCanvasX(clipLeft(secs, px, scroll), px, scroll)).toBeCloseTo(secs, 10);
+      expect(usFromCanvasX(clipLeft(us, px, scroll), px, scroll)).toBe(us);
     }
   });
 
-  it("secsFromCanvasX never returns negative time (clicks in the label gutter)", () => {
-    expect(secsFromCanvasX(0, 100)).toBe(0);
-    expect(secsFromCanvasX(TRACK_LABEL_W - 10, 100)).toBe(0);
+  it("usFromCanvasX rounds pointer positions to the nearest µs", () => {
+    // 1px at 3px/s is 333333.33 µs
+    expect(usFromCanvasX(TRACK_LABEL_W + CONTENT_PAD_X + 1, 3)).toBe(333_333);
+    expect(usFromCanvasX(TRACK_LABEL_W + CONTENT_PAD_X + 2, 3)).toBe(666_667);
+  });
+
+  it("usFromCanvasX never returns negative time (clicks in the label gutter)", () => {
+    expect(usFromCanvasX(0, 100)).toBe(0);
+    expect(usFromCanvasX(TRACK_LABEL_W - 10, 100)).toBe(0);
   });
 });
 
-describe("snapToFrame", () => {
-  it("rounds to the nearest frame", () => {
-    expect(snapToFrame(1.01, 30)).toBeCloseTo(1, 10);
-    expect(snapToFrame(1.02, 60)).toBeCloseTo(61 / 60, 10);
-  });
-  it("clamps negatives to 0 and tolerates fps < 1", () => {
-    expect(snapToFrame(-3, 30)).toBe(0);
-    expect(snapToFrame(1.4, 0)).toBe(1); // fps floored to 1
-    expect(snapToFrame(1.4, -5)).toBe(1);
-  });
-});
-
-describe("timelineDuration & content extents", () => {
+describe("timelineDurationUs & content extents", () => {
   it("is at least one second for an empty timeline", () => {
-    expect(timelineDuration(project([]))).toBe(1);
-    expect(timelineDuration(project([track("v", "video")]))).toBe(1);
+    expect(timelineDurationUs(project([]))).toBe(1_000_000);
+    expect(timelineDurationUs(project([track("v", "video")]))).toBe(1_000_000);
   });
 
   it("uses the furthest clip end across all tracks", () => {
@@ -78,19 +72,19 @@ describe("timelineDuration & content extents", () => {
       track("v", "video", [videoClip("a", 0, 0, 3)]),
       track("a", "audio", [audioClip("b", 5, 0, 4)]),
     ]);
-    expect(timelineDuration(p)).toBe(9);
+    expect(timelineDurationUs(p)).toBe(9_000_000);
   });
 
   it("honours clip speed and caption durations", () => {
     const fast = videoClip("a", 2, 0, 8, { speed: 4 }); // 2s long
     const slow = videoClip("b", 0, 0, 1, { speed: 0.5 }); // 2s long
-    expect(timelineDuration(project([track("v", "video", [fast, slow])]))).toBe(4);
-    expect(timelineDuration(project([track("c", "caption", [captionClip("x", 1, 6)])]))).toBe(7);
+    expect(timelineDurationUs(project([track("v", "video", [fast, slow])]))).toBe(4_000_000);
+    expect(timelineDurationUs(project([track("c", "caption", [captionClip("x", 1, 6)])]))).toBe(7_000_000);
   });
 
   it("treats speed <= 0 as 1x rather than dividing by zero", () => {
     const p = project([track("v", "video", [videoClip("a", 0, 0, 4, { speed: 0 })])]);
-    expect(timelineDuration(p)).toBe(4);
+    expect(timelineDurationUs(p)).toBe(4_000_000);
   });
 
   it("contentWidthPx / maxScrollX scale with zoom and never go negative", () => {
@@ -283,22 +277,32 @@ describe("nextVideoClipOnTrack", () => {
     const overlapping = videoClip("o", 1, 0, 2);
     expect(nextVideoClipOnTrack(track("v", "video", [a, overlapping]), a)).toBeNull();
   });
-  it("tolerates sub-microsecond float gaps", () => {
-    const nearly = videoClip("n", 2 - 1e-9, 0, 1);
+  it("pairs a video clip with a following title and the reverse (both carry transitions)", () => {
+    const title = textClip("t", 2, 1);
+    expect(nextVideoClipOnTrack(track("v", "video", [a, title]), a)?.id).toBe("t");
+    expect(nextVideoClipOnTrack(track("v", "video", [title, c]), title)?.id).toBe("c");
+  });
+  it("skips a disabled clip, like the engine", () => {
+    const off = textClip("off", 2, 1);
+    off.enabled = false;
+    expect(nextVideoClipOnTrack(track("v", "video", [a, off, c]), a)?.id).toBe("c");
+  });
+  it("tolerates a one-microsecond gap", () => {
+    const nearly = videoClip("n", 2, 0, 1, { start_us: 2_000_000 - 1 });
     expect(nextVideoClipOnTrack(track("v", "video", [a, nearly]), a)?.id).toBe("n");
   });
 });
 
 describe("transition junctions", () => {
-  const a = videoClip("a", 0, 0, 1, { outgoing_transition: { kind: "crossfade", duration_secs: 0.5 } });
+  const a = videoClip("a", 0, 0, 1, { outgoing_transition: { ref: "builtin:crossfade@1", duration_us: 500_000, params: {}, easing: null } });
   const b = videoClip("b", 1, 0, 1);
   const p = project([track("v", "video", [a, b]), track("au", "audio", [audioClip("x", 0, 0, 1), audioClip("y", 1, 0, 1)])]);
 
   it("lists one junction per adjacent video pair and none for audio lanes", () => {
     const js = listTransitionJunctions(p, 400, 100);
     expect(js).toHaveLength(1);
-    expect(js[0]).toMatchObject({ trackId: "v", outgoingClipId: "a", junctionSecs: 1 });
-    expect(js[0].junctionX).toBe(clipLeft(1, 100));
+    expect(js[0]).toMatchObject({ trackId: "v", outgoingClipId: "a", junctionUs: 1_000_000 });
+    expect(js[0].junctionX).toBe(clipLeft(1_000_000, 100));
   });
 
   it("derives overlapPx from the transition (min 4px) and 0 with no transition", () => {
@@ -315,7 +319,7 @@ describe("transition junctions", () => {
   });
 
   it("hit-tests the badge just inside the outgoing clip and a small zone around the seam", () => {
-    const jx = clipLeft(1, 100);
+    const jx = clipLeft(1_000_000, 100);
     const y = 50;
     expect(hitTestTransitionJunction(p, jx - 8, y, 400, 100)).toEqual({ trackId: "v", clipId: "a", trackIndex: 0 });
     expect(hitTestTransitionJunction(p, jx + 5, y, 400, 100)?.clipId).toBe("a");
@@ -324,7 +328,7 @@ describe("transition junctions", () => {
   });
 
   it("the seam zone (right of the junction) respects vertical insets but the badge zone doesn't", () => {
-    const jx = clipLeft(1, 100);
+    const jx = clipLeft(1_000_000, 100);
     const nearTop = 28 + CLIP_TOP_PAD + 1; // inside body, within the 4px inset
     expect(hitTestTransitionJunction(p, jx + 5, nearTop, 400, 100)).toBeNull();
     expect(hitTestTransitionJunction(p, jx - 8, nearTop, 400, 100)).not.toBeNull();

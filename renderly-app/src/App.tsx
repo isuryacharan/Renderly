@@ -8,6 +8,7 @@ import { ExportDialog } from "./components/dialogs/ExportDialog";
 import { Toasts } from "./components/Toasts";
 import { WelcomeScreen } from "./components/WelcomeScreen";
 import { ContextMenu } from "./components/ContextMenu";
+import { MarkerMenu } from "./components/MarkerMenu";
 import { connectStoreToBackendEvents, useEditorStore } from "./store/editorStore";
 import * as ipc from "./lib/ipc";
 import { importFromPath } from "./lib/projectFlows";
@@ -96,6 +97,7 @@ export function App() {
       <TimelineSection />
       <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} />
       <ContextMenu />
+      <MarkerMenu />
       <Toasts />
     </>
   );

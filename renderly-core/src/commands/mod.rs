@@ -4,22 +4,49 @@
 use crate::audio::{synthesize_to_wav, VoiceoverProvider};
 use crate::media::{self, MediaError};
 use crate::project::{
-    clone_effects_with_new_ids, split_keyframes, AnimProperty, AudioDenoise, BackgroundRemoval,
-    CaptionClip, Clip, ClipMask, ClipMaskKind, ClipTransform, ClipTransition, EffectInstance, Id,
-    KeyframeTrack, MediaClip, MulticamGroup, Project, Track, TrackAudioRole, TrackKind,
-    TransitionKind,
+    split_keyframes, AnimProperty, AudioDenoise, BackgroundRemoval, BlendMode, Clip, ClipMask,
+    ClipMaskKind, ClipTransform, EffectParams, Id, KeyframeTrack, MarkerKind, MediaClip,
+    MulticamGroup, ProgressEasing, Project, TextAnimations, TextRun, TextStyleRef, Track,
+    TrackAudioRole, TrackKind, TrackProperty,
 };
+use crate::time::{us_to_seconds, Fps, Time};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod adjustment;
+mod effects;
+#[cfg(test)]
+mod effects_tests;
+mod magnetic;
 #[cfg(test)]
 mod matte_tests;
 mod motion;
 mod reframe;
 mod sequences;
+mod text;
+#[cfg(test)]
+mod text_tests;
 
+pub use effects::{EasingChoice, EffectSpec};
 pub use sequences::ClipRef;
+use sequences::ClipRef as TextClipRef;
+pub use text::{normalize_legacy_text_params, BodyInput, MarkerInput, StyleChange, WordInput};
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_split_max_chars() -> usize {
+    32
+}
+
+fn default_split_max_lines() -> usize {
+    2
+}
+
+fn default_split_max_duration() -> Time {
+    Time::Us(5_000_000)
+}
 
 /// Normalised rectangle (0..1, origin top-left, y down) in the clip's video frame, before any
 /// cover-fit crop. Used to pick the area `TrackMotion` follows.
@@ -32,6 +59,9 @@ pub struct TrackRegion {
     pub height: f64,
 }
 
+// `SetClipEffects` carries four optional slots; boxing them would change nothing on the wire but
+// would make every construction site noisier for no gain (commands are short-lived values).
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "command", rename_all = "PascalCase")]
@@ -52,29 +82,33 @@ pub enum Command {
         /// (schema v7). Caption tracks are root-only.
         #[serde(default)]
         sequence_id: Option<Id>,
+        /// Make the track magnetic (clips stay contiguous from 0). Omitted: true for the first
+        /// video track of the root timeline, false otherwise.
+        #[serde(default)]
+        magnetic: Option<bool>,
     },
     AddClip {
         track_id: Id,
         media_id: Id,
-        position_secs: f64,
-        source_in_secs: f64,
-        source_out_secs: f64,
+        start: Time,
+        source_in: Time,
+        source_out: Time,
     },
     SplitClip {
         track_id: Id,
         clip_id: Id,
-        at_secs: f64,
+        at: Time,
     },
     TrimClip {
         track_id: Id,
         clip_id: Id,
-        new_source_in_secs: Option<f64>,
-        new_source_out_secs: Option<f64>,
+        source_in: Option<Time>,
+        source_out: Option<Time>,
     },
     MoveClip {
         track_id: Id,
         clip_id: Id,
-        new_position_secs: f64,
+        start: Time,
         new_track_id: Option<Id>,
     },
     DeleteClip {
@@ -82,21 +116,176 @@ pub enum Command {
         clip_id: Id,
         ripple: bool,
     },
+    /// Add a caption clip to a caption track. `style` omitted: the caption inherits the track's
+    /// `caption_style`. (`text` and `style_id` are deprecated aliases for `body.text` and
+    /// `style`.)
     AddCaption {
         track_id: Id,
-        text: String,
-        position_secs: f64,
-        duration_secs: f64,
-        style_id: String,
+        body: BodyInput,
+        start: Time,
+        duration: Time,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        style: Option<TextStyleRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        animations: Option<TextAnimations>,
     },
-    /// Update an existing caption clip (Phase 2 caption editor).
+    /// Update an existing caption clip. At least one field is required. `body.text` changes the
+    /// displayed text (words are kept); `style: null` inherits the track's style again.
     SetCaption {
         track_id: Id,
         clip_id: Id,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        body: Option<BodyInput>,
+        start: Option<Time>,
+        duration: Option<Time>,
+        #[serde(
+            default,
+            deserialize_with = "effects::double_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        style: Option<Option<TextStyleRef>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        animations: Option<TextAnimations>,
+    },
+    /// Add a title to a video track (schema v8): a layer with transform, keyframes, effect
+    /// slots, blend mode and mask like a media clip. `style` omitted: the default text style.
+    AddText {
+        track_id: Id,
+        body: BodyInput,
+        start: Time,
+        duration: Time,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        style: Option<TextStyleRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        animations: Option<TextAnimations>,
+    },
+    /// Move or resize a text clip; at least one of `start` / `duration`.
+    SetTextTiming {
+        track_id: Id,
+        clip_id: Id,
+        start: Option<Time>,
+        duration: Option<Time>,
+    },
+    /// Change the text and/or the per-range style `runs` of a caption or text clip. Word timings
+    /// are never touched. Give `track_id` + `clip_id`, or `targets` (one undo step).
+    SetTextBody {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        track_id: Option<Id>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        clip_id: Option<Id>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        targets: Vec<ClipRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
-        position_secs: Option<f64>,
-        duration_secs: Option<f64>,
-        style_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runs: Option<Vec<TextRun>>,
+    },
+    /// Change a caption's or text clip's style: `ref` (null = inherit the track / default),
+    /// `params` and `overrides` (each replaces the stored map). Omitted = unchanged.
+    SetTextStyle {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        track_id: Option<Id>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        clip_id: Option<Id>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        targets: Vec<ClipRef>,
+        #[serde(
+            rename = "ref",
+            default,
+            deserialize_with = "effects::double_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        item_ref: Option<Option<String>>,
+        #[serde(
+            default,
+            deserialize_with = "effects::double_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        hash: Option<Option<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        params: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        overrides: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    },
+    /// Set (`ref` given) or clear (`ref: null`) the animation of one phase (`in`, `out`, `loop`,
+    /// `active`). Stored and validated; rendered from the captions phase.
+    SetTextAnimation {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        track_id: Option<Id>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        clip_id: Option<Id>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        targets: Vec<ClipRef>,
+        phase: String,
+        #[serde(rename = "ref", deserialize_with = "effects::required_nullable")]
+        item_ref: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        params: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration: Option<Time>,
+    },
+    /// The style every caption of a caption track without its own inherits. `style: null`
+    /// clears it. `reset_clips` also clears the clips' own styles (restyle the whole track).
+    SetTrackCaptionStyle {
+        track_id: Id,
+        #[serde(deserialize_with = "effects::required_nullable")]
+        style: Option<TextStyleRef>,
+        #[serde(default)]
+        reset_clips: bool,
+    },
+    /// Replace a caption's word timings (times relative to the clip start). The displayed text
+    /// is not changed.
+    SetCaptionWords {
+        track_id: Id,
+        clip_id: Id,
+        words: Vec<WordInput>,
+    },
+    /// Mark (or unmark) words of a caption as key words, by index into `body.words`.
+    SetWordEmphasis {
+        track_id: Id,
+        clip_id: Id,
+        indices: Vec<usize>,
+        #[serde(default = "default_true")]
+        emphasis: bool,
+    },
+    /// Rebuild a caption track's word-timed captions as pages (see docs/command-api.md).
+    SplitCaptions {
+        track_id: Id,
+        #[serde(default = "default_split_max_chars")]
+        max_chars: usize,
+        #[serde(default = "default_split_max_lines")]
+        max_lines: usize,
+        #[serde(default = "default_split_max_duration")]
+        max_duration: Time,
+    },
+    /// Add timeline markers (project level, root timeline). Snapping includes them.
+    AddMarkers {
+        markers: Vec<MarkerInput>,
+    },
+    /// Remove markers by `ids` and/or every marker of a `kind`.
+    RemoveMarkers {
+        #[serde(default)]
+        ids: Vec<Id>,
+        #[serde(default)]
+        kind: Option<MarkerKind>,
+    },
+    /// Mark transcript words deleted (`word_ids`, and every word tagged with one of `tags`) and
+    /// cut every deleted range out of the clips of the transcript's media, rippling the gaps.
+    ApplyTranscriptCuts {
+        transcript_id: Id,
+        #[serde(default)]
+        word_ids: Vec<String>,
+        #[serde(default)]
+        tags: Vec<String>,
+    },
+    /// Clear `deleted` on transcript words (all deleted words when `word_ids` is empty) and put
+    /// their media back where it was cut.
+    RestoreTranscriptWords {
+        transcript_id: Id,
+        #[serde(default)]
+        word_ids: Vec<String>,
     },
     SetAudioGain {
         track_id: Id,
@@ -111,16 +300,19 @@ pub enum Command {
     GenerateCaptions {
         media_id: Id,
         track_id: Id,
-        style_id: String,
+        /// Style of the new captions; omitted = inherit the track's `caption_style`.
+        /// (`style_id` is a deprecated alias.)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        style: Option<TextStyleRef>,
         /// Seconds added to each segment timestamp when placing on the timeline.
         #[serde(default)]
-        timeline_offset_secs: f64,
+        timeline_offset: Time,
     },
     /// Synthesize narration audio (Piper local or OpenAI BYO) and place on an audio track.
     GenerateVoiceover {
         text: String,
         track_id: Id,
-        position_secs: f64,
+        start: Time,
         output_path: String,
         provider: VoiceoverProvider,
     },
@@ -128,8 +320,8 @@ pub enum Command {
     SetAudioFade {
         track_id: Id,
         clip_id: Id,
-        fade_in_secs: f64,
-        fade_out_secs: f64,
+        fade_in: Time,
+        fade_out: Time,
     },
     /// Assign mix role on an audio track (voiceover/dialog/music/ambience) for ducking.
     SetTrackAudioRole {
@@ -140,7 +332,9 @@ pub enum Command {
     SetProjectSettings {
         width: Option<u32>,
         height: Option<u32>,
-        fps: Option<f64>,
+        /// Rational frame rate; a plain number is accepted (deprecated alias) and snapped to
+        /// the nearest standard rational, as the v7 migration does.
+        fps: Option<Fps>,
     },
     /// Set mute/lock/hidden flags on a track. At least one field must be `Some`.
     /// `locked` is GUI-honored only — see `Track::locked` doc comment.
@@ -149,6 +343,9 @@ pub enum Command {
         muted: Option<bool>,
         locked: Option<bool>,
         hidden: Option<bool>,
+        /// Video and audio tracks only. Turning it on packs the track's clips contiguous from 0.
+        #[serde(default)]
+        magnetic: Option<bool>,
     },
     RenameTrack {
         track_id: Id,
@@ -169,29 +366,94 @@ pub enum Command {
         clip_id: Id,
         enabled: bool,
     },
-    /// Replace the static transform on a media clip (Phase 3.1).
+    /// Replace the static transform on a media clip (Phase 3.1). Give `track_id` + `clip_id`
+    /// for one clip, or `targets` to set the same transform on several in one undo step.
     SetClipTransform {
-        track_id: Id,
-        clip_id: Id,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        track_id: Option<Id>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        clip_id: Option<Id>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        targets: Vec<ClipRef>,
         transform: ClipTransform,
     },
-    /// Replace all keyframe tracks on a media clip (Phase 3.1).
+    /// Replace all keyframe tracks on a media clip (Phase 3.1). A track's `property` is a
+    /// transform/audio property (`pos_x`, `opacity`, ...) or `effect:<instance-id>/<param>`;
+    /// values are numbers, or arrays for color / vec2 params.
     SetClipKeyframes {
         track_id: Id,
         clip_id: Id,
         keyframes: Vec<KeyframeTrack>,
     },
-    /// Replace effect instance list (Phase 3.4 executes builtins).
-    SetClipEffects {
+    /// Set how the span after one key is interpolated: `linear`, `hold`, `auto`, a preset
+    /// (`ease_in`, `ease_out`, `ease_in_out`, written as `bezier` handles) or
+    /// `{"bezier": [x1, y1, x2, y2]}` (CSS control points).
+    SetKeyframeEasing {
         track_id: Id,
         clip_id: Id,
-        effects: Vec<EffectInstance>,
+        property: TrackProperty,
+        time: Time,
+        easing: EasingChoice,
     },
-    /// Set or clear the outgoing transition on a video media clip (Phase 3.5).
+    /// Set the effect slots of a clip or adjustment layer (schema v8). Each of `filter`, `key`,
+    /// `adjust`, `effects` and `blend_mode` is optional: omitted = unchanged, `null` = cleared.
+    /// `effects` replaces the whole `effects[]` list. Give `track_id` + `clip_id`, or `targets`
+    /// to apply to several clips in one undo step.
+    SetClipEffects {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        track_id: Option<Id>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        clip_id: Option<Id>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        targets: Vec<ClipRef>,
+        #[serde(
+            default,
+            deserialize_with = "effects::double_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        filter: Option<Option<EffectSpec>>,
+        #[serde(
+            default,
+            deserialize_with = "effects::double_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        key: Option<Option<EffectSpec>>,
+        #[serde(
+            default,
+            deserialize_with = "effects::double_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        adjust: Option<Option<EffectSpec>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effects: Option<Vec<EffectSpec>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blend_mode: Option<BlendMode>,
+    },
+    /// Set or clear the outgoing transition on a video media clip (Phase 3.5, refs in v8).
+    /// `ref` is required: a transition ref such as `builtin:crossfade@1`, or `null` to clear.
+    /// Give `track_id` + `clip_id`, or `targets` ("apply to all", one undo step).
     SetClipTransition {
-        track_id: Id,
-        clip_id: Id,
-        transition: Option<ClipTransition>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        track_id: Option<Id>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        clip_id: Option<Id>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        targets: Vec<ClipRef>,
+        #[serde(rename = "ref", deserialize_with = "effects::required_nullable")]
+        item_ref: Option<String>,
+        /// Required when setting a new transition; an existing one keeps its duration.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration: Option<Time>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        params: Option<EffectParams>,
+        /// `linear`, `ease_in`, `ease_out`, `ease_in_out`, `{"bezier": [x1,y1,x2,y2]}`, or
+        /// `null` for the transition's declared default. Omitted keeps the current easing.
+        #[serde(
+            default,
+            deserialize_with = "effects::double_option",
+            skip_serializing_if = "Option::is_none"
+        )]
+        easing: Option<Option<ProgressEasing>>,
     },
     /// Constant clip playback speed (Phase 3). Timeline duration = source span / speed.
     SetClipSpeed {
@@ -220,14 +482,14 @@ pub enum Command {
         pack_id: String,
         sticker_id: String,
         track_id: Id,
-        position_secs: f64,
+        start: Time,
     },
     /// Place an SFX audio clip from a loaded pack onto an audio track.
     AddSfxFromPack {
         pack_id: String,
         sfx_id: String,
         track_id: Id,
-        position_secs: f64,
+        start: Time,
     },
     /// Set or clear the clip mask (Phase 4).
     SetClipMask {
@@ -268,13 +530,13 @@ pub enum Command {
     ApplyTemplate {
         pack_id: String,
         template_id: String,
-        position_secs: f64,
+        start: Time,
     },
     /// Generate a simple sticker PNG from a prompt and place it on a video track (Phase 4).
     GenerateSticker {
         prompt: String,
         track_id: Id,
-        position_secs: f64,
+        start: Time,
         output_path: String,
     },
     /// Create a multicam group from existing clip ids (Phase 4).
@@ -363,17 +625,107 @@ pub enum Command {
     /// Add an adjustment layer clip to a video track (schema v7).
     AddAdjustmentLayer {
         track_id: Id,
-        position_secs: f64,
-        duration_secs: f64,
+        start: Time,
+        duration: Time,
     },
     /// Edit an adjustment layer's span/opacity; at least one field must be `Some`.
     SetAdjustmentLayer {
         track_id: Id,
         clip_id: Id,
-        position_secs: Option<f64>,
-        duration_secs: Option<f64>,
+        start: Option<Time>,
+        duration: Option<Time>,
         opacity: Option<f64>,
     },
+}
+
+impl Command {
+    /// `SetClipEffects` replacing only the `effects[]` list of one clip (slots and blend mode
+    /// unchanged).
+    pub fn set_effects(track_id: Id, clip_id: Id, effects: Vec<EffectSpec>) -> Command {
+        Command::SetClipEffects {
+            track_id: Some(track_id),
+            clip_id: Some(clip_id),
+            targets: Vec::new(),
+            filter: None,
+            key: None,
+            adjust: None,
+            effects: Some(effects),
+            blend_mode: None,
+        }
+    }
+}
+
+/// Command parameters renamed in schema v8: `(legacy name, current name)`. The legacy names took
+/// float seconds; they are accepted for one release as deprecated aliases (see
+/// [`normalize_legacy_time_params`]).
+pub const LEGACY_TIME_PARAMS: &[(&str, &str)] = &[
+    ("position_secs", "start"),
+    ("new_position_secs", "start"),
+    ("at_secs", "at"),
+    ("source_in_secs", "source_in"),
+    ("new_source_in_secs", "source_in"),
+    ("source_out_secs", "source_out"),
+    ("new_source_out_secs", "source_out"),
+    ("duration_secs", "duration"),
+    ("fade_in_secs", "fade_in"),
+    ("fade_out_secs", "fade_out"),
+    ("timeline_offset_secs", "timeline_offset"),
+];
+
+/// Rewrite deprecated `*_secs` parameters of one command object (a JSON object with a `command`
+/// key) to their `Time` form, in place. A float `n` becomes the string `"ns"`, which parses to
+/// the same microseconds. Returns one deprecation message per parameter renamed.
+pub fn normalize_legacy_time_params(value: &mut serde_json::Value) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let Some(obj) = value.as_object_mut() else {
+        return warnings;
+    };
+    let command = obj
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("command")
+        .to_string();
+    for (old, new) in LEGACY_TIME_PARAMS {
+        let Some(v) = obj.remove(*old) else {
+            continue;
+        };
+        let converted = match &v {
+            serde_json::Value::Null => serde_json::Value::Null,
+            serde_json::Value::Number(n) => serde_json::Value::String(format!("{}s", n)),
+            other => other.clone(),
+        };
+        obj.entry((*new).to_string()).or_insert(converted);
+        warnings.push(format!(
+            "{command}: parameter `{old}` is deprecated (float seconds); use `{new}` with a Time value such as \"1.5s\" or integer microseconds. The alias is removed in a later release."
+        ));
+    }
+    warnings
+}
+
+/// Parse one command from JSON, accepting the deprecated `*_secs` aliases. Returns the command
+/// and a deprecation message for each alias used.
+pub fn parse_command_json(
+    mut value: serde_json::Value,
+) -> Result<(Command, Vec<String>), serde_json::Error> {
+    let mut warnings = normalize_legacy_time_params(&mut value);
+    warnings.extend(effects::normalize_legacy_effect_params(&mut value));
+    warnings.extend(text::normalize_legacy_text_params(&mut value));
+    let command = serde_json::from_value::<Command>(value)?;
+    Ok((command, warnings))
+}
+
+/// Parse a list of commands from JSON values; see [`parse_command_json`].
+pub fn parse_commands_json(
+    values: Vec<serde_json::Value>,
+) -> Result<(Vec<Command>, Vec<String>), serde_json::Error> {
+    let mut commands = Vec::with_capacity(values.len());
+    let mut warnings = Vec::new();
+    for value in values {
+        let (command, w) = parse_command_json(value)?;
+        commands.push(command);
+        warnings.extend(w);
+    }
+    Ok((commands, warnings))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -382,7 +734,7 @@ pub enum Command {
 pub enum ExportPreset {
     TikTok9x16,
     Youtube16x9,
-    Custom { width: u32, height: u32, fps: f64 },
+    Custom { width: u32, height: u32, fps: Fps },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -431,14 +783,14 @@ pub enum CommandError {
     #[error("track {0} is kind {1:?}, expected {2:?}")]
     TrackKindMismatch(Id, TrackKind, TrackKind),
     #[error("clip range [{0}, {1}) overlaps an existing clip on track {2}")]
-    Overlap(f64, f64, Id),
-    #[error("invalid range: source_out_secs ({0}) <= source_in_secs ({1})")]
-    InvalidRange(f64, f64),
+    Overlap(i64, i64, Id),
+    #[error("invalid range: source_out_us ({0}) <= source_in_us ({1})")]
+    InvalidRange(i64, i64),
     #[error("source range exceeds media duration ({0}s)")]
-    ExceedsMediaDuration(f64),
+    ExceedsMediaDuration(i64),
     #[error("split point {0} is not strictly inside the clip's span")]
-    SplitOutOfBounds(f64),
-    #[error("TrimClip requires at least one of new_source_in_secs/new_source_out_secs")]
+    SplitOutOfBounds(i64),
+    #[error("TrimClip requires at least one of new_source_in_us/new_source_out_us")]
     TrimRequiresChange,
     #[error("SetCaption requires at least one field to change")]
     SetCaptionRequiresChange,
@@ -458,16 +810,22 @@ pub enum CommandError {
     SetProjectSettingsRequiresChange,
     #[error("invalid dimensions: width and height must be > 0")]
     InvalidDimensions,
-    #[error("SetTrackFlags requires at least one of muted/locked/hidden")]
+    #[error("SetTrackFlags requires at least one of muted/locked/hidden/magnetic")]
     SetTrackFlagsRequiresChange,
     #[error("clip {0} is not a media clip (video/audio)")]
     NotMediaClip(Id),
     #[error("track id {0} already exists")]
     DuplicateTrackId(Id),
     #[error("invalid duration: {0} must be > 0")]
-    InvalidDuration(f64),
+    InvalidDuration(i64),
     #[error("invalid fps: {0} must be > 0")]
     InvalidFps(f64),
+    #[error("invalid text: {0}")]
+    InvalidText(String),
+    #[error("invalid marker: {0}")]
+    InvalidMarker(String),
+    #[error("transcript: {0}")]
+    InvalidTranscript(String),
     #[error("invalid transform: non-finite or out-of-range field")]
     InvalidTransform,
     #[error("invalid keyframes: {0}")]
@@ -523,7 +881,7 @@ pub enum CommandError {
     NotAdjustmentClip(Id),
     #[error("invalid adjustment layer: {0}")]
     InvalidAdjustment(String),
-    #[error("SetAdjustmentLayer requires at least one of position_secs/duration_secs/opacity")]
+    #[error("SetAdjustmentLayer requires at least one of start_us/duration_us/opacity")]
     SetAdjustmentLayerRequiresChange,
     #[error(
         "TrimClip does not apply to adjustment layer {0} (it is defined in source time); \
@@ -532,7 +890,58 @@ pub enum CommandError {
     TrimAdjustment(Id),
 }
 
+/// Resolve a [`Time`] to µs and land it on the project's frame grid, so the same frame is
+/// always the same µs whoever sent the command (GUI, CLI, agent). Exact frame starts map to
+/// themselves.
+fn snap(t: Time, fps: Fps) -> i64 {
+    fps.snap_to_frame(t.resolve(fps))
+}
+
+/// Like [`snap`] for a duration: a positive duration never snaps to zero (minimum one frame).
+fn snap_dur(t: Time, fps: Fps) -> i64 {
+    let raw = t.resolve(fps);
+    let snapped = fps.snap_to_frame(raw);
+    if raw > 0 && snapped <= 0 {
+        fps.frame_start(1)
+    } else {
+        snapped
+    }
+}
+
+/// Resolve a text command's target selector: `track_id` + `clip_id`, or `targets`.
+fn resolve_text_targets(
+    command: &str,
+    track_id: Option<Id>,
+    clip_id: Option<Id>,
+    targets: Vec<ClipRef>,
+) -> Result<Vec<ClipRef>, CommandError> {
+    effects::resolve_targets(command, track_id, clip_id, targets).map_err(|e| match e {
+        CommandError::InvalidEffects(m) => CommandError::InvalidText(m),
+        other => other,
+    })
+}
+
 pub fn apply_command(project: &mut Project, cmd: Command) -> Result<CommandOutcome, CommandError> {
+    // Magnetic tracks end up packed after commands that change their clips' spans (AddClip and
+    // MoveClip place the clip themselves). The whole thing is one command, so one undo step.
+    let touched = magnetic::touched_tracks(&cmd);
+    let outcome = apply_command_inner(project, cmd)?;
+    match touched {
+        None => magnetic::pack_all(project),
+        Some(tracks) => {
+            for track_id in tracks {
+                magnetic::pack_if_magnetic(project, track_id);
+            }
+        }
+    }
+    Ok(outcome)
+}
+
+fn apply_command_inner(
+    project: &mut Project,
+    cmd: Command,
+) -> Result<CommandOutcome, CommandError> {
+    let fps = project.settings.fps;
     match cmd {
         Command::ImportMedia { path } => import_media(project, &path),
         Command::AddTrack {
@@ -540,44 +949,45 @@ pub fn apply_command(project: &mut Project, cmd: Command) -> Result<CommandOutco
             name,
             id,
             sequence_id,
-        } => add_track(project, kind, name, id, sequence_id),
+            magnetic,
+        } => add_track(project, kind, name, id, sequence_id, magnetic),
         Command::AddClip {
             track_id,
             media_id,
-            position_secs,
-            source_in_secs,
-            source_out_secs,
+            start,
+            source_in,
+            source_out,
         } => add_clip(
             project,
             track_id,
             media_id,
-            position_secs,
-            source_in_secs,
-            source_out_secs,
+            snap(start, fps),
+            snap(source_in, fps),
+            snap(source_out, fps),
         ),
         Command::SplitClip {
             track_id,
             clip_id,
-            at_secs,
-        } => split_clip(project, track_id, clip_id, at_secs),
+            at,
+        } => split_clip(project, track_id, clip_id, snap(at, fps)),
         Command::TrimClip {
             track_id,
             clip_id,
-            new_source_in_secs,
-            new_source_out_secs,
+            source_in,
+            source_out,
         } => trim_clip(
             project,
             track_id,
             clip_id,
-            new_source_in_secs,
-            new_source_out_secs,
+            source_in.map(|t| snap(t, fps)),
+            source_out.map(|t| snap(t, fps)),
         ),
         Command::MoveClip {
             track_id,
             clip_id,
-            new_position_secs,
+            start,
             new_track_id,
-        } => move_clip(project, track_id, clip_id, new_position_secs, new_track_id),
+        } => move_clip(project, track_id, clip_id, snap(start, fps), new_track_id),
         Command::DeleteClip {
             track_id,
             clip_id,
@@ -585,34 +995,151 @@ pub fn apply_command(project: &mut Project, cmd: Command) -> Result<CommandOutco
         } => delete_clip(project, track_id, clip_id, ripple),
         Command::AddCaption {
             track_id,
-            text,
-            position_secs,
-            duration_secs,
-            style_id,
-        } => add_caption(
+            body,
+            start,
+            duration,
+            style,
+            animations,
+        } => text::add_caption(
             project,
             track_id,
-            text,
-            position_secs,
-            duration_secs,
-            style_id,
+            body,
+            snap(start, fps),
+            snap_dur(duration, fps),
+            style,
+            animations,
         ),
         Command::SetCaption {
             track_id,
             clip_id,
-            text,
-            position_secs,
-            duration_secs,
-            style_id,
-        } => set_caption(
+            body,
+            start,
+            duration,
+            style,
+            animations,
+        } => text::set_caption(
             project,
             track_id,
             clip_id,
-            text,
-            position_secs,
-            duration_secs,
-            style_id,
+            body,
+            start.map(|t| snap(t, fps)),
+            duration.map(|t| snap_dur(t, fps)),
+            style,
+            animations,
         ),
+        Command::AddText {
+            track_id,
+            body,
+            start,
+            duration,
+            style,
+            animations,
+        } => text::add_text(
+            project,
+            track_id,
+            body,
+            snap(start, fps),
+            snap_dur(duration, fps),
+            style,
+            animations,
+        ),
+        Command::SetTextTiming {
+            track_id,
+            clip_id,
+            start,
+            duration,
+        } => text::set_text_timing(
+            project,
+            track_id,
+            clip_id,
+            start.map(|t| snap(t, fps)),
+            duration.map(|t| snap_dur(t, fps)),
+        ),
+        Command::SetTextBody {
+            track_id,
+            clip_id,
+            targets,
+            text: new_text,
+            runs,
+        } => {
+            let targets = resolve_text_targets("SetTextBody", track_id, clip_id, targets)?;
+            text::set_text_body(project, targets, new_text, runs)
+        }
+        Command::SetTextStyle {
+            track_id,
+            clip_id,
+            targets,
+            item_ref,
+            hash,
+            params,
+            overrides,
+        } => {
+            let targets = resolve_text_targets("SetTextStyle", track_id, clip_id, targets)?;
+            text::set_text_style(
+                project,
+                targets,
+                StyleChange {
+                    item_ref,
+                    hash,
+                    params,
+                    overrides,
+                },
+            )
+        }
+        Command::SetTextAnimation {
+            track_id,
+            clip_id,
+            targets,
+            phase,
+            item_ref,
+            hash,
+            params,
+            duration,
+        } => {
+            let targets = resolve_text_targets("SetTextAnimation", track_id, clip_id, targets)?;
+            text::set_text_animation(
+                project,
+                targets,
+                phase,
+                item_ref,
+                hash,
+                params,
+                duration.map(|d| snap_dur(d, fps)),
+            )
+        }
+        Command::SetTrackCaptionStyle {
+            track_id,
+            style,
+            reset_clips,
+        } => text::set_track_caption_style(project, track_id, style, reset_clips),
+        Command::SetCaptionWords {
+            track_id,
+            clip_id,
+            words,
+        } => text::set_caption_words(project, track_id, clip_id, words),
+        Command::SetWordEmphasis {
+            track_id,
+            clip_id,
+            indices,
+            emphasis,
+        } => text::set_word_emphasis(project, track_id, clip_id, indices, emphasis),
+        Command::SplitCaptions {
+            track_id,
+            max_chars,
+            max_lines,
+            max_duration,
+        } => text::split_captions(project, track_id, max_chars, max_lines, max_duration),
+        Command::AddMarkers { markers } => text::add_markers(project, markers),
+        Command::RemoveMarkers { ids, kind } => text::remove_markers(project, ids, kind),
+        Command::ApplyTranscriptCuts {
+            transcript_id,
+            word_ids,
+            tags,
+        } => text::apply_transcript_cuts(project, transcript_id, word_ids, tags),
+        Command::RestoreTranscriptWords {
+            transcript_id,
+            word_ids,
+        } => text::restore_transcript_words(project, transcript_id, word_ids),
         Command::SetAudioGain {
             track_id,
             clip_id,
@@ -625,29 +1152,41 @@ pub fn apply_command(project: &mut Project, cmd: Command) -> Result<CommandOutco
         Command::GenerateCaptions {
             media_id,
             track_id,
-            style_id,
-            timeline_offset_secs,
-        } => generate_captions(project, media_id, track_id, style_id, timeline_offset_secs),
+            style,
+            timeline_offset,
+        } => generate_captions(
+            project,
+            media_id,
+            track_id,
+            style,
+            timeline_offset.resolve(fps),
+        ),
         Command::GenerateVoiceover {
             text,
             track_id,
-            position_secs,
+            start,
             output_path,
             provider,
         } => generate_voiceover(
             project,
             &text,
             track_id,
-            position_secs,
+            snap(start, fps),
             &output_path,
             provider,
         ),
         Command::SetAudioFade {
             track_id,
             clip_id,
-            fade_in_secs,
-            fade_out_secs,
-        } => set_audio_fade(project, track_id, clip_id, fade_in_secs, fade_out_secs),
+            fade_in,
+            fade_out,
+        } => set_audio_fade(
+            project,
+            track_id,
+            clip_id,
+            fade_in.resolve(fps),
+            fade_out.resolve(fps),
+        ),
         Command::SetTrackAudioRole { track_id, role } => {
             set_track_audio_role(project, track_id, role)
         }
@@ -659,7 +1198,8 @@ pub fn apply_command(project: &mut Project, cmd: Command) -> Result<CommandOutco
             muted,
             locked,
             hidden,
-        } => set_track_flags(project, track_id, muted, locked, hidden),
+            magnetic,
+        } => set_track_flags(project, track_id, muted, locked, hidden, magnetic),
         Command::RenameTrack { track_id, name } => rename_track(project, track_id, name),
         Command::DeleteTrack { track_id } => delete_track(project, track_id),
         Command::MoveTrack {
@@ -674,23 +1214,60 @@ pub fn apply_command(project: &mut Project, cmd: Command) -> Result<CommandOutco
         Command::SetClipTransform {
             track_id,
             clip_id,
+            targets,
             transform,
-        } => set_clip_transform(project, track_id, clip_id, transform),
+        } => {
+            let targets = effects::resolve_targets("SetClipTransform", track_id, clip_id, targets)?;
+            set_clip_transform(project, targets, transform)
+        }
         Command::SetClipKeyframes {
             track_id,
             clip_id,
             keyframes,
         } => set_clip_keyframes(project, track_id, clip_id, keyframes),
+        Command::SetKeyframeEasing {
+            track_id,
+            clip_id,
+            property,
+            time,
+            easing,
+        } => effects::set_keyframe_easing(project, track_id, clip_id, property, time, easing),
         Command::SetClipEffects {
             track_id,
             clip_id,
-            effects,
-        } => set_clip_effects(project, track_id, clip_id, effects),
+            targets,
+            filter,
+            key,
+            adjust,
+            effects: list,
+            blend_mode,
+        } => {
+            let targets = effects::resolve_targets("SetClipEffects", track_id, clip_id, targets)?;
+            effects::set_clip_effects(
+                project,
+                targets,
+                effects::EffectsChange {
+                    filter,
+                    key,
+                    adjust,
+                    effects: list,
+                    blend_mode,
+                },
+            )
+        }
         Command::SetClipTransition {
             track_id,
             clip_id,
-            transition,
-        } => set_clip_transition(project, track_id, clip_id, transition),
+            targets,
+            item_ref,
+            duration,
+            params,
+            easing,
+        } => {
+            let targets =
+                effects::resolve_targets("SetClipTransition", track_id, clip_id, targets)?;
+            effects::set_clip_transition(project, targets, item_ref, duration, params, easing)
+        }
         Command::SetClipSpeed {
             track_id,
             clip_id,
@@ -704,14 +1281,14 @@ pub fn apply_command(project: &mut Project, cmd: Command) -> Result<CommandOutco
             pack_id,
             sticker_id,
             track_id,
-            position_secs,
-        } => add_sticker_from_pack(project, &pack_id, &sticker_id, track_id, position_secs),
+            start,
+        } => add_sticker_from_pack(project, &pack_id, &sticker_id, track_id, snap(start, fps)),
         Command::AddSfxFromPack {
             pack_id,
             sfx_id,
             track_id,
-            position_secs,
-        } => add_sfx_from_pack(project, &pack_id, &sfx_id, track_id, position_secs),
+            start,
+        } => add_sfx_from_pack(project, &pack_id, &sfx_id, track_id, snap(start, fps)),
         Command::SetClipMask {
             track_id,
             clip_id,
@@ -738,14 +1315,14 @@ pub fn apply_command(project: &mut Project, cmd: Command) -> Result<CommandOutco
         Command::ApplyTemplate {
             pack_id,
             template_id,
-            position_secs,
-        } => apply_template(project, &pack_id, &template_id, position_secs),
+            start,
+        } => apply_template(project, &pack_id, &template_id, snap(start, fps)),
         Command::GenerateSticker {
             prompt,
             track_id,
-            position_secs,
+            start,
             output_path,
-        } => generate_sticker(project, &prompt, track_id, position_secs, &output_path),
+        } => generate_sticker(project, &prompt, track_id, snap(start, fps), &output_path),
         Command::CreateMulticamGroup { name, clip_ids } => {
             create_multicam_group(project, name, clip_ids)
         }
@@ -801,21 +1378,26 @@ pub fn apply_command(project: &mut Project, cmd: Command) -> Result<CommandOutco
         }
         Command::AddAdjustmentLayer {
             track_id,
-            position_secs,
-            duration_secs,
-        } => adjustment::add_adjustment_layer(project, track_id, position_secs, duration_secs),
+            start,
+            duration,
+        } => adjustment::add_adjustment_layer(
+            project,
+            track_id,
+            snap(start, fps),
+            snap_dur(duration, fps),
+        ),
         Command::SetAdjustmentLayer {
             track_id,
             clip_id,
-            position_secs,
-            duration_secs,
+            start,
+            duration,
             opacity,
         } => adjustment::set_adjustment_layer(
             project,
             track_id,
             clip_id,
-            position_secs,
-            duration_secs,
+            start.map(|t| snap(t, fps)),
+            duration.map(|t| snap_dur(t, fps)),
             opacity,
         ),
     }
@@ -832,7 +1414,7 @@ fn import_media(project: &mut Project, path: &str) -> Result<CommandOutcome, Com
         id: media_id,
         path: path_buf,
         kind: probed.kind.expect("probe() always sets kind on success"),
-        duration_secs: probed.duration_secs,
+        duration_us: probed.duration_us,
         width: probed.width,
         height: probed.height,
         fps: probed.fps,
@@ -847,6 +1429,7 @@ fn add_track(
     name: String,
     id: Option<Id>,
     sequence_id: Option<Id>,
+    magnetic: Option<bool>,
 ) -> Result<CommandOutcome, CommandError> {
     if let Some(wanted) = id {
         // Track ids are unique across the root timeline and every sequence.
@@ -862,7 +1445,18 @@ fn add_track(
             return Err(CommandError::UnsupportedForSequence("caption tracks"));
         }
     }
+    if magnetic == Some(true) && kind == TrackKind::Caption {
+        return Err(CommandError::InvalidText(
+            "caption tracks cannot be magnetic".into(),
+        ));
+    }
     let mut track = Track::new(kind, name);
+    // Decision 1: the first video track of a project's root timeline is magnetic by default.
+    track.magnetic = magnetic.unwrap_or(
+        kind == TrackKind::Video
+            && sequence_id.is_none()
+            && !project.tracks.iter().any(|t| t.kind == TrackKind::Video),
+    );
     if let Some(id) = id {
         track.id = id;
     }
@@ -881,6 +1475,7 @@ fn clip_kind_matches(track_kind: TrackKind, clip: &Clip) -> bool {
             | (TrackKind::Audio, Clip::Audio(_))
             | (TrackKind::Caption, Clip::Caption(_))
             | (TrackKind::Video, Clip::Adjustment(_))
+            | (TrackKind::Video, Clip::Text(_))
     )
 }
 
@@ -890,29 +1485,25 @@ fn clip_track_kind(clip: &Clip) -> TrackKind {
         Clip::Audio(_) => TrackKind::Audio,
         Clip::Caption(_) => TrackKind::Caption,
         Clip::Adjustment(_) => TrackKind::Video,
+        Clip::Text(_) => TrackKind::Video,
     }
 }
 
-/// Tolerance for overlap comparisons, so floating-point position math (e.g.
-/// `generate_captions` placing consecutive Whisper segments back-to-back) doesn't produce
-/// spurious overlaps from sub-microsecond rounding error.
-const OVERLAP_EPS: f64 = 1e-6;
-
 fn check_no_overlap(
     track: &Track,
-    position_secs: f64,
-    duration_secs: f64,
+    start_us: i64,
+    duration_us: i64,
     ignore_clip: Option<Id>,
 ) -> Result<(), CommandError> {
-    let new_end = position_secs + duration_secs;
+    let new_end = start_us + duration_us;
     for clip in &track.clips {
         if Some(clip.id()) == ignore_clip {
             continue;
         }
-        let existing_start = clip.position_secs();
-        let existing_end = clip.end_secs();
-        if position_secs < existing_end - OVERLAP_EPS && existing_start < new_end - OVERLAP_EPS {
-            return Err(CommandError::Overlap(position_secs, new_end, track.id));
+        let existing_start = clip.start_us();
+        let existing_end = clip.end_us();
+        if start_us < existing_end && existing_start < new_end {
+            return Err(CommandError::Overlap(start_us, new_end, track.id));
         }
     }
     Ok(())
@@ -922,13 +1513,14 @@ fn add_clip(
     project: &mut Project,
     track_id: Id,
     media_id: Id,
-    position_secs: f64,
-    source_in_secs: f64,
-    source_out_secs: f64,
+    start_us: i64,
+    source_in_us: i64,
+    source_out_us: i64,
 ) -> Result<CommandOutcome, CommandError> {
-    if source_out_secs <= source_in_secs {
-        return Err(CommandError::InvalidRange(source_out_secs, source_in_secs));
+    if source_out_us <= source_in_us {
+        return Err(CommandError::InvalidRange(source_out_us, source_in_us));
     }
+    let fps = project.settings.fps;
 
     let media = project
         .find_media(media_id)
@@ -939,7 +1531,7 @@ fn add_clip(
     let media_duration = project.media_duration(media_id);
 
     if let Some(duration) = media_duration {
-        if source_out_secs > duration {
+        if source_out_us > duration {
             return Err(CommandError::ExceedsMediaDuration(duration));
         }
     }
@@ -978,20 +1570,22 @@ fn add_clip(
         ));
     }
 
-    let duration_secs = source_out_secs - source_in_secs;
-    check_no_overlap(track, position_secs, duration_secs, None)?;
+    let duration_us = source_out_us - source_in_us;
+    if !track.magnetic {
+        check_no_overlap(track, start_us, duration_us, None)?;
+    }
 
     let clip_id = Id::new_v4();
     let media_clip = MediaClip {
         id: clip_id,
         media_id,
-        position_secs,
-        source_in_secs,
-        source_out_secs,
+        start_us,
+        source_in_us,
+        source_out_us,
         gain_db: 0.0,
         enabled: true,
-        fade_in_secs: 0.0,
-        fade_out_secs: 0.0,
+        fade_in_us: 0,
+        fade_out_us: 0,
         ..Default::default()
     };
     let clip = match track.kind {
@@ -999,7 +1593,11 @@ fn add_clip(
         TrackKind::Audio => Clip::Audio(media_clip),
         TrackKind::Caption => unreachable!("caption tracks rejected above"),
     };
-    track.clips.push(clip);
+    if track.magnetic {
+        magnetic::insert(track, clip, fps);
+    } else {
+        track.clips.push(clip);
+    }
 
     Ok(CommandOutcome::ClipAdded { clip_id })
 }
@@ -1008,7 +1606,7 @@ fn split_clip(
     project: &mut Project,
     track_id: Id,
     clip_id: Id,
-    at_secs: f64,
+    at_us: i64,
 ) -> Result<CommandOutcome, CommandError> {
     let track = project
         .find_track_mut(track_id)
@@ -1021,60 +1619,81 @@ fn split_clip(
         .ok_or(CommandError::ClipNotFound(clip_id, track_id))?;
 
     let original = track.clips[idx].clone();
-    let start = original.position_secs();
-    let end = original.end_secs();
-    if at_secs <= start || at_secs >= end {
-        return Err(CommandError::SplitOutOfBounds(at_secs));
+    let start = original.start_us();
+    let end = original.end_us();
+    if at_us <= start || at_us >= end {
+        return Err(CommandError::SplitOutOfBounds(at_us));
     }
 
-    let split_offset = at_secs - start;
+    let split_offset = at_us - start;
     let right_id = Id::new_v4();
 
     let (left, right) = match original {
         Clip::Video(mut m) => {
             let mut right_m = m.clone();
             right_m.id = right_id;
-            m.source_out_secs = m.source_in_secs + split_offset;
-            right_m.position_secs = at_secs;
-            right_m.source_in_secs = m.source_out_secs;
-            let (left_kf, right_kf) = split_keyframes(&m.keyframes, split_offset);
+            m.source_out_us = m.source_in_us + split_offset;
+            right_m.start_us = at_us;
+            right_m.source_in_us = m.source_out_us;
+            let remap = right_m.reid_effects();
+            let (left_kf, right_kf) = split_keyframes(&m.keyframes, split_offset, &remap);
             m.keyframes = left_kf;
             right_m.keyframes = right_kf;
-            right_m.effects = clone_effects_with_new_ids(&m.effects);
             right_m.outgoing_transition = None;
             (Clip::Video(m), Clip::Video(right_m))
         }
         Clip::Audio(mut m) => {
             let mut right_m = m.clone();
             right_m.id = right_id;
-            m.source_out_secs = m.source_in_secs + split_offset;
-            right_m.position_secs = at_secs;
-            right_m.source_in_secs = m.source_out_secs;
-            let (left_kf, right_kf) = split_keyframes(&m.keyframes, split_offset);
+            m.source_out_us = m.source_in_us + split_offset;
+            right_m.start_us = at_us;
+            right_m.source_in_us = m.source_out_us;
+            let remap = right_m.reid_effects();
+            let (left_kf, right_kf) = split_keyframes(&m.keyframes, split_offset, &remap);
             m.keyframes = left_kf;
             right_m.keyframes = right_kf;
-            right_m.effects = clone_effects_with_new_ids(&m.effects);
             right_m.outgoing_transition = None;
             (Clip::Audio(m), Clip::Audio(right_m))
         }
         Clip::Caption(mut c) => {
             let mut right_c = c.clone();
             right_c.id = right_id;
-            c.duration_secs = split_offset;
-            right_c.position_secs = at_secs;
-            right_c.duration_secs = end - at_secs;
+            c.duration_us = split_offset;
+            right_c.start_us = at_us;
+            right_c.duration_us = end - at_us;
+            // Words go to the side holding their midpoint, times rebased to that side's start.
+            let (left_words, right_words) = split_words(&c.body.words, split_offset);
+            c.body.words = left_words;
+            right_c.body.words = right_words;
+            c.animations.out = None;
+            right_c.animations.in_ = None;
             (Clip::Caption(c), Clip::Caption(right_c))
+        }
+        Clip::Text(mut t) => {
+            let mut right_t = t.clone();
+            right_t.id = right_id;
+            t.duration_us = split_offset;
+            right_t.start_us = at_us;
+            right_t.duration_us = end - at_us;
+            let remap = right_t.reid_effects();
+            let (left_kf, right_kf) = split_keyframes(&t.keyframes, split_offset, &remap);
+            t.keyframes = left_kf;
+            right_t.keyframes = right_kf;
+            right_t.outgoing_transition = None;
+            t.animations.out = None;
+            right_t.animations.in_ = None;
+            (Clip::Text(t), Clip::Text(right_t))
         }
         Clip::Adjustment(mut a) => {
             let mut right_a = a.clone();
             right_a.id = right_id;
-            a.duration_secs = split_offset;
-            right_a.position_secs = at_secs;
-            right_a.duration_secs = end - at_secs;
-            let (left_kf, right_kf) = split_keyframes(&a.keyframes, split_offset);
+            a.duration_us = split_offset;
+            right_a.start_us = at_us;
+            right_a.duration_us = end - at_us;
+            let remap = right_a.reid_effects();
+            let (left_kf, right_kf) = split_keyframes(&a.keyframes, split_offset, &remap);
             a.keyframes = left_kf;
             right_a.keyframes = right_kf;
-            right_a.effects = clone_effects_with_new_ids(&a.effects);
             (Clip::Adjustment(a), Clip::Adjustment(right_a))
         }
     };
@@ -1086,14 +1705,40 @@ fn split_clip(
     Ok(CommandOutcome::ClipSplit { left_id, right_id })
 }
 
+/// Split caption words at `offset` (clip-relative µs): a word goes to the side holding its
+/// midpoint, clamped to that side, and the right side is rebased to its own start.
+fn split_words(
+    words: &[crate::project::CaptionWord],
+    offset: i64,
+) -> (
+    Vec<crate::project::CaptionWord>,
+    Vec<crate::project::CaptionWord>,
+) {
+    let (mut left, mut right) = (Vec::new(), Vec::new());
+    for w in words {
+        if (w.start_us + w.end_us) / 2 < offset {
+            let mut w = w.clone();
+            w.end_us = w.end_us.min(offset);
+            w.start_us = w.start_us.min(w.end_us);
+            left.push(w);
+        } else {
+            let mut w = w.clone();
+            w.start_us = (w.start_us - offset).max(0);
+            w.end_us = (w.end_us - offset).max(w.start_us);
+            right.push(w);
+        }
+    }
+    (left, right)
+}
+
 fn trim_clip(
     project: &mut Project,
     track_id: Id,
     clip_id: Id,
-    new_source_in_secs: Option<f64>,
-    new_source_out_secs: Option<f64>,
+    new_source_in_us: Option<i64>,
+    new_source_out_us: Option<i64>,
 ) -> Result<CommandOutcome, CommandError> {
-    if new_source_in_secs.is_none() && new_source_out_secs.is_none() {
+    if new_source_in_us.is_none() && new_source_out_us.is_none() {
         return Err(CommandError::TrimRequiresChange);
     }
 
@@ -1106,18 +1751,18 @@ fn trim_clip(
 
     let media_clip = match clip {
         Clip::Video(m) | Clip::Audio(m) => m,
-        Clip::Caption(_) => return Err(CommandError::NotMediaClip(clip_id)),
+        Clip::Caption(_) | Clip::Text(_) => return Err(CommandError::NotMediaClip(clip_id)),
         Clip::Adjustment(_) => return Err(CommandError::TrimAdjustment(clip_id)),
     };
 
-    let new_in = new_source_in_secs.unwrap_or(media_clip.source_in_secs);
-    let new_out = new_source_out_secs.unwrap_or(media_clip.source_out_secs);
+    let new_in = new_source_in_us.unwrap_or(media_clip.source_in_us);
+    let new_out = new_source_out_us.unwrap_or(media_clip.source_out_us);
     if new_out <= new_in {
         return Err(CommandError::InvalidRange(new_out, new_in));
     }
 
     let media_id = media_clip.media_id;
-    let position_secs = media_clip.position_secs;
+    let start_us = media_clip.start_us;
 
     // Same bounds check `AddClip` enforces — trimming shouldn't be able to reach past the
     // media's probed duration just because `AddClip`'s check only ran once, at creation.
@@ -1127,11 +1772,13 @@ fn trim_clip(
         }
     }
 
-    // Trimming changes the clip's on-timeline duration (position_secs is untouched), which
+    // Trimming changes the clip's on-timeline duration (start_us is untouched), which
     // can newly collide with a neighbor — every other mutator that changes a clip's span
     // enforces this; TrimClip was the one exception.
     let new_duration = new_out - new_in;
-    check_no_overlap(track, position_secs, new_duration, Some(clip_id))?;
+    if !track.magnetic {
+        check_no_overlap(track, start_us, new_duration, Some(clip_id))?;
+    }
 
     let track = project
         .find_track_mut(track_id)
@@ -1143,13 +1790,13 @@ fn trim_clip(
         .ok_or(CommandError::ClipNotFound(clip_id, track_id))?;
     let media_clip = match clip {
         Clip::Video(m) | Clip::Audio(m) => m,
-        Clip::Caption(_) | Clip::Adjustment(_) => {
+        Clip::Caption(_) | Clip::Text(_) | Clip::Adjustment(_) => {
             unreachable!("non-media clips already rejected above")
         }
     };
 
-    media_clip.source_in_secs = new_in;
-    media_clip.source_out_secs = new_out;
+    media_clip.source_in_us = new_in;
+    media_clip.source_out_us = new_out;
 
     Ok(CommandOutcome::Applied)
 }
@@ -1158,7 +1805,7 @@ fn move_clip(
     project: &mut Project,
     track_id: Id,
     clip_id: Id,
-    new_position_secs: f64,
+    new_start_us: i64,
     new_track_id: Option<Id>,
 ) -> Result<CommandOutcome, CommandError> {
     let dest_track_id = new_track_id.unwrap_or(track_id);
@@ -1196,7 +1843,8 @@ fn move_clip(
         }
     }
 
-    let duration = clip.duration_secs();
+    let duration = clip.duration_us();
+    let fps = project.settings.fps;
     {
         let dest_track = project.find_track(dest_track_id).unwrap();
         let ignore = if dest_track_id == track_id {
@@ -1204,7 +1852,9 @@ fn move_clip(
         } else {
             None
         };
-        check_no_overlap(dest_track, new_position_secs, duration, ignore)?;
+        if !dest_track.magnetic {
+            check_no_overlap(dest_track, new_start_us, duration, ignore)?;
+        }
     }
 
     // Remove from source, update position, insert into destination.
@@ -1214,11 +1864,25 @@ fn move_clip(
         .iter()
         .position(|c| c.id() == clip_id)
         .unwrap();
+    let src_magnetic = src_track.magnetic;
     let mut moved = src_track.clips.remove(idx);
-    moved.set_position_secs(new_position_secs);
+    moved.set_start_us(new_start_us);
 
+    if dest_track_id == track_id && src_magnetic {
+        // Reorder within a magnetic track: the clip lands where its centre falls among the
+        // others, which stay where they are until the track is packed.
+        magnetic::insert(src_track, moved, fps);
+        return Ok(CommandOutcome::Applied);
+    }
+    if src_magnetic {
+        magnetic::pack(project.find_track_mut(track_id).unwrap(), fps);
+    }
     let dest_track = project.find_track_mut(dest_track_id).unwrap();
-    dest_track.clips.push(moved);
+    if dest_track.magnetic {
+        magnetic::insert(dest_track, moved, fps);
+    } else {
+        dest_track.clips.push(moved);
+    }
 
     Ok(CommandOutcome::Applied)
 }
@@ -1242,120 +1906,16 @@ fn delete_clip(
     let removed = track.clips.remove(idx);
 
     if ripple {
-        let gap_start = removed.position_secs();
-        let gap = removed.duration_secs();
+        let gap_start = removed.start_us();
+        let gap = removed.duration_us();
         for clip in track.clips.iter_mut() {
-            if clip.position_secs() >= gap_start {
-                clip.set_position_secs(clip.position_secs() - gap);
+            if clip.start_us() >= gap_start {
+                clip.set_start_us(clip.start_us() - gap);
             }
         }
     }
 
     Ok(CommandOutcome::Applied)
-}
-
-fn add_caption(
-    project: &mut Project,
-    track_id: Id,
-    text: String,
-    position_secs: f64,
-    duration_secs: f64,
-    style_id: String,
-) -> Result<CommandOutcome, CommandError> {
-    let track = project
-        .find_track_mut(track_id)
-        .ok_or(CommandError::TrackNotFound(track_id))?;
-
-    if track.kind != TrackKind::Caption {
-        return Err(CommandError::TrackKindMismatch(
-            track_id,
-            track.kind,
-            TrackKind::Caption,
-        ));
-    }
-    if duration_secs <= 0.0 {
-        return Err(CommandError::InvalidDuration(duration_secs));
-    }
-
-    check_no_overlap(track, position_secs, duration_secs, None)?;
-
-    let clip_id = Id::new_v4();
-    track.clips.push(Clip::Caption(CaptionClip {
-        id: clip_id,
-        text,
-        position_secs,
-        duration_secs,
-        style_id,
-    }));
-
-    Ok(CommandOutcome::ClipAdded { clip_id })
-}
-
-fn set_caption(
-    project: &mut Project,
-    track_id: Id,
-    clip_id: Id,
-    text: Option<String>,
-    position_secs: Option<f64>,
-    duration_secs: Option<f64>,
-    style_id: Option<String>,
-) -> Result<CommandOutcome, CommandError> {
-    if text.is_none() && position_secs.is_none() && duration_secs.is_none() && style_id.is_none() {
-        return Err(CommandError::SetCaptionRequiresChange);
-    }
-
-    let track = project
-        .find_track(track_id)
-        .ok_or(CommandError::TrackNotFound(track_id))?;
-    if track.kind != TrackKind::Caption {
-        return Err(CommandError::TrackKindMismatch(
-            track_id,
-            track.kind,
-            TrackKind::Caption,
-        ));
-    }
-
-    // Resolve the existing clip first: if `clip_id` doesn't exist, report ClipNotFound
-    // rather than silently defaulting position/duration to 0.0/0.1 and risking a
-    // misleading Overlap error instead.
-    let existing = track
-        .find_clip(clip_id)
-        .ok_or(CommandError::ClipNotFound(clip_id, track_id))?;
-    let new_position = position_secs.unwrap_or_else(|| existing.position_secs());
-    let new_duration = duration_secs.unwrap_or_else(|| existing.duration_secs());
-    if new_duration <= 0.0 {
-        return Err(CommandError::InvalidDuration(new_duration));
-    }
-
-    check_no_overlap(track, new_position, new_duration, Some(clip_id))?;
-
-    let track = project
-        .find_track_mut(track_id)
-        .ok_or(CommandError::TrackNotFound(track_id))?;
-    let clip = track
-        .clips
-        .iter_mut()
-        .find(|c| c.id() == clip_id)
-        .ok_or(CommandError::ClipNotFound(clip_id, track_id))?;
-
-    match clip {
-        Clip::Caption(c) => {
-            if let Some(t) = text {
-                c.text = t;
-            }
-            if let Some(p) = position_secs {
-                c.position_secs = p;
-            }
-            if let Some(d) = duration_secs {
-                c.duration_secs = d;
-            }
-            if let Some(s) = style_id {
-                c.style_id = s;
-            }
-            Ok(CommandOutcome::Applied)
-        }
-        _ => Err(CommandError::ClipNotFound(clip_id, track_id)),
-    }
 }
 
 fn export_project_cmd(
@@ -1374,15 +1934,11 @@ fn generate_captions(
     project: &mut Project,
     media_id: Id,
     track_id: Id,
-    style_id: String,
-    timeline_offset_secs: f64,
+    style: Option<TextStyleRef>,
+    timeline_offset_us: i64,
 ) -> Result<CommandOutcome, CommandError> {
-    use crate::captions::BUILTIN_STYLES;
     use crate::perceive::transcribe_media;
-
-    if !BUILTIN_STYLES.contains(&style_id.as_str()) {
-        // Allow any style id but warn via default fallback in renderer — still accept custom ids.
-    }
+    use crate::project::{CaptionWord, Transcript, TranscriptRef, TranscriptWord};
 
     let track = project
         .find_track(track_id)
@@ -1394,35 +1950,116 @@ fn generate_captions(
             TrackKind::Caption,
         ));
     }
+    if let Some(s) = &style {
+        crate::project::text::validate_style_ref("style", s).map_err(CommandError::InvalidText)?;
+    }
     reject_sequence_media(project, media_id, "GenerateCaptions")?;
 
     let transcript = transcribe_media(project, media_id)?;
-    let mut count = 0usize;
 
-    for seg in transcript.segments {
+    // The project's transcript of this media: word ids `w-1`, `w-2`, ... in source media time.
+    let mut words: Vec<TranscriptWord> = Vec::new();
+    let mut segment_words: Vec<Vec<(String, i64, i64, String)>> = Vec::new();
+    for seg in &transcript.segments {
+        let mut in_segment = Vec::new();
+        for w in &seg.words {
+            let id = format!("w-{}", words.len() + 1);
+            words.push(TranscriptWord {
+                id: id.clone(),
+                text: w.text.clone(),
+                start_us: w.start_us,
+                end_us: w.end_us,
+                deleted: false,
+                tags: Vec::new(),
+            });
+            in_segment.push((id, w.start_us, w.end_us, w.text.clone()));
+        }
+        segment_words.push(in_segment);
+    }
+    let transcript_id = if words.is_empty() {
+        None
+    } else {
+        // One transcript per media item: a new run replaces the old one.
+        let existing = project
+            .transcripts
+            .iter()
+            .position(|t| t.media_id == media_id);
+        let id = existing
+            .map(|i| project.transcripts[i].id)
+            .unwrap_or_else(Id::new_v4);
+        let record = Transcript {
+            id,
+            media_id,
+            language: String::new(),
+            model: std::env::var("RENDERLY_WHISPER_MODEL")
+                .ok()
+                .and_then(|p| {
+                    std::path::Path::new(&p)
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                })
+                .unwrap_or_default(),
+            words,
+        };
+        match existing {
+            Some(i) => project.transcripts[i] = record,
+            None => project.transcripts.push(record),
+        }
+        Some(id)
+    };
+
+    let mut count = 0usize;
+    for (seg, seg_words) in transcript.segments.into_iter().zip(segment_words) {
         let text = seg.text.trim();
         if text.is_empty() {
             continue;
         }
-        let duration = (seg.end_secs - seg.start_secs).max(0.1);
-        let position = timeline_offset_secs + seg.start_secs;
+        let duration = (seg.end_us - seg.start_us).max(100_000);
+        let position = timeline_offset_us + seg.start_us;
         // Skip segments that fail to place (e.g. two whisper segments landing on
         // overlapping timestamps) instead of aborting the whole batch via `?` — an error
         // partway through would otherwise still leave the already-added captions mutated
         // into `project` while reporting failure, silently losing the rest of the
         // transcript. Best-effort captioning of everything that fits is more useful to an
         // agent than an all-or-nothing batch.
-        if add_caption(
+        let Ok(CommandOutcome::ClipAdded { clip_id }) = text::add_caption(
             project,
             track_id,
-            text.to_string(),
+            BodyInput::text(text),
             position,
             duration,
-            style_id.clone(),
-        )
-        .is_ok()
+            style.clone(),
+            None,
+        ) else {
+            continue;
+        };
+        count += 1;
+        if seg_words.is_empty() {
+            continue;
+        }
+        if let Some(Clip::Caption(c)) = project
+            .find_track_mut(track_id)
+            .and_then(|t| t.clips.iter_mut().find(|c| c.id() == clip_id))
         {
-            count += 1;
+            c.body.words = seg_words
+                .iter()
+                .map(|(id, s, e, t)| CaptionWord {
+                    text: t.clone(),
+                    start_us: (s - seg.start_us).clamp(0, duration),
+                    end_us: (e - seg.start_us).clamp(0, duration),
+                    emphasis: false,
+                    word_id: Some(id.clone()),
+                })
+                .collect();
+            if let (Some(tid), Some(first), Some(last)) =
+                (transcript_id, seg_words.first(), seg_words.last())
+            {
+                c.transcript_ref = Some(TranscriptRef {
+                    transcript_id: tid,
+                    first_word: first.0.clone(),
+                    last_word: last.0.clone(),
+                });
+            }
         }
     }
 
@@ -1457,10 +2094,10 @@ fn set_audio_fade(
     project: &mut Project,
     track_id: Id,
     clip_id: Id,
-    fade_in_secs: f64,
-    fade_out_secs: f64,
+    fade_in_us: i64,
+    fade_out_us: i64,
 ) -> Result<CommandOutcome, CommandError> {
-    if fade_in_secs < 0.0 || fade_out_secs < 0.0 {
+    if fade_in_us < 0 || fade_out_us < 0 {
         return Err(CommandError::InvalidFade);
     }
 
@@ -1475,8 +2112,8 @@ fn set_audio_fade(
 
     match clip {
         Clip::Audio(m) => {
-            m.fade_in_secs = fade_in_secs;
-            m.fade_out_secs = fade_out_secs;
+            m.fade_in_us = fade_in_us;
+            m.fade_out_us = fade_out_us;
             Ok(CommandOutcome::Applied)
         }
         _ => Err(CommandError::NoAudio(clip_id)),
@@ -1506,7 +2143,7 @@ fn set_project_settings(
     project: &mut Project,
     width: Option<u32>,
     height: Option<u32>,
-    fps: Option<f64>,
+    fps: Option<Fps>,
 ) -> Result<CommandOutcome, CommandError> {
     if width.is_none() && height.is_none() && fps.is_none() {
         return Err(CommandError::SetProjectSettingsRequiresChange);
@@ -1517,8 +2154,8 @@ fn set_project_settings(
         return Err(CommandError::InvalidDimensions);
     }
     if let Some(fps) = fps {
-        if fps <= 0.0 {
-            return Err(CommandError::InvalidFps(fps));
+        if fps.num == 0 || fps.den == 0 {
+            return Err(CommandError::InvalidFps(fps.as_f64()));
         }
     }
 
@@ -1536,13 +2173,20 @@ fn set_track_flags(
     muted: Option<bool>,
     locked: Option<bool>,
     hidden: Option<bool>,
+    magnetic: Option<bool>,
 ) -> Result<CommandOutcome, CommandError> {
-    if muted.is_none() && locked.is_none() && hidden.is_none() {
+    if muted.is_none() && locked.is_none() && hidden.is_none() && magnetic.is_none() {
         return Err(CommandError::SetTrackFlagsRequiresChange);
     }
+    let fps = project.settings.fps;
     let track = project
         .find_track_mut(track_id)
         .ok_or(CommandError::TrackNotFound(track_id))?;
+    if magnetic == Some(true) && track.kind == TrackKind::Caption {
+        return Err(CommandError::InvalidText(
+            "caption tracks cannot be magnetic".into(),
+        ));
+    }
     if let Some(m) = muted {
         track.muted = m;
     }
@@ -1551,6 +2195,12 @@ fn set_track_flags(
     }
     if let Some(h) = hidden {
         track.hidden = h;
+    }
+    if let Some(m) = magnetic {
+        track.magnetic = m;
+        if m {
+            magnetic::pack(track, fps);
+        }
     }
     Ok(CommandOutcome::Applied)
 }
@@ -1632,6 +2282,10 @@ fn set_clip_enabled(
             a.enabled = enabled;
             Ok(CommandOutcome::Applied)
         }
+        Clip::Text(t) => {
+            t.enabled = enabled;
+            Ok(CommandOutcome::Applied)
+        }
         Clip::Caption(_) => Err(CommandError::NotMediaClip(clip_id)),
     }
 }
@@ -1669,6 +2323,19 @@ fn any_clip_mut(
         .ok_or(CommandError::ClipNotFound(clip_id, track_id))
 }
 
+/// The static transform of a media clip or text clip.
+fn layer_transform_mut(
+    project: &mut Project,
+    track_id: Id,
+    clip_id: Id,
+) -> Result<&mut ClipTransform, CommandError> {
+    match any_clip_mut(project, track_id, clip_id)? {
+        Clip::Video(m) | Clip::Audio(m) => Ok(&mut m.transform),
+        Clip::Text(t) => Ok(&mut t.transform),
+        Clip::Caption(_) | Clip::Adjustment(_) => Err(CommandError::NotMediaClip(clip_id)),
+    }
+}
+
 fn validate_transform(t: &ClipTransform) -> Result<ClipTransform, CommandError> {
     if ![
         t.x,
@@ -1688,102 +2355,19 @@ fn validate_transform(t: &ClipTransform) -> Result<ClipTransform, CommandError> 
     Ok(t.clamp_opacity().clamp_fit())
 }
 
-fn validate_keyframes(tracks: Vec<KeyframeTrack>) -> Result<Vec<KeyframeTrack>, CommandError> {
-    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::with_capacity(tracks.len());
-    for mut track in tracks {
-        if !seen.insert(track.property) {
-            return Err(CommandError::InvalidKeyframes(format!(
-                "duplicate property {:?}",
-                track.property
-            )));
-        }
-        for key in &track.keys {
-            if !key.time_secs.is_finite() || key.time_secs < 0.0 || !key.value.is_finite() {
-                return Err(CommandError::InvalidKeyframes(
-                    "non-finite or negative keyframe".into(),
-                ));
-            }
-            if track.property == AnimProperty::Opacity && !(0.0..=1.0).contains(&key.value) {
-                return Err(CommandError::InvalidKeyframes(
-                    "opacity keyframe must be in 0..=1".into(),
-                ));
-            }
-            if matches!(track.property, AnimProperty::FitX | AnimProperty::FitY)
-                && !(-1.0..=1.0).contains(&key.value)
-            {
-                return Err(CommandError::InvalidKeyframes(
-                    "fit keyframe must be in -1..=1".into(),
-                ));
-            }
-            if track.property == AnimProperty::Speed && !(0.25..=4.0).contains(&key.value) {
-                return Err(CommandError::InvalidKeyframes(
-                    "speed keyframe must be in 0.25..=4".into(),
-                ));
-            }
-        }
-        track.keys.sort_by(|a, b| {
-            a.time_secs
-                .partial_cmp(&b.time_secs)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        out.push(track);
-    }
-    Ok(out)
-}
-
-fn validate_effects(
-    project: &Project,
-    effects: Vec<EffectInstance>,
-) -> Result<Vec<EffectInstance>, CommandError> {
-    use crate::compose::effects::{clamp_effect_params, is_builtin_effect_id};
-
-    let pack_effect_ids = crate::packs::known_effect_ids(project);
-    let wasm_effect_ids = crate::plugins::known_effect_ids(project);
-
-    let mut ids = std::collections::HashSet::new();
-    let mut out = Vec::with_capacity(effects.len());
-    for mut effect in effects {
-        if effect.effect_id.trim().is_empty() {
-            return Err(CommandError::InvalidEffects("empty effect_id".into()));
-        }
-        let known = is_builtin_effect_id(&effect.effect_id)
-            || pack_effect_ids.contains(&effect.effect_id)
-            || wasm_effect_ids.contains(&effect.effect_id);
-        if !known {
-            return Err(CommandError::InvalidEffects(format!(
-                "unknown effect_id '{}'",
-                effect.effect_id
-            )));
-        }
-        if !ids.insert(effect.id) {
-            return Err(CommandError::InvalidEffects(format!(
-                "duplicate effect id {}",
-                effect.id
-            )));
-        }
-        for (k, v) in &effect.params {
-            if !v.is_finite() {
-                return Err(CommandError::InvalidEffects(format!(
-                    "non-finite param '{k}'"
-                )));
-            }
-        }
-        clamp_effect_params(&effect.effect_id, &mut effect.params);
-        out.push(effect);
-    }
-    Ok(out)
-}
-
 fn set_clip_transform(
     project: &mut Project,
-    track_id: Id,
-    clip_id: Id,
+    targets: Vec<ClipRef>,
     transform: ClipTransform,
 ) -> Result<CommandOutcome, CommandError> {
     let transform = validate_transform(&transform)?;
-    let clip = media_clip_mut(project, track_id, clip_id)?;
-    clip.transform = transform;
+    // Check every target before touching any, so a batch applies to all or none.
+    for t in &targets {
+        layer_transform_mut(project, t.track_id, t.clip_id)?;
+    }
+    for t in &targets {
+        *layer_transform_mut(project, t.track_id, t.clip_id)? = transform;
+    }
     Ok(CommandOutcome::Applied)
 }
 
@@ -1793,121 +2377,65 @@ fn set_clip_keyframes(
     clip_id: Id,
     keyframes: Vec<KeyframeTrack>,
 ) -> Result<CommandOutcome, CommandError> {
-    let keyframes = validate_keyframes(keyframes)?;
-    match any_clip_mut(project, track_id, clip_id)? {
-        Clip::Video(m) | Clip::Audio(m) => m.keyframes = keyframes,
-        Clip::Adjustment(a) => {
-            if keyframes
-                .iter()
-                .any(|k| k.property != AnimProperty::Opacity)
-            {
-                return Err(CommandError::InvalidKeyframes(
-                    "adjustment layers only support opacity keyframes".into(),
-                ));
-            }
-            a.keyframes = keyframes;
-        }
-        Clip::Caption(_) => return Err(CommandError::NotMediaClip(clip_id)),
-    }
-    Ok(CommandOutcome::Applied)
-}
-
-fn set_clip_effects(
-    project: &mut Project,
-    track_id: Id,
-    clip_id: Id,
-    effects: Vec<EffectInstance>,
-) -> Result<CommandOutcome, CommandError> {
-    let effects = validate_effects(project, effects)?;
-    match any_clip_mut(project, track_id, clip_id)? {
-        Clip::Video(m) | Clip::Audio(m) => m.effects = effects,
-        Clip::Adjustment(a) => {
-            // WASM frame plugins run on CPU pixels of a decoded source frame; an adjustment
-            // layer's input exists only on the GPU.
-            if let Some(e) = effects.iter().find(|e| e.effect_id.starts_with("wasm:")) {
-                return Err(CommandError::InvalidEffects(format!(
-                    "WASM plugin effect '{}' is not supported on adjustment layers",
-                    e.effect_id
-                )));
-            }
-            a.effects = effects;
-        }
-        Clip::Caption(_) => return Err(CommandError::NotMediaClip(clip_id)),
-    }
-    Ok(CommandOutcome::Applied)
-}
-
-fn set_clip_transition(
-    project: &mut Project,
-    track_id: Id,
-    clip_id: Id,
-    transition: Option<ClipTransition>,
-) -> Result<CommandOutcome, CommandError> {
-    let track_kind = project
+    let (stack, adjustment, old): (
+        Vec<crate::project::EffectInstance>,
+        bool,
+        Vec<KeyframeTrack>,
+    ) = match project
         .find_track(track_id)
         .ok_or(CommandError::TrackNotFound(track_id))?
-        .kind;
-    if track_kind != TrackKind::Video {
-        return Err(CommandError::InvalidTransition(
-            "transitions are only supported on video tracks".into(),
-        ));
-    }
-
-    if let Some(ref t) = transition {
-        if !TransitionKind::ALL.contains(&t.kind) {
-            return Err(CommandError::InvalidTransition(
-                "unsupported transition kind".into(),
-            ));
-        }
-        if !t.duration_secs.is_finite() || t.duration_secs <= 0.0 {
-            return Err(CommandError::InvalidTransition(
-                "duration_secs must be > 0".into(),
-            ));
-        }
-
-        let track = project
+        .find_clip(clip_id)
+        .ok_or(CommandError::ClipNotFound(clip_id, track_id))?
+    {
+        Clip::Video(m) | Clip::Audio(m) => (
+            m.effect_stack().into_iter().cloned().collect(),
+            false,
+            m.keyframes.clone(),
+        ),
+        Clip::Adjustment(a) => (
+            a.effect_stack().into_iter().cloned().collect(),
+            true,
+            a.keyframes.clone(),
+        ),
+        Clip::Text(t) => (
+            t.effect_stack().into_iter().cloned().collect(),
+            false,
+            t.keyframes.clone(),
+        ),
+        Clip::Caption(_) => return Err(CommandError::NotMediaClip(clip_id)),
+    };
+    if matches!(
+        project
             .find_track(track_id)
-            .ok_or(CommandError::TrackNotFound(track_id))?;
-        let clip = track
-            .clips
-            .iter()
-            .find(|c| c.id() == clip_id)
-            .ok_or(CommandError::ClipNotFound(clip_id, track_id))?
-            .as_media()
-            .ok_or(CommandError::NotMediaClip(clip_id))?;
-        let clip_dur = clip.timeline_duration_secs();
-        if t.duration_secs > clip_dur / 2.0 + 1e-9 {
-            return Err(CommandError::InvalidTransition(
-                "duration must be <= half the clip duration".into(),
-            ));
-        }
-        let end = clip.position_secs + clip_dur;
-        let mut nexts: Vec<&MediaClip> = track
-            .clips
-            .iter()
-            .filter_map(|c| c.as_media())
-            .filter(|m| m.id != clip_id && m.enabled && m.position_secs >= end - 1e-6)
-            .collect();
-        nexts.sort_by(|a, b| {
-            a.position_secs
-                .partial_cmp(&b.position_secs)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let Some(next) = nexts.first() else {
-            return Err(CommandError::InvalidTransition(
-                "no following clip on this track".into(),
-            ));
-        };
-        let next_dur = next.timeline_duration_secs();
-        if t.duration_secs > next_dur / 2.0 + 1e-9 {
-            return Err(CommandError::InvalidTransition(
-                "duration must be <= half the next clip duration".into(),
-            ));
+            .and_then(|t| t.find_clip(clip_id)),
+        Some(Clip::Text(_))
+    ) {
+        if let Some(bad) = keyframes.iter().find(|t| {
+            matches!(
+                t.property,
+                TrackProperty::Anim(
+                    AnimProperty::Volume
+                        | AnimProperty::Speed
+                        | AnimProperty::FitX
+                        | AnimProperty::FitY
+                )
+            )
+        }) {
+            return Err(CommandError::InvalidKeyframes(format!(
+                "text clips animate position, scale, rotation, opacity and effect parameters, not {}",
+                bad.property
+            )));
         }
     }
-
-    let clip = media_clip_mut(project, track_id, clip_id)?;
-    clip.outgoing_transition = transition;
+    let stack_refs: Vec<&crate::project::EffectInstance> = stack.iter().collect();
+    let mut keyframes = effects::validate_keyframes(project, &stack_refs, adjustment, keyframes)?;
+    effects::complete_inserted_keys(&old, &mut keyframes);
+    match any_clip_mut(project, track_id, clip_id)? {
+        Clip::Video(m) | Clip::Audio(m) => m.keyframes = keyframes,
+        Clip::Adjustment(a) => a.keyframes = keyframes,
+        Clip::Text(t) => t.keyframes = keyframes,
+        Clip::Caption(_) => return Err(CommandError::NotMediaClip(clip_id)),
+    }
     Ok(CommandOutcome::Applied)
 }
 
@@ -1933,39 +2461,44 @@ fn set_clip_speed(
         .ok_or(CommandError::ClipNotFound(clip_id, track_id))?
         .as_media()
         .ok_or(CommandError::NotMediaClip(clip_id))?;
-    let new_dur = (clip.source_out_secs - clip.source_in_secs).max(0.0) / speed;
-    check_no_overlap(track, clip.position_secs, new_dur, Some(clip_id))?;
+    let new_dur = ((clip.source_out_us - clip.source_in_us).max(0) as f64 / speed).round() as i64;
+    if !track.magnetic {
+        check_no_overlap(track, clip.start_us, new_dur, Some(clip_id))?;
+    }
 
     let clip = media_clip_mut(project, track_id, clip_id)?;
     clip.speed = speed;
     Ok(CommandOutcome::Applied)
 }
 
-fn load_asset_pack(project: &mut Project, path: &str) -> Result<CommandOutcome, CommandError> {
-    let path_buf = std::path::PathBuf::from(path);
-    let pack = crate::packs::load_pack(&path_buf).map_err(CommandError::AssetPack)?;
-    if project.asset_pack_paths.iter().any(|p| {
-        p == &path_buf || crate::packs::pack_id_at(p).as_deref() == Some(pack.manifest.id.as_str())
-    }) {
-        // Replace path if same id already loaded from elsewhere.
-        project
-            .asset_pack_paths
-            .retain(|p| crate::packs::pack_id_at(p).as_deref() != Some(pack.manifest.id.as_str()));
-    }
-    project.asset_pack_paths.push(path_buf);
+/// `LoadAssetPack` (deprecated): packs live in the user library, not in the project, so this
+/// installs the pack folder there (the same as `renderly pack install`). Items are then applied
+/// by ref.
+fn load_asset_pack(_project: &mut Project, path: &str) -> Result<CommandOutcome, CommandError> {
+    let mut library = crate::library::Library::open(&crate::library::default_root())
+        .map_err(|e| CommandError::AssetPack(e.to_string()))?;
+    library
+        .install(std::path::Path::new(path))
+        .map_err(|e| CommandError::AssetPack(e.to_string()))?;
     Ok(CommandOutcome::Applied)
 }
 
-fn unload_asset_pack(project: &mut Project, pack_id: &str) -> Result<CommandOutcome, CommandError> {
-    let before = project.asset_pack_paths.len();
-    project
-        .asset_pack_paths
-        .retain(|p| crate::packs::pack_id_at(p).as_deref() != Some(pack_id));
-    if project.asset_pack_paths.len() == before {
-        return Err(CommandError::AssetPack(format!(
-            "pack '{pack_id}' is not loaded"
-        )));
-    }
+/// `UnloadAssetPack` (deprecated): uninstalls the pack from the user library. Accepts the pack
+/// id with or without the `local.` publisher.
+fn unload_asset_pack(
+    _project: &mut Project,
+    pack_id: &str,
+) -> Result<CommandOutcome, CommandError> {
+    let mut library = crate::library::Library::open(&crate::library::default_root())
+        .map_err(|e| CommandError::AssetPack(e.to_string()))?;
+    let canonical = if pack_id.contains('.') {
+        pack_id.to_string()
+    } else {
+        format!("local.{pack_id}")
+    };
+    library
+        .uninstall(&canonical, None)
+        .map_err(|e| CommandError::AssetPack(e.to_string()))?;
     Ok(CommandOutcome::Applied)
 }
 
@@ -1974,11 +2507,11 @@ fn load_wasm_plugin(project: &mut Project, path: &str) -> Result<CommandOutcome,
     let plugin =
         crate::plugins::load_plugin_manifest(&path_buf).map_err(CommandError::WasmPlugin)?;
     project
-        .wasm_plugin_paths
+        .legacy_pack_paths
         .retain(|p| crate::plugins::plugin_id_at(p).as_deref() != Some(plugin.id.as_str()));
     // Validate the module loads once at install time.
     crate::plugins::PluginHost::load_from_dir(&path_buf).map_err(CommandError::WasmPlugin)?;
-    project.wasm_plugin_paths.push(path_buf);
+    project.legacy_pack_paths.push(path_buf);
     Ok(CommandOutcome::Applied)
 }
 
@@ -1986,11 +2519,11 @@ fn unload_wasm_plugin(
     project: &mut Project,
     plugin_id: &str,
 ) -> Result<CommandOutcome, CommandError> {
-    let before = project.wasm_plugin_paths.len();
+    let before = project.legacy_pack_paths.len();
     project
-        .wasm_plugin_paths
+        .legacy_pack_paths
         .retain(|p| crate::plugins::plugin_id_at(p).as_deref() != Some(plugin_id));
-    if project.wasm_plugin_paths.len() == before {
+    if project.legacy_pack_paths.len() == before {
         return Err(CommandError::WasmPlugin(format!(
             "plugin '{plugin_id}' is not loaded"
         )));
@@ -2014,9 +2547,9 @@ fn add_sticker_from_pack(
     pack_id: &str,
     sticker_id: &str,
     track_id: Id,
-    position_secs: f64,
+    start_us: i64,
 ) -> Result<CommandOutcome, CommandError> {
-    let packs = crate::packs::load_project_packs(project);
+    let packs = crate::packs::load_installed_packs();
     let (pack, sticker) =
         crate::packs::find_sticker(&packs, pack_id, sticker_id).ok_or_else(|| {
             CommandError::AssetPack(format!("sticker '{pack_id}/{sticker_id}' not found"))
@@ -2039,8 +2572,8 @@ fn add_sticker_from_pack(
         ));
     }
     let media_id = find_or_import_media(project, &asset)?;
-    let dur = sticker.default_duration_secs.max(0.1);
-    add_clip(project, track_id, media_id, position_secs, 0.0, dur)
+    let dur = sticker.default_duration_us.max(100_000);
+    add_clip(project, track_id, media_id, start_us, 0, dur)
 }
 
 fn add_sfx_from_pack(
@@ -2048,9 +2581,9 @@ fn add_sfx_from_pack(
     pack_id: &str,
     sfx_id: &str,
     track_id: Id,
-    position_secs: f64,
+    start_us: i64,
 ) -> Result<CommandOutcome, CommandError> {
-    let packs = crate::packs::load_project_packs(project);
+    let packs = crate::packs::load_installed_packs();
     let (pack, sfx) = crate::packs::find_sfx(&packs, pack_id, sfx_id)
         .ok_or_else(|| CommandError::AssetPack(format!("sfx '{pack_id}/{sfx_id}' not found")))?;
     let asset = pack.root.join(&sfx.path);
@@ -2072,8 +2605,8 @@ fn add_sfx_from_pack(
     }
     let media_id = find_or_import_media(project, &asset)?;
     let probed = media::probe(&asset)?;
-    let dur = probed.duration_secs.unwrap_or(1.0).max(0.1);
-    add_clip(project, track_id, media_id, position_secs, 0.0, dur)
+    let dur = probed.duration_us.unwrap_or(1_000_000).max(100_000);
+    add_clip(project, track_id, media_id, start_us, 0, dur)
 }
 
 fn validate_mask(mask: &ClipMask) -> Result<(), CommandError> {
@@ -2133,6 +2666,7 @@ fn set_clip_mask(
     match any_clip_mut(project, track_id, clip_id)? {
         Clip::Video(m) | Clip::Audio(m) => m.mask = mask,
         Clip::Adjustment(a) => a.mask = mask,
+        Clip::Text(t) => t.mask = mask,
         Clip::Caption(_) => return Err(CommandError::NotMediaClip(clip_id)),
     }
     Ok(CommandOutcome::Applied)
@@ -2191,7 +2725,7 @@ fn reject_sequence_media(
 fn decode_clip_frame(
     project: &Project,
     clip: &MediaClip,
-    source_time: f64,
+    source_time_us: i64,
 ) -> Result<crate::media::RgbaFrame, CommandError> {
     let media = project
         .find_media(clip.media_id)
@@ -2208,8 +2742,9 @@ fn decode_clip_frame(
             })
         }
         crate::project::MediaKind::Video => {
-            let mut reader = crate::media::VideoReader::open(&media.path, source_time.max(0.0))
-                .map_err(|e| CommandError::Analysis(e.to_string()))?;
+            let mut reader =
+                crate::media::VideoReader::open(&media.path, us_to_seconds(source_time_us.max(0)))
+                    .map_err(|e| CommandError::Analysis(e.to_string()))?;
             reader
                 .read_frame()
                 .map_err(|e| CommandError::Analysis(e.to_string()))?
@@ -2298,7 +2833,7 @@ fn generate_background_matte(
     }
 
     reject_sequence_media(project, clip.media_id, "GenerateBackgroundMatte")?;
-    let mid_source = (clip.source_in_secs + clip.source_out_secs) * 0.5;
+    let mid_source = (clip.source_in_us + clip.source_out_us) / 2;
     let frame = decode_clip_frame(project, &clip, mid_source)?;
 
     let mut cfg = clip
@@ -2347,8 +2882,8 @@ fn attach_background_matte(
     if let Some(reason) = crate::segmentation::sidecar_staleness(
         &sidecar,
         &media.path,
-        clip.source_in_secs,
-        clip.source_out_secs,
+        clip.source_in_us,
+        clip.source_out_us,
     ) {
         return Err(CommandError::Analysis(format!(
             "matte sequence does not match the clip: {reason}"
@@ -2427,14 +2962,9 @@ fn apply_template(
     project: &mut Project,
     pack_id: &str,
     template_id: &str,
-    position_secs: f64,
+    start_us: i64,
 ) -> Result<CommandOutcome, CommandError> {
-    if !position_secs.is_finite() {
-        return Err(CommandError::Template(
-            "position_secs must be finite".into(),
-        ));
-    }
-    let packs = crate::packs::load_project_packs(project);
+    let packs = crate::packs::load_installed_packs();
     let pack = crate::packs::find_pack(&packs, pack_id).ok_or_else(|| {
         CommandError::Template(format!("pack '{pack_id}' not found or not loaded"))
     })?;
@@ -2461,11 +2991,10 @@ fn apply_template(
             }
         };
         if let Command::AddClip {
-            position_secs: ref mut pos,
-            ..
+            start: ref mut pos, ..
         } = cmd
         {
-            *pos += position_secs;
+            *pos = Time::Us(pos.resolve(project.settings.fps) + start_us);
         }
         if let Err(e) = apply_command(project, cmd) {
             *project = backup;
@@ -2609,7 +3138,7 @@ fn generate_sticker(
     project: &mut Project,
     prompt: &str,
     track_id: Id,
-    position_secs: f64,
+    start_us: i64,
     output_path: &str,
 ) -> Result<CommandOutcome, CommandError> {
     let track = project
@@ -2625,7 +3154,7 @@ fn generate_sticker(
     let path = std::path::PathBuf::from(output_path);
     write_generated_sticker_png(&path, prompt)?;
     let media_id = find_or_import_media(project, &path)?;
-    add_clip(project, track_id, media_id, position_secs, 0.0, 3.0)
+    add_clip(project, track_id, media_id, start_us, 0, 3_000_000)
 }
 
 fn find_media_clip_mut(project: &mut Project, clip_id: Id) -> Option<&mut MediaClip> {
@@ -2663,7 +3192,7 @@ fn create_multicam_group(
         name,
         angle_clip_ids: clip_ids,
         active_angle: 0,
-        sync_offsets_secs: Vec::new(),
+        sync_offsets_us: Vec::new(),
     });
     Ok(CommandOutcome::Applied)
 }
@@ -2735,8 +3264,12 @@ fn centred_reframe(
     clip.transform.y = 0.0;
     clip.transform.fit_x = 0.0;
     clip.transform.fit_y = 0.0;
-    clip.keyframes
-        .retain(|t| !matches!(t.property, AnimProperty::FitX | AnimProperty::FitY));
+    clip.keyframes.retain(|t| {
+        !matches!(
+            t.property.anim(),
+            Some(AnimProperty::FitX | AnimProperty::FitY)
+        )
+    });
     Ok(CommandOutcome::Applied)
 }
 
@@ -2744,7 +3277,7 @@ fn generate_voiceover(
     project: &mut Project,
     text: &str,
     track_id: Id,
-    position_secs: f64,
+    start_us: i64,
     output_path: &str,
     provider: VoiceoverProvider,
 ) -> Result<CommandOutcome, CommandError> {
@@ -2772,13 +3305,13 @@ fn generate_voiceover(
     synthesize_to_wav(text, &provider, &path_buf)?;
 
     let probed = media::probe(&path_buf)?;
-    let duration = probed.duration_secs.unwrap_or(0.1).max(0.1);
+    let duration = probed.duration_us.unwrap_or(100_000).max(100_000);
     let media_id = Id::new_v4();
     project.media.push(MediaItem {
         id: media_id,
         path: path_buf.clone(),
         kind: probed.kind.unwrap_or(crate::project::MediaKind::Audio),
-        duration_secs: Some(duration),
+        duration_us: Some(duration),
         width: probed.width,
         height: probed.height,
         fps: probed.fps,
@@ -2790,7 +3323,7 @@ fn generate_voiceover(
     // already been synthesized to `path_buf` by this point (its duration isn't knowable
     // before synthesis, so the overlap couldn't have been checked any earlier). Clean up
     // the file on failure rather than leaving an orphaned WAV with no project reference.
-    let outcome = match add_clip(project, track_id, media_id, position_secs, 0.0, duration) {
+    let outcome = match add_clip(project, track_id, media_id, start_us, 0, duration) {
         Ok(outcome) => outcome,
         Err(e) => {
             let _ = std::fs::remove_file(&path_buf);
@@ -2808,17 +3341,17 @@ fn generate_voiceover(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::{Easing, Keyframe, Project, Settings};
+    use crate::project::{Keyframe, Project, Settings};
     use std::io::Write;
 
     fn test_project() -> Project {
         Project::new("test", Settings::default())
     }
 
-    fn write_temp_wav(dir: &std::path::Path, name: &str, duration_secs: f64) -> std::path::PathBuf {
+    fn write_temp_wav(dir: &std::path::Path, name: &str, duration_us: i64) -> std::path::PathBuf {
         let sample_rate = 48000u32;
         let byte_rate = sample_rate * 2; // 16-bit mono
-        let data_size = (byte_rate as f64 * duration_secs) as u32;
+        let data_size = (byte_rate as f64 * duration_us as f64 / 1e6) as u32;
         let path = dir.join(name);
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(b"RIFF").unwrap();
@@ -2842,7 +3375,7 @@ mod tests {
     fn import_media_wav_probes_duration() {
         let dir = std::env::temp_dir().join(format!("renderly-test-{}", Id::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let wav_path = write_temp_wav(&dir, "clip.wav", 2.0);
+        let wav_path = write_temp_wav(&dir, "clip.wav", 2000000);
 
         let mut project = test_project();
         let outcome = apply_command(
@@ -2858,7 +3391,7 @@ mod tests {
         };
         let media = project.find_media(media_id).unwrap();
         assert_eq!(media.kind, crate::project::MediaKind::Audio);
-        assert!((media.duration_secs.unwrap() - 2.0).abs() < 0.01);
+        assert!((media.duration_us.unwrap() - 2000000).abs() < 10000);
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -2874,6 +3407,7 @@ mod tests {
                 name: "V1".into(),
                 id: Some(wanted_id),
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap();
@@ -2888,7 +3422,7 @@ mod tests {
     fn add_clip_rejects_overlap() {
         let dir = std::env::temp_dir().join(format!("renderly-test-{}", Id::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let wav_path = write_temp_wav(&dir, "clip.wav", 10.0);
+        let wav_path = write_temp_wav(&dir, "clip.wav", 10000000);
 
         let mut project = test_project();
         let media_id = match apply_command(
@@ -2909,6 +3443,7 @@ mod tests {
                 name: "A1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -2922,9 +3457,9 @@ mod tests {
             Command::AddClip {
                 track_id,
                 media_id,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 5.0,
+                start: Time::Us(0),
+                source_in: Time::Us(0),
+                source_out: Time::Us(5000000),
             },
         )
         .unwrap();
@@ -2934,9 +3469,9 @@ mod tests {
             Command::AddClip {
                 track_id,
                 media_id,
-                position_secs: 2.0,
-                source_in_secs: 0.0,
-                source_out_secs: 3.0,
+                start: Time::Us(2000000),
+                source_in: Time::Us(0),
+                source_out: Time::Us(3000000),
             },
         )
         .unwrap_err();
@@ -2949,7 +3484,7 @@ mod tests {
     fn split_clip_produces_two_contiguous_clips() {
         let dir = std::env::temp_dir().join(format!("renderly-test-{}", Id::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let wav_path = write_temp_wav(&dir, "clip.wav", 10.0);
+        let wav_path = write_temp_wav(&dir, "clip.wav", 10000000);
 
         let mut project = test_project();
         let media_id = match apply_command(
@@ -2970,6 +3505,7 @@ mod tests {
                 name: "A1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -2982,9 +3518,9 @@ mod tests {
             Command::AddClip {
                 track_id,
                 media_id,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 6.0,
+                start: Time::Us(0),
+                source_in: Time::Us(0),
+                source_out: Time::Us(6000000),
             },
         )
         .unwrap()
@@ -2998,7 +3534,7 @@ mod tests {
             Command::SplitClip {
                 track_id,
                 clip_id,
-                at_secs: 2.0,
+                at: Time::Us(2000000),
             },
         )
         .unwrap();
@@ -3009,9 +3545,9 @@ mod tests {
         let track = project.find_track(track_id).unwrap();
         let left = track.find_clip(left_id).unwrap();
         let right = track.find_clip(right_id).unwrap();
-        assert!((left.duration_secs() - 2.0).abs() < 1e-9);
-        assert!((right.duration_secs() - 4.0).abs() < 1e-9);
-        assert!((left.end_secs() - right.position_secs()).abs() < 1e-9);
+        assert!((left.duration_us() - 2000000).abs() < 1);
+        assert!((right.duration_us() - 4000000).abs() < 1);
+        assert!((left.end_us() - right.start_us()).abs() < 1);
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -3020,7 +3556,7 @@ mod tests {
     fn delete_clip_with_ripple_shifts_later_clips() {
         let dir = std::env::temp_dir().join(format!("renderly-test-{}", Id::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let wav_path = write_temp_wav(&dir, "clip.wav", 10.0);
+        let wav_path = write_temp_wav(&dir, "clip.wav", 10000000);
 
         let mut project = test_project();
         let media_id = match apply_command(
@@ -3041,6 +3577,7 @@ mod tests {
                 name: "A1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -3053,9 +3590,9 @@ mod tests {
             Command::AddClip {
                 track_id,
                 media_id,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 2.0,
+                start: Time::Us(0),
+                source_in: Time::Us(0),
+                source_out: Time::Us(2000000),
             },
         )
         .unwrap()
@@ -3068,9 +3605,9 @@ mod tests {
             Command::AddClip {
                 track_id,
                 media_id,
-                position_secs: 2.0,
-                source_in_secs: 0.0,
-                source_out_secs: 3.0,
+                start: Time::Us(2000000),
+                source_in: Time::Us(0),
+                source_out: Time::Us(3000000),
             },
         )
         .unwrap()
@@ -3091,7 +3628,7 @@ mod tests {
 
         let track = project.find_track(track_id).unwrap();
         let remaining = track.find_clip(second).unwrap();
-        assert!((remaining.position_secs() - 0.0).abs() < 1e-9);
+        assert_eq!(remaining.start_us(), 0);
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -3106,6 +3643,7 @@ mod tests {
                 name: "V1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -3118,10 +3656,11 @@ mod tests {
             &mut project,
             Command::AddCaption {
                 track_id,
-                text: "hi".into(),
-                position_secs: 0.0,
-                duration_secs: 1.0,
-                style_id: "default".into(),
+                body: crate::commands::BodyInput::text("hi"),
+                start: Time::Us(0),
+                duration: Time::Us(1000000),
+                style: Some(crate::project::TextStyleRef::builtin("default")),
+                animations: None,
             },
         )
         .unwrap_err();
@@ -3139,6 +3678,7 @@ mod tests {
                 name: "C1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -3151,10 +3691,11 @@ mod tests {
             &mut project,
             Command::AddCaption {
                 track_id,
-                text: "hello".into(),
-                position_secs: 1.0,
-                duration_secs: 2.0,
-                style_id: "tiktok-bold-yellow".into(),
+                body: crate::commands::BodyInput::text("hello"),
+                start: Time::Us(1000000),
+                duration: Time::Us(2000000),
+                style: Some(crate::project::TextStyleRef::builtin("tiktok-bold-yellow")),
+                animations: None,
             },
         )
         .unwrap()
@@ -3168,10 +3709,11 @@ mod tests {
             Command::SetCaption {
                 track_id,
                 clip_id,
-                text: Some("updated".into()),
-                position_secs: Some(1.5),
-                duration_secs: Some(2.5),
-                style_id: None,
+                body: Some(crate::commands::BodyInput::text("updated")),
+                start: Some(Time::Us(1500000)),
+                duration: Some(Time::Us(2500000)),
+                style: None,
+                animations: None,
             },
         )
         .unwrap();
@@ -3183,10 +3725,13 @@ mod tests {
             .unwrap();
         match clip {
             Clip::Caption(c) => {
-                assert_eq!(c.text, "updated");
-                assert!((c.position_secs - 1.5).abs() < 1e-9);
-                assert!((c.duration_secs - 2.5).abs() < 1e-9);
-                assert_eq!(c.style_id, "tiktok-bold-yellow");
+                assert_eq!(c.body.text, "updated");
+                assert!((c.start_us - 1500000).abs() < 1);
+                assert!((c.duration_us - 2500000).abs() < 1);
+                assert_eq!(
+                    c.style.as_ref().map(|s| s.item_ref.as_str()),
+                    Some("builtin:tiktok-bold-yellow@1")
+                );
             }
             _ => panic!("expected caption clip"),
         }
@@ -3196,10 +3741,11 @@ mod tests {
             Command::SetCaption {
                 track_id,
                 clip_id,
-                text: None,
-                position_secs: None,
-                duration_secs: None,
-                style_id: None,
+                body: None,
+                start: None,
+                duration: None,
+                style: None,
+                animations: None,
             },
         )
         .unwrap_err();
@@ -3219,6 +3765,7 @@ mod tests {
                 name: "C1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -3230,10 +3777,11 @@ mod tests {
             &mut project,
             Command::AddCaption {
                 track_id,
-                text: "hello".into(),
-                position_secs: 0.0,
-                duration_secs: 0.1,
-                style_id: "tiktok-bold-yellow".into(),
+                body: crate::commands::BodyInput::text("hello"),
+                start: Time::Us(0),
+                duration: Time::Us(100000),
+                style: Some(crate::project::TextStyleRef::builtin("tiktok-bold-yellow")),
+                animations: None,
             },
         )
         .unwrap();
@@ -3243,10 +3791,11 @@ mod tests {
             Command::SetCaption {
                 track_id,
                 clip_id: Id::new_v4(),
-                text: Some("nope".into()),
-                position_secs: None,
-                duration_secs: None,
-                style_id: None,
+                body: Some(crate::commands::BodyInput::text("nope")),
+                start: None,
+                duration: None,
+                style: None,
+                animations: None,
             },
         )
         .unwrap_err();
@@ -3263,6 +3812,7 @@ mod tests {
                 name: "V1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -3277,6 +3827,7 @@ mod tests {
                 name: "C1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -3288,10 +3839,11 @@ mod tests {
             &mut project,
             Command::AddCaption {
                 track_id: caption_track,
-                text: "hi".into(),
-                position_secs: 0.0,
-                duration_secs: 1.0,
-                style_id: "tiktok-bold-yellow".into(),
+                body: crate::commands::BodyInput::text("hi"),
+                start: Time::Us(0),
+                duration: Time::Us(1000000),
+                style: Some(crate::project::TextStyleRef::builtin("tiktok-bold-yellow")),
+                animations: None,
             },
         )
         .unwrap()
@@ -3305,7 +3857,7 @@ mod tests {
             Command::MoveClip {
                 track_id: caption_track,
                 clip_id,
-                new_position_secs: 0.0,
+                start: Time::Us(0),
                 new_track_id: Some(video_track),
             },
         )
@@ -3323,7 +3875,7 @@ mod tests {
     fn move_clip_repositions_within_same_track_and_across_tracks() {
         let dir = std::env::temp_dir().join(format!("renderly-test-{}", Id::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let wav_path = write_temp_wav(&dir, "clip.wav", 10.0);
+        let wav_path = write_temp_wav(&dir, "clip.wav", 10000000);
 
         let mut project = test_project();
         let media_id = match apply_command(
@@ -3344,6 +3896,7 @@ mod tests {
                 name: "A1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -3358,6 +3911,7 @@ mod tests {
                 name: "A2".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -3370,9 +3924,9 @@ mod tests {
             Command::AddClip {
                 track_id: track_a,
                 media_id,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 2.0,
+                start: Time::Us(0),
+                source_in: Time::Us(0),
+                source_out: Time::Us(2000000),
             },
         )
         .unwrap()
@@ -3387,7 +3941,7 @@ mod tests {
             Command::MoveClip {
                 track_id: track_a,
                 clip_id,
-                new_position_secs: 5.0,
+                start: Time::Us(5000000),
                 new_track_id: None,
             },
         )
@@ -3397,7 +3951,7 @@ mod tests {
             .unwrap()
             .find_clip(clip_id)
             .unwrap();
-        assert!((clip.position_secs() - 5.0).abs() < 1e-9);
+        assert!((clip.start_us() - 5000000).abs() < 1);
 
         // Move to a different (kind-compatible) track.
         apply_command(
@@ -3405,7 +3959,7 @@ mod tests {
             Command::MoveClip {
                 track_id: track_a,
                 clip_id,
-                new_position_secs: 1.0,
+                start: Time::Us(1000000),
                 new_track_id: Some(track_b),
             },
         )
@@ -3420,7 +3974,7 @@ mod tests {
             .unwrap()
             .find_clip(clip_id)
             .unwrap();
-        assert!((moved.position_secs() - 1.0).abs() < 1e-9);
+        assert!((moved.start_us() - 1000000).abs() < 1);
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -3433,7 +3987,7 @@ mod tests {
             id: media_id,
             path: "x.wav".into(),
             kind: crate::project::MediaKind::Audio,
-            duration_secs: Some(1.0),
+            duration_us: Some(1000000),
             width: None,
             height: None,
             fps: None,
@@ -3446,6 +4000,7 @@ mod tests {
                 name: "V1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -3459,8 +4014,8 @@ mod tests {
             Command::GenerateCaptions {
                 media_id,
                 track_id,
-                style_id: "tiktok-bold-yellow".into(),
-                timeline_offset_secs: 0.0,
+                style: Some(crate::project::TextStyleRef::builtin("tiktok-bold-yellow")),
+                timeline_offset: Time::Us(0),
             },
         )
         .unwrap_err();
@@ -3475,7 +4030,7 @@ mod tests {
             id: media_id,
             path: "voice.wav".into(),
             kind: crate::project::MediaKind::Audio,
-            duration_secs: Some(5.0),
+            duration_us: Some(5000000),
             width: None,
             height: None,
             fps: None,
@@ -3488,6 +4043,7 @@ mod tests {
                 name: "A1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -3500,9 +4056,9 @@ mod tests {
             Command::AddClip {
                 track_id,
                 media_id,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 5.0,
+                start: Time::Us(0),
+                source_in: Time::Us(0),
+                source_out: Time::Us(5000000),
             },
         )
         .unwrap()
@@ -3538,6 +4094,7 @@ mod tests {
                 name: "C1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -3549,10 +4106,11 @@ mod tests {
             &mut project,
             Command::AddCaption {
                 track_id: caption_track,
-                text: "hi".into(),
-                position_secs: 0.0,
-                duration_secs: 1.0,
-                style_id: "tiktok-bold-yellow".into(),
+                body: crate::commands::BodyInput::text("hi"),
+                start: Time::Us(0),
+                duration: Time::Us(1000000),
+                style: Some(crate::project::TextStyleRef::builtin("tiktok-bold-yellow")),
+                animations: None,
             },
         )
         .unwrap()
@@ -3580,7 +4138,7 @@ mod tests {
             id: media_id,
             path: "voice.wav".into(),
             kind: crate::project::MediaKind::Audio,
-            duration_secs: Some(5.0),
+            duration_us: Some(5000000),
             width: None,
             height: None,
             fps: None,
@@ -3593,6 +4151,7 @@ mod tests {
                 name: "A1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -3605,9 +4164,9 @@ mod tests {
             Command::AddClip {
                 track_id,
                 media_id,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 5.0,
+                start: Time::Us(0),
+                source_in: Time::Us(0),
+                source_out: Time::Us(5000000),
             },
         )
         .unwrap()
@@ -3621,8 +4180,8 @@ mod tests {
             Command::SetAudioFade {
                 track_id,
                 clip_id,
-                fade_in_secs: 0.5,
-                fade_out_secs: 1.0,
+                fade_in: Time::Us(500000),
+                fade_out: Time::Us(1000000),
             },
         )
         .unwrap();
@@ -3634,8 +4193,8 @@ mod tests {
             .unwrap();
         match clip {
             Clip::Audio(c) => {
-                assert!((c.fade_in_secs - 0.5).abs() < 1e-9);
-                assert!((c.fade_out_secs - 1.0).abs() < 1e-9);
+                assert!((c.fade_in_us - 500000).abs() < 1);
+                assert!((c.fade_out_us - 1000000).abs() < 1);
             }
             _ => panic!("expected audio clip"),
         }
@@ -3651,6 +4210,7 @@ mod tests {
                 name: "V1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -3678,13 +4238,13 @@ mod tests {
             Command::SetProjectSettings {
                 width: Some(1920),
                 height: Some(1080),
-                fps: Some(30.0),
+                fps: Some(Fps::new(30, 1)),
             },
         )
         .unwrap();
         assert_eq!(project.settings.width, 1920);
         assert_eq!(project.settings.height, 1080);
-        assert!((project.settings.fps - 30.0).abs() < 1e-9);
+        assert_eq!(project.settings.fps.as_f64(), 30.0);
 
         let err = apply_command(
             &mut project,
@@ -3722,6 +4282,7 @@ mod tests {
                 name: "V1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -3737,6 +4298,7 @@ mod tests {
                 muted: None,
                 locked: None,
                 hidden: Some(true),
+                magnetic: None,
             },
         )
         .unwrap();
@@ -3752,6 +4314,7 @@ mod tests {
                 muted: None,
                 locked: None,
                 hidden: None,
+                magnetic: None,
             },
         )
         .unwrap_err();
@@ -3768,6 +4331,7 @@ mod tests {
                 name: "V1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -3796,6 +4360,7 @@ mod tests {
                 name: "V1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -3818,6 +4383,7 @@ mod tests {
                 name: name.into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -3918,7 +4484,7 @@ mod tests {
     fn set_clip_enabled_toggles_media_clip_and_rejects_captions() {
         let dir = std::env::temp_dir().join(format!("renderly-test-{}", Id::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let wav_path = write_temp_wav(&dir, "clip.wav", 5.0);
+        let wav_path = write_temp_wav(&dir, "clip.wav", 5000000);
 
         let mut project = test_project();
         let media_id = match apply_command(
@@ -3939,6 +4505,7 @@ mod tests {
                 name: "A1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -3951,9 +4518,9 @@ mod tests {
             Command::AddClip {
                 track_id,
                 media_id,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 5.0,
+                start: Time::Us(0),
+                source_in: Time::Us(0),
+                source_out: Time::Us(5000000),
             },
         )
         .unwrap()
@@ -3988,6 +4555,7 @@ mod tests {
                 name: "C1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -3999,10 +4567,11 @@ mod tests {
             &mut project,
             Command::AddCaption {
                 track_id: caption_track_id,
-                text: "hi".into(),
-                position_secs: 0.0,
-                duration_secs: 1.0,
-                style_id: "tiktok-bold-yellow".into(),
+                body: crate::commands::BodyInput::text("hi"),
+                start: Time::Us(0),
+                duration: Time::Us(1000000),
+                style: Some(crate::project::TextStyleRef::builtin("tiktok-bold-yellow")),
+                animations: None,
             },
         )
         .unwrap()
@@ -4028,7 +4597,7 @@ mod tests {
     fn trim_clip_rejects_overlap_with_neighbor() {
         let dir = std::env::temp_dir().join(format!("renderly-test-{}", Id::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let wav_path = write_temp_wav(&dir, "clip.wav", 10.0);
+        let wav_path = write_temp_wav(&dir, "clip.wav", 10000000);
 
         let mut project = test_project();
         let media_id = match apply_command(
@@ -4049,6 +4618,7 @@ mod tests {
                 name: "A1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -4061,9 +4631,9 @@ mod tests {
             Command::AddClip {
                 track_id,
                 media_id,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 2.0,
+                start: Time::Us(0),
+                source_in: Time::Us(0),
+                source_out: Time::Us(2000000),
             },
         )
         .unwrap()
@@ -4076,9 +4646,9 @@ mod tests {
             Command::AddClip {
                 track_id,
                 media_id,
-                position_secs: 2.0,
-                source_in_secs: 0.0,
-                source_out_secs: 3.0,
+                start: Time::Us(2000000),
+                source_in: Time::Us(0),
+                source_out: Time::Us(3000000),
             },
         )
         .unwrap();
@@ -4090,8 +4660,8 @@ mod tests {
             Command::TrimClip {
                 track_id,
                 clip_id: first,
-                new_source_in_secs: None,
-                new_source_out_secs: Some(4.0),
+                source_in: None,
+                source_out: Some(Time::Us(4000000)),
             },
         )
         .unwrap_err();
@@ -4103,7 +4673,7 @@ mod tests {
             .unwrap()
             .find_clip(first)
             .unwrap();
-        assert!((clip.duration_secs() - 2.0).abs() < 1e-9);
+        assert!((clip.duration_us() - 2000000).abs() < 1);
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -4112,7 +4682,7 @@ mod tests {
     fn trim_clip_rejects_exceeding_media_duration() {
         let dir = std::env::temp_dir().join(format!("renderly-test-{}", Id::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let wav_path = write_temp_wav(&dir, "clip.wav", 5.0);
+        let wav_path = write_temp_wav(&dir, "clip.wav", 5000000);
 
         let mut project = test_project();
         let media_id = match apply_command(
@@ -4133,6 +4703,7 @@ mod tests {
                 name: "A1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -4145,9 +4716,9 @@ mod tests {
             Command::AddClip {
                 track_id,
                 media_id,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 3.0,
+                start: Time::Us(0),
+                source_in: Time::Us(0),
+                source_out: Time::Us(3000000),
             },
         )
         .unwrap()
@@ -4161,8 +4732,8 @@ mod tests {
             Command::TrimClip {
                 track_id,
                 clip_id,
-                new_source_in_secs: None,
-                new_source_out_secs: Some(9.0),
+                source_in: None,
+                source_out: Some(Time::Us(9000000)),
             },
         )
         .unwrap_err();
@@ -4181,6 +4752,7 @@ mod tests {
                 name: "C1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -4192,10 +4764,11 @@ mod tests {
             &mut project,
             Command::AddCaption {
                 track_id,
-                text: "hi".into(),
-                position_secs: 0.0,
-                duration_secs: 1.0,
-                style_id: "tiktok-bold-yellow".into(),
+                body: crate::commands::BodyInput::text("hi"),
+                start: Time::Us(0),
+                duration: Time::Us(1000000),
+                style: Some(crate::project::TextStyleRef::builtin("tiktok-bold-yellow")),
+                animations: None,
             },
         )
         .unwrap()
@@ -4209,8 +4782,8 @@ mod tests {
             Command::TrimClip {
                 track_id,
                 clip_id,
-                new_source_in_secs: Some(0.5),
-                new_source_out_secs: None,
+                source_in: Some(Time::Us(500000)),
+                source_out: None,
             },
         )
         .unwrap_err();
@@ -4228,6 +4801,7 @@ mod tests {
                 name: "V1".into(),
                 id: Some(wanted_id),
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap();
@@ -4239,6 +4813,7 @@ mod tests {
                 name: "A1".into(),
                 id: Some(wanted_id),
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap_err();
@@ -4255,6 +4830,7 @@ mod tests {
                 name: "C1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -4267,10 +4843,11 @@ mod tests {
             &mut project,
             Command::AddCaption {
                 track_id,
-                text: "hi".into(),
-                position_secs: 0.0,
-                duration_secs: 0.0,
-                style_id: "tiktok-bold-yellow".into(),
+                body: crate::commands::BodyInput::text("hi"),
+                start: Time::Us(0),
+                duration: Time::Us(0),
+                style: Some(crate::project::TextStyleRef::builtin("tiktok-bold-yellow")),
+                animations: None,
             },
         )
         .unwrap_err();
@@ -4285,7 +4862,7 @@ mod tests {
             Command::SetProjectSettings {
                 width: None,
                 height: None,
-                fps: Some(0.0),
+                fps: Some(Fps::new(0, 1)),
             },
         )
         .unwrap_err();
@@ -4313,7 +4890,7 @@ mod tests {
     fn setup_audio_clip() -> (Project, Id, Id, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("renderly-test-{}", Id::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let wav_path = write_temp_wav(&dir, "clip.wav", 10.0);
+        let wav_path = write_temp_wav(&dir, "clip.wav", 10000000);
         let mut project = test_project();
         let media_id = match apply_command(
             &mut project,
@@ -4333,6 +4910,7 @@ mod tests {
                 name: "A1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -4345,9 +4923,9 @@ mod tests {
             Command::AddClip {
                 track_id,
                 media_id,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 6.0,
+                start: Time::Us(0),
+                source_in: Time::Us(0),
+                source_out: Time::Us(6000000),
             },
         )
         .unwrap()
@@ -4374,8 +4952,9 @@ mod tests {
         apply_command(
             &mut project,
             Command::SetClipTransform {
-                track_id,
-                clip_id,
+                track_id: Some(track_id),
+                clip_id: Some(clip_id),
+                targets: vec![],
                 transform,
             },
         )
@@ -4402,23 +4981,8 @@ mod tests {
                 track_id,
                 clip_id,
                 keyframes: vec![KeyframeTrack {
-                    property: AnimProperty::Opacity,
-                    keys: vec![
-                        Keyframe {
-                            time_secs: 2.0,
-                            value: 1.0,
-                            easing: Easing::Linear,
-                            handle_left: None,
-                            handle_right: None,
-                        },
-                        Keyframe {
-                            time_secs: 0.0,
-                            value: 0.0,
-                            easing: Easing::Linear,
-                            handle_left: None,
-                            handle_right: None,
-                        },
-                    ],
+                    property: AnimProperty::Opacity.into(),
+                    keys: vec![Keyframe::new(2000000, 1.0), Keyframe::new(0, 0.0)],
                 }],
             },
         )
@@ -4432,8 +4996,8 @@ mod tests {
             .unwrap()
             .as_media()
             .unwrap();
-        assert!((clip.keyframes[0].keys[0].time_secs - 0.0).abs() < 1e-9);
-        assert!((clip.keyframes[0].keys[1].time_secs - 2.0).abs() < 1e-9);
+        assert_eq!(clip.keyframes[0].keys[0].time_us, 0);
+        assert!((clip.keyframes[0].keys[1].time_us - 2000000).abs() < 1);
 
         let err = apply_command(
             &mut project,
@@ -4442,11 +5006,11 @@ mod tests {
                 clip_id,
                 keyframes: vec![
                     KeyframeTrack {
-                        property: AnimProperty::Opacity,
+                        property: AnimProperty::Opacity.into(),
                         keys: vec![],
                     },
                     KeyframeTrack {
-                        property: AnimProperty::Opacity,
+                        property: AnimProperty::Opacity.into(),
                         keys: vec![],
                     },
                 ],
@@ -4458,91 +5022,15 @@ mod tests {
     }
 
     #[test]
-    fn set_clip_effects_stores_and_rejects_duplicate_ids() {
+    fn split_clip_remaps_keyframes_and_remints_instance_ids() {
         let (mut project, track_id, clip_id, dir) = setup_audio_clip();
-        let effect_id = Id::new_v4();
-        apply_command(
-            &mut project,
-            Command::SetClipEffects {
-                track_id,
-                clip_id,
-                effects: vec![EffectInstance {
-                    id: effect_id,
-                    effect_id: "builtin:blur".into(),
-                    enabled: true,
-                    params: [("radius".into(), 4.0)].into_iter().collect(),
-                }],
-            },
-        )
-        .unwrap();
-        let clip = project
-            .find_track(track_id)
-            .unwrap()
-            .clips
-            .iter()
-            .find(|c| c.id() == clip_id)
-            .unwrap()
-            .as_media()
-            .unwrap();
-        assert_eq!(clip.effects.len(), 1);
-        assert_eq!(clip.effects[0].effect_id, "builtin:blur");
-
-        let err = apply_command(
-            &mut project,
-            Command::SetClipEffects {
-                track_id,
-                clip_id,
-                effects: vec![
-                    EffectInstance {
-                        id: effect_id,
-                        effect_id: "builtin:blur".into(),
-                        enabled: true,
-                        params: Default::default(),
-                    },
-                    EffectInstance {
-                        id: effect_id,
-                        effect_id: "builtin:lut_warm".into(),
-                        enabled: true,
-                        params: Default::default(),
-                    },
-                ],
-            },
-        )
-        .unwrap_err();
-        assert!(matches!(err, CommandError::InvalidEffects(_)));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn set_clip_effects_rejects_unknown_effect_id() {
-        let (mut project, track_id, clip_id, dir) = setup_audio_clip();
-        let err = apply_command(
-            &mut project,
-            Command::SetClipEffects {
-                track_id,
-                clip_id,
-                effects: vec![EffectInstance {
-                    id: Id::new_v4(),
-                    effect_id: "builtin:not_a_real_effect".into(),
-                    enabled: true,
-                    params: Default::default(),
-                }],
-            },
-        )
-        .unwrap_err();
-        assert!(matches!(err, CommandError::InvalidEffects(_)));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn split_clip_remaps_keyframes_and_remints_effect_ids() {
-        let (mut project, track_id, clip_id, dir) = setup_audio_clip();
-        let effect_id = Id::new_v4();
+        let fx_id = Id::new_v4();
         apply_command(
             &mut project,
             Command::SetClipTransform {
-                track_id,
-                clip_id,
+                track_id: Some(track_id),
+                clip_id: Some(clip_id),
+                targets: vec![],
                 transform: ClipTransform {
                     opacity: 0.75,
                     ..ClipTransform::default()
@@ -4556,29 +5044,11 @@ mod tests {
                 track_id,
                 clip_id,
                 keyframes: vec![KeyframeTrack {
-                    property: AnimProperty::Opacity,
+                    property: AnimProperty::Opacity.into(),
                     keys: vec![
-                        Keyframe {
-                            time_secs: 0.0,
-                            value: 1.0,
-                            easing: Easing::Linear,
-                            handle_left: None,
-                            handle_right: None,
-                        },
-                        Keyframe {
-                            time_secs: 2.0,
-                            value: 0.5,
-                            easing: Easing::Linear,
-                            handle_left: None,
-                            handle_right: None,
-                        },
-                        Keyframe {
-                            time_secs: 4.0,
-                            value: 0.0,
-                            easing: Easing::Linear,
-                            handle_left: None,
-                            handle_right: None,
-                        },
+                        Keyframe::new(0, 1.0),
+                        Keyframe::new(2000000, 0.5),
+                        Keyframe::new(4000000, 0.0),
                     ],
                 }],
             },
@@ -4587,14 +5057,17 @@ mod tests {
         apply_command(
             &mut project,
             Command::SetClipEffects {
-                track_id,
-                clip_id,
-                effects: vec![EffectInstance {
-                    id: effect_id,
-                    effect_id: "builtin:blur".into(),
-                    enabled: true,
-                    params: Default::default(),
-                }],
+                track_id: Some(track_id),
+                clip_id: Some(clip_id),
+                targets: vec![],
+                filter: None,
+                key: None,
+                adjust: None,
+                effects: Some(vec![EffectSpec {
+                    id: Some(fx_id),
+                    ..EffectSpec::new("builtin:blur@1")
+                }]),
+                blend_mode: None,
             },
         )
         .unwrap();
@@ -4604,7 +5077,7 @@ mod tests {
             Command::SplitClip {
                 track_id,
                 clip_id,
-                at_secs: 2.5,
+                at: Time::Us(2500000),
             },
         )
         .unwrap();
@@ -4632,10 +5105,10 @@ mod tests {
         assert!((right.transform.opacity - 0.75).abs() < 1e-9);
         assert_eq!(left.keyframes[0].keys.len(), 2);
         assert_eq!(right.keyframes[0].keys.len(), 1);
-        assert!((right.keyframes[0].keys[0].time_secs - 1.5).abs() < 1e-9);
-        assert_eq!(left.effects[0].id, effect_id);
-        assert_ne!(right.effects[0].id, effect_id);
-        assert_eq!(right.effects[0].effect_id, "builtin:blur");
+        assert!((right.keyframes[0].keys[0].time_us - 1500000).abs() < 1);
+        assert_eq!(left.effects[0].id, fx_id);
+        assert_ne!(right.effects[0].id, fx_id);
+        assert_eq!(right.effects[0].item_ref, "builtin:blur@1");
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -4654,6 +5127,7 @@ mod tests {
                 name: "V1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -4667,7 +5141,7 @@ mod tests {
             id: media_a,
             path: dir.join("a.mp4"),
             kind: crate::project::MediaKind::Video,
-            duration_secs: Some(10.0),
+            duration_us: Some(10000000),
             width: Some(1280),
             height: Some(720),
             fps: Some(30.0),
@@ -4677,7 +5151,7 @@ mod tests {
             id: media_b,
             path: dir.join("b.mp4"),
             kind: crate::project::MediaKind::Video,
-            duration_secs: Some(10.0),
+            duration_us: Some(10000000),
             width: Some(1280),
             height: Some(720),
             fps: Some(30.0),
@@ -4689,29 +5163,30 @@ mod tests {
         track.clips.push(Clip::Video(MediaClip {
             id: clip_a,
             media_id: media_a,
-            position_secs: 0.0,
-            source_in_secs: 0.0,
-            source_out_secs: 4.0,
+            start_us: 0,
+            source_in_us: 0,
+            source_out_us: 4000000,
             ..MediaClip::default()
         }));
         track.clips.push(Clip::Video(MediaClip {
             id: clip_b,
             media_id: media_b,
-            position_secs: 4.0,
-            source_in_secs: 0.0,
-            source_out_secs: 4.0,
+            start_us: 4000000,
+            source_in_us: 0,
+            source_out_us: 4000000,
             ..MediaClip::default()
         }));
 
         apply_command(
             &mut project,
             Command::SetClipTransition {
-                track_id,
-                clip_id: clip_a,
-                transition: Some(ClipTransition {
-                    kind: TransitionKind::Crossfade,
-                    duration_secs: 0.5,
-                }),
+                track_id: Some(track_id),
+                clip_id: Some(clip_a),
+                targets: vec![],
+                item_ref: Some("builtin:crossfade@1".into()),
+                duration: Some(Time::Us(500_000)),
+                params: None,
+                easing: None,
             },
         )
         .unwrap();
@@ -4725,16 +5200,20 @@ mod tests {
             .as_media()
             .unwrap();
         assert_eq!(
-            clip.outgoing_transition.as_ref().unwrap().duration_secs,
-            0.5
+            clip.outgoing_transition.as_ref().unwrap().duration_us,
+            500000
         );
 
         apply_command(
             &mut project,
             Command::SetClipTransition {
-                track_id,
-                clip_id: clip_a,
-                transition: None,
+                track_id: Some(track_id),
+                clip_id: Some(clip_a),
+                targets: vec![],
+                item_ref: None,
+                duration: None,
+                params: None,
+                easing: None,
             },
         )
         .unwrap();
@@ -4763,6 +5242,7 @@ mod tests {
             pack_root.display()
         );
 
+        let _library = crate::library::test_support::isolated_library();
         let mut project = Project::new("sticker-test", Settings::default());
         apply_command(
             &mut project,
@@ -4778,6 +5258,7 @@ mod tests {
                 name: "V1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -4791,7 +5272,7 @@ mod tests {
                 pack_id: "starter".into(),
                 sticker_id: "star".into(),
                 track_id,
-                position_secs: 1.0,
+                start: Time::Us(1000000),
             },
         )
         .unwrap();
@@ -4804,8 +5285,8 @@ mod tests {
             .iter()
             .find_map(|c| c.as_media())
             .unwrap();
-        assert!((clip.position_secs - 1.0).abs() < 1e-9);
-        assert!((clip.source_out_secs - 3.0).abs() < 1e-9);
+        assert!((clip.start_us - 1000000).abs() < 1);
+        assert!((clip.source_out_us - 3000000).abs() < 1);
     }
 
     #[test]
@@ -4946,6 +5427,7 @@ mod tests {
                 name: "V1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -4971,7 +5453,7 @@ mod tests {
     fn create_multicam_group_and_set_angle() {
         let dir = std::env::temp_dir().join(format!("renderly-test-{}", Id::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let wav_path = write_temp_wav(&dir, "clip.wav", 10.0);
+        let wav_path = write_temp_wav(&dir, "clip.wav", 10000000);
         let mut project = test_project();
         let media_id = match apply_command(
             &mut project,
@@ -4991,6 +5473,7 @@ mod tests {
                 name: "A1".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .unwrap()
@@ -5003,9 +5486,9 @@ mod tests {
             Command::AddClip {
                 track_id,
                 media_id,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 2.0,
+                start: Time::Us(0),
+                source_in: Time::Us(0),
+                source_out: Time::Us(2000000),
             },
         )
         .unwrap()
@@ -5018,9 +5501,9 @@ mod tests {
             Command::AddClip {
                 track_id,
                 media_id,
-                position_secs: 3.0,
-                source_in_secs: 0.0,
-                source_out_secs: 2.0,
+                start: Time::Us(3000000),
+                source_in: Time::Us(0),
+                source_out: Time::Us(2000000),
             },
         )
         .unwrap()
@@ -5074,5 +5557,67 @@ mod tests {
         assert!(matches!(err, CommandError::Multicam(_)));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn legacy_secs_parameters_are_mapped_to_time_with_a_deprecation_warning() {
+        let value = serde_json::json!({
+            "command": "SplitClip",
+            "track_id": Id::new_v4(),
+            "clip_id": Id::new_v4(),
+            "at_secs": 1.5
+        });
+        let (cmd, warnings) = parse_command_json(value).unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("at_secs") && warnings[0].contains("`at`"));
+        match cmd {
+            Command::SplitClip { at, .. } => assert_eq!(at, Time::Us(1_500_000)),
+            other => panic!("unexpected {other:?}"),
+        }
+        // The new name wins and needs no warning.
+        let value = serde_json::json!({
+            "command": "SplitClip", "track_id": Id::new_v4(), "clip_id": Id::new_v4(), "at": "90f"
+        });
+        let (cmd, warnings) = parse_command_json(value).unwrap();
+        assert!(warnings.is_empty());
+        assert!(matches!(
+            cmd,
+            Command::SplitClip {
+                at: Time::Frames(90),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn time_values_snap_to_the_project_frame_grid() {
+        let fps = Fps::new(30, 1);
+        // Already a frame start: unchanged.
+        assert_eq!(snap(Time::Us(1_000_000), fps), 1_000_000);
+        assert_eq!(snap(Time::Us(33_333), fps), 33_333);
+        // Off-grid values land on the nearest frame start; frames resolve exactly.
+        assert_eq!(snap(Time::Us(1_010_000), fps), 1_000_000);
+        assert_eq!(snap(Time::Us(1_020_000), fps), 1_033_333);
+        assert_eq!(snap(Time::Frames(2), fps), fps.frame_start(2));
+        // A positive duration never collapses to zero.
+        assert_eq!(snap_dur(Time::Us(1_000), fps), fps.frame_start(1));
+        assert_eq!(snap_dur(Time::Us(0), fps), 0);
+    }
+
+    #[test]
+    fn set_project_settings_accepts_a_rational_or_a_legacy_number() {
+        let rational: Command = serde_json::from_value(serde_json::json!({
+            "command": "SetProjectSettings", "fps": { "num": 30000, "den": 1001 }
+        }))
+        .unwrap();
+        let legacy: Command = serde_json::from_value(serde_json::json!({
+            "command": "SetProjectSettings", "fps": 29.97
+        }))
+        .unwrap();
+        for cmd in [rational, legacy] {
+            let mut project = test_project();
+            apply_command(&mut project, cmd).unwrap();
+            assert_eq!(project.settings.fps, Fps::new(30000, 1001));
+        }
     }
 }

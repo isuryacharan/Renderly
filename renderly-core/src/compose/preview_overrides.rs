@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::project::{Clip, ClipTransform, EffectInstance, Id, Project};
+use crate::project::{Clip, ClipTransform, ClipTransition, EffectInstance, Id, Project};
 
 /// What a single clip renders while the override is set. Every field is optional. A field that
 /// is `None` leaves the clip's saved value in place.
@@ -28,16 +28,24 @@ pub struct PreviewOverride {
     /// layer's `opacity`. Clamped to 0..=1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f64>,
-    /// Replaces the clip's whole effect stack. Hover preview sends the current stack plus one
-    /// temporary instance.
+    /// Replaces the clip's whole effect stack: the list is in render order (filter, key,
+    /// adjust, then `effects[]`) and takes the place of every slot. Hover preview sends the
+    /// current stack plus one temporary instance, as `{id, ref, params}`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effects: Option<Vec<EffectInstance>>,
+    /// Replaces the clip's outgoing transition (hover preview of a transition). Media clips
+    /// only; ignored on adjustment layers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<ClipTransition>,
 }
 
 impl PreviewOverride {
     /// True when the override changes nothing. Setting an empty override clears the target.
     pub fn is_empty(&self) -> bool {
-        self.transform.is_none() && self.opacity.is_none() && self.effects.is_none()
+        self.transform.is_none()
+            && self.opacity.is_none()
+            && self.effects.is_none()
+            && self.transition.is_none()
     }
 }
 
@@ -124,7 +132,15 @@ impl PreviewOverrides {
                             m.transform.opacity = clamp_unit(op);
                         }
                         if let Some(fx) = &over.effects {
+                            // The list is the whole stack in render order, so the slots are
+                            // cleared and it takes their place.
+                            m.filter = None;
+                            m.key = None;
+                            m.adjust = None;
                             m.effects = fx.clone();
+                        }
+                        if let Some(tr) = &over.transition {
+                            m.outgoing_transition = Some(tr.clone());
                         }
                     }
                     Clip::Adjustment(a) => {
@@ -135,7 +151,28 @@ impl PreviewOverrides {
                             a.opacity = clamp_unit(op);
                         }
                         if let Some(fx) = &over.effects {
+                            a.filter = None;
+                            a.adjust = None;
                             a.effects = fx.clone();
+                        }
+                    }
+                    Clip::Text(t) => {
+                        let Some(over) = self.entries.get(&t.id) else {
+                            continue;
+                        };
+                        if let Some(tf) = &over.transform {
+                            t.transform = tf.clamp_opacity();
+                        }
+                        if let Some(op) = over.opacity {
+                            t.transform.opacity = clamp_unit(op);
+                        }
+                        if let Some(fx) = &over.effects {
+                            t.filter = None;
+                            t.adjust = None;
+                            t.effects = fx.clone();
+                        }
+                        if let Some(tr) = &over.transition {
+                            t.outgoing_transition = Some(tr.clone());
                         }
                     }
                     Clip::Caption(_) => {}
@@ -164,12 +201,16 @@ mod tests {
     };
     use std::collections::BTreeMap as Map;
 
-    fn effect(effect_id: &str, radius: f64) -> EffectInstance {
+    fn effect(item_ref: &str, radius: f64) -> EffectInstance {
         let mut params = Map::new();
-        params.insert("radius".to_string(), radius);
+        params.insert(
+            "radius".to_string(),
+            crate::project::EffectParam::Number(radius),
+        );
         EffectInstance {
             id: Id::new_v4(),
-            effect_id: effect_id.to_string(),
+            item_ref: item_ref.to_string(),
+            hash: None,
             enabled: true,
             params,
         }
@@ -179,17 +220,21 @@ mod tests {
         MediaClip {
             id,
             media_id,
-            position_secs: 0.0,
-            source_in_secs: 0.0,
-            source_out_secs: 2.0,
+            start_us: 0,
+            source_in_us: 0,
+            source_out_us: 2000000,
             gain_db: 0.0,
             enabled: true,
-            fade_in_secs: 0.0,
-            fade_out_secs: 0.0,
+            fade_in_us: 0,
+            fade_out_us: 0,
             speed: 1.0,
             transform: ClipTransform::default(),
             keyframes: Vec::new(),
-            effects: vec![effect("builtin:blur", 2.0)],
+            filter: None,
+            key: Some(effect("builtin:chroma_key@1", 0.0)),
+            adjust: None,
+            effects: vec![effect("builtin:blur@1", 2.0)],
+            blend_mode: crate::project::BlendMode::Normal,
             outgoing_transition: None,
             mask: None,
             background_removal: None,
@@ -205,7 +250,7 @@ mod tests {
             id: media_id,
             path: "clip.mp4".into(),
             kind: MediaKind::Video,
-            duration_secs: Some(2.0),
+            duration_us: Some(2000000),
             width: Some(1920),
             height: Some(1080),
             fps: None,
@@ -219,11 +264,14 @@ mod tests {
         let adj_id = Id::new_v4();
         track.clips.push(Clip::Adjustment(AdjustmentClip {
             id: adj_id,
-            position_secs: 0.0,
-            duration_secs: 2.0,
+            start_us: 0,
+            duration_us: 2000000,
             enabled: true,
             opacity: 1.0,
+            filter: None,
+            adjust: None,
             effects: Vec::new(),
+            blend_mode: crate::project::BlendMode::Normal,
             mask: None,
             keyframes: Vec::new(),
         }));
@@ -261,19 +309,44 @@ mod tests {
         overrides.set(
             clip_id,
             PreviewOverride {
-                effects: Some(vec![effect("builtin:color_adjust", 0.0)]),
+                effects: Some(vec![effect("builtin:color_adjust@1", 0.0)]),
                 ..Default::default()
             },
         );
         let view = overrides.apply(&project);
+        // The override list is the whole stack: it replaces the slots too.
         assert_eq!(
-            media_of(&view, clip_id).effects[0].effect_id,
-            "builtin:color_adjust"
+            media_of(&view, clip_id).effects[0].item_ref,
+            "builtin:color_adjust@1"
         );
+        assert!(media_of(&view, clip_id).key.is_none());
         assert_eq!(
-            media_of(&project, clip_id).effects[0].effect_id,
-            "builtin:blur"
+            media_of(&project, clip_id).effects[0].item_ref,
+            "builtin:blur@1"
         );
+        assert!(media_of(&project, clip_id).key.is_some());
+    }
+
+    #[test]
+    fn transition_override_replaces_the_outgoing_transition_only_in_the_view() {
+        let (project, clip_id, _, _) = project_with_clips();
+        let mut overrides = PreviewOverrides::new();
+        overrides.set(
+            clip_id,
+            PreviewOverride {
+                transition: Some(ClipTransition::new("builtin:wipe_left@1", 400_000)),
+                ..Default::default()
+            },
+        );
+        assert!(!overrides.is_empty());
+        let view = overrides.apply(&project);
+        let tr = media_of(&view, clip_id)
+            .outgoing_transition
+            .as_ref()
+            .expect("transition in the view");
+        assert_eq!(tr.item_ref, "builtin:wipe_left@1");
+        assert_eq!(tr.duration_us, 400_000);
+        assert!(media_of(&project, clip_id).outgoing_transition.is_none());
     }
 
     #[test]
@@ -414,12 +487,12 @@ mod tests {
         let clip_id = Id::new_v4();
         let entry: PreviewOverrideEntry = serde_json::from_value(serde_json::json!({
             "target": clip_id,
-            "effects": [{ "id": Id::new_v4(), "effect_id": "builtin:blur", "params": { "radius": 4.0 } }],
+            "effects": [{ "id": Id::new_v4(), "ref": "builtin:blur@1", "params": { "radius": 4.0 } }],
         }))
         .expect("parse");
         assert_eq!(entry.target, clip_id);
         let fx = entry.over.effects.as_ref().expect("effects");
-        assert_eq!(fx[0].params.get("radius"), Some(&4.0));
+        assert_eq!(fx[0].number("radius"), Some(4.0));
         assert!(fx[0].enabled, "enabled defaults to true");
 
         let mut overrides = PreviewOverrides::new();

@@ -12,6 +12,7 @@
 use renderly_core::commands::{apply_command, Command, CommandOutcome};
 use renderly_core::ml::{RvmSession, RVM_MODEL_ID};
 use renderly_core::project::{BackgroundRemoval, Id, Project, Settings, TrackKind};
+use renderly_core::time::Time;
 use renderly_core::{DecodeOptions, ExportSettings, FrameRenderer};
 use std::path::{Path, PathBuf};
 
@@ -144,7 +145,7 @@ fn matted_project(video: &Path) -> Scene {
     let mut project = Project::new(
         "rvm",
         Settings {
-            fps: FPS,
+            fps: renderly_core::time::Fps::new(15, 1),
             width: W,
             height: H,
             ..Settings::default()
@@ -166,6 +167,7 @@ fn matted_project(video: &Path) -> Scene {
             name: "V".into(),
             id: None,
             sequence_id: None,
+            magnetic: Some(false),
         },
     )
     .expect("track") else {
@@ -176,9 +178,9 @@ fn matted_project(video: &Path) -> Scene {
         Command::AddClip {
             track_id,
             media_id,
-            position_secs: 0.0,
-            source_in_secs: 0.0,
-            source_out_secs: SECS,
+            start: Time::Us(0),
+            source_in: Time::Us(0),
+            source_out: Time::Us((SECS * 1e6).round() as i64),
         },
     )
     .expect("clip") else {
@@ -248,7 +250,7 @@ fn rvm_matte_sequence_covers_person_and_clears_background() {
     let frames = bg.matte_frames.clone().expect("per-frame matte index");
     let cache = bg.matte_cache_dir.clone().expect("cache dir");
     assert_eq!((frames.width, frames.height), (W, H));
-    assert_eq!(frames.fps, FPS);
+    assert_eq!(frames.fps.as_f64(), FPS);
     // The clip really has SECS*FPS frames; the plan allows one more but stops at end of stream.
     assert_eq!(frames.count, (SECS * FPS) as u32);
     assert!(cache.join("matte.png").is_file(), "representative matte");
@@ -272,8 +274,8 @@ fn rvm_matte_sequence_covers_person_and_clears_background() {
         bytes as f64 / 1024.0 / f64::from(frames.count)
     );
 
-    for t in [0.0, 0.8, 1.6] {
-        let idx = frames.index_at(t);
+    for t in [0.0_f64, 0.8, 1.6] {
+        let idx = frames.index_at((t * 1e6).round() as i64);
         let (mw, _mh, matte) = load_matte(&cache, idx);
         let person = mean_alpha(&matte, mw, person_core(t));
         let backdrop = mean_alpha(&matte, mw, background_strip(t));
@@ -283,7 +285,7 @@ fn rvm_matte_sequence_covers_person_and_clears_background() {
     }
     // The subject moves: the matte frames at t=0 and t=1.6 are different images.
     let (_, _, first) = load_matte(&cache, 0);
-    let (_, _, last) = load_matte(&cache, frames.index_at(1.6));
+    let (_, _, last) = load_matte(&cache, frames.index_at(1600000));
     assert_ne!(first, last);
     std::fs::remove_dir_all(&dir).ok();
     std::fs::remove_dir_all(&cache).ok();
@@ -356,7 +358,7 @@ fn export_replaces_background_with_the_underlying_colour() {
     let mut project = Project::new(
         "rvm-export",
         Settings {
-            fps: FPS,
+            fps: renderly_core::time::Fps::new(15, 1),
             width: W,
             height: H,
             ..Settings::default()
@@ -382,6 +384,7 @@ fn export_replaces_background_with_the_underlying_colour() {
             name: "V".into(),
             id: None,
             sequence_id: None,
+            magnetic: Some(false),
         },
     )
     .expect("track")
@@ -396,9 +399,9 @@ fn export_replaces_background_with_the_underlying_colour() {
         Command::AddClip {
             track_id,
             media_id,
-            position_secs: 0.0,
-            source_in_secs: 0.0,
-            source_out_secs: SECS,
+            start: Time::Us(0),
+            source_in: Time::Us(0),
+            source_out: Time::Us((SECS * 1e6).round() as i64),
         },
     )
     .expect("clip")
@@ -438,8 +441,10 @@ fn export_replaces_background_with_the_underlying_colour() {
         [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]]
     };
     // Source frames for comparison (decoded straight from the lossless clip).
-    for t in [0.0, 0.8, 1.6] {
-        let rgba = renderer.render(&scene.project, t).expect("render");
+    for t in [0.0_f64, 0.8, 1.6] {
+        let rgba = renderer
+            .render(&scene.project, (t * 1e6).round() as i64)
+            .expect("render");
         let (bx0, by0, bx1, by1) = background_strip(t);
         let bg = px(&rgba, (bx0 + bx1) / 2, (by0 + by1) / 2);
         let (cx0, cy0, cx1, cy1) = person_core(t);
@@ -518,7 +523,7 @@ fn rvm_bench_10s_1080p() {
     for track in scene.project.tracks.iter_mut() {
         for clip in track.clips.iter_mut() {
             if let Some(m) = clip.as_media_mut() {
-                m.source_out_secs = 10.0;
+                m.source_out_us = 10_000_000;
             }
         }
     }

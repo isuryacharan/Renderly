@@ -70,22 +70,25 @@ use std::process::Command;
 use std::sync::{Arc, OnceLock};
 
 use image::{GrayImage, Luma, Rgba, RgbaImage};
-use renderly_core::captions::render_caption;
 use renderly_core::commands::ExportPreset;
 use renderly_core::compose::{
-    build_scene, eval, upload_layer_pixels, ActiveLayer, ComposeError, ComposeLayer, Compositor,
-    LayerSource, PreviewOverride, PreviewOverrides, SceneError, SceneHost, SceneStep,
-    BUILTIN_EFFECT_IDS,
+    build_scene, builtins, eval, upload_layer_pixels, ActiveLayer, ComposeError, ComposeLayer,
+    Compositor, LayerSource, PreviewOverride, PreviewOverrides, SceneError, SceneHost, SceneStep,
+    BUILTIN_EFFECT_REFS,
 };
 use renderly_core::export::{DecodeOptions, ExportSettings, FrameRenderer};
 use renderly_core::mask::project_matte_requests;
 use renderly_core::media::{ffmpeg_available, ffmpeg_path};
-use renderly_core::packs::{parse_cube_text, referenced_pack_luts, CubeLut, LoadedPack};
+use renderly_core::packs::{
+    load_pack, parse_cube_text, referenced_pack_items, refs::ItemRef, CubeLut, LoadedPack,
+};
+use renderly_core::project::migrate::{convert_legacy_easing, split_legacy_effect_slots};
 use renderly_core::project::{
     AdjustmentClip, AnimProperty, BackgroundRemoval, CaptionClip, Clip, ClipMask, ClipMaskKind,
-    ClipTransform, ClipTransition, Easing, EffectInstance, Keyframe, KeyframeTrack, MediaClip,
-    MediaItem, MediaKind, Project, Sequence, Settings, Track, TrackKind, TransitionKind,
+    ClipTransform, ClipTransition, EffectInstance, Keyframe, KeyframeTrack, MediaClip, MediaItem,
+    MediaKind, Project, Sequence, Settings, Track, TrackKind,
 };
+use serde_json::Value;
 use uuid::Uuid;
 
 const W: u32 = 320;
@@ -307,6 +310,11 @@ fn update_mode() -> bool {
 
 fn golden_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden")
+}
+
+/// Seconds to µs (the fixtures are written in seconds).
+fn secs(s: f64) -> i64 {
+    (s * 1_000_000.0).round() as i64
 }
 
 fn time_tag(t: f64) -> String {
@@ -729,17 +737,14 @@ impl Scene {
         let mut track = Track::new(TrackKind::Caption, "Captions");
         track.clips.push(Clip::Caption(CaptionClip {
             id: Uuid::new_v4(),
-            text: text.into(),
-            position_secs: position,
-            duration_secs: duration,
-            style_id: style.into(),
+            ..CaptionClip::new(secs(position), secs(duration), text).with_style(style)
         }));
         self.project.tracks.push(track);
         self
     }
 
     fn pack(mut self) -> Self {
-        self.project.asset_pack_paths.push(pack_dir());
+        self.project.legacy_pack_paths.push(pack_dir());
         self
     }
 
@@ -757,6 +762,11 @@ struct Layer {
     clip: MediaClip,
     /// Set for adjustment layers; the `clip` is then unused.
     adjust: Option<AdjustmentClip>,
+    /// The effect list in its v7 shape (`effect_id` + params), the way the scenes were written.
+    /// It is turned into slots by the migration's own splitter, so these scenes are the
+    /// acceptance test for "order preserved exactly": the committed goldens were rendered from
+    /// the v7 list.
+    legacy_fx: Vec<serde_json::Value>,
 }
 
 impl Layer {
@@ -765,12 +775,13 @@ impl Layer {
             src: Some(src),
             clip: MediaClip {
                 media_id: src.id(),
-                position_secs: position,
-                source_in_secs: 0.0,
-                source_out_secs: duration,
+                start_us: secs(position),
+                source_in_us: 0,
+                source_out_us: secs(duration),
                 ..Default::default()
             },
             adjust: None,
+            legacy_fx: Vec::new(),
         }
     }
 
@@ -781,12 +792,13 @@ impl Layer {
             src: None,
             clip: MediaClip {
                 media_id,
-                position_secs: position,
-                source_in_secs: source_in,
-                source_out_secs: source_in + duration,
+                start_us: secs(position),
+                source_in_us: secs(source_in),
+                source_out_us: secs(source_in + duration),
                 ..Default::default()
             },
             adjust: None,
+            legacy_fx: Vec::new(),
         }
     }
 
@@ -794,7 +806,8 @@ impl Layer {
         Layer {
             src: None,
             clip: MediaClip::default(),
-            adjust: Some(AdjustmentClip::new(position, duration)),
+            adjust: Some(AdjustmentClip::new(secs(position), secs(duration))),
+            legacy_fx: Vec::new(),
         }
     }
 
@@ -810,23 +823,41 @@ impl Layer {
         self
     }
 
-    fn effect(mut self, effect_id: &str, params: &[(&str, f64)]) -> Self {
-        let instance = EffectInstance {
-            id: Uuid::new_v4(),
-            effect_id: effect_id.into(),
-            enabled: true,
-            params: params.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
-        };
-        match self.adjust.as_mut() {
-            Some(a) => a.effects.push(instance),
-            None => self.clip.effects.push(instance),
-        }
-        self
+    /// Append a v7-style effect (`builtin:blur`, `pack:<pack>:lut:<lut>`).
+    fn effect(self, effect_id: &str, params: &[(&str, f64)]) -> Self {
+        self.legacy_effect(effect_id, params, true)
     }
 
-    fn disabled_effect(mut self, effect_id: &str, params: &[(&str, f64)]) -> Self {
-        self = self.effect(effect_id, params);
-        self.clip.effects.last_mut().unwrap().enabled = false;
+    fn disabled_effect(self, effect_id: &str, params: &[(&str, f64)]) -> Self {
+        self.legacy_effect(effect_id, params, false)
+    }
+
+    fn legacy_effect(mut self, effect_id: &str, params: &[(&str, f64)], enabled: bool) -> Self {
+        let params: serde_json::Map<String, serde_json::Value> = params
+            .iter()
+            .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+            .collect();
+        self.legacy_fx.push(serde_json::json!({
+            "id": Uuid::new_v4(),
+            "effect_id": effect_id,
+            "enabled": enabled,
+            "params": params,
+        }));
+        let (filter, key, rest) = split_legacy_effect_slots(&self.legacy_fx, self.adjust.is_none());
+        let parse = |v: Value| serde_json::from_value::<EffectInstance>(v).expect("instance");
+        let (filter, key) = (filter.map(parse), key.map(parse));
+        let rest: Vec<EffectInstance> = rest.into_iter().map(parse).collect();
+        match self.adjust.as_mut() {
+            Some(a) => {
+                a.filter = filter;
+                a.effects = rest;
+            }
+            None => {
+                self.clip.filter = filter;
+                self.clip.key = key;
+                self.clip.effects = rest;
+            }
+        }
         self
     }
 
@@ -844,8 +875,16 @@ impl Layer {
         self
     }
 
-    fn keys(mut self, property: AnimProperty, keys: Vec<Keyframe>) -> Self {
-        self.clip.keyframes.push(KeyframeTrack { property, keys });
+    /// A keyframe track written with v7 easings; `ease_in` / `ease_out` go through the
+    /// migration's exact conversion to Bezier handles.
+    fn keys(mut self, property: AnimProperty, keys: Vec<LegacyKey>) -> Self {
+        let mut json: Vec<Value> = keys.into_iter().map(|k| k.0).collect();
+        convert_legacy_easing(&mut json);
+        let keys: Vec<Keyframe> = json
+            .into_iter()
+            .map(|k| serde_json::from_value(k).expect("keyframe"))
+            .collect();
+        self.clip.keyframes.push(KeyframeTrack::new(property, keys));
         self
     }
 
@@ -854,11 +893,12 @@ impl Layer {
         self
     }
 
-    fn transition(mut self, kind: TransitionKind, duration_secs: f64) -> Self {
-        self.clip.outgoing_transition = Some(ClipTransition {
-            kind,
-            duration_secs,
-        });
+    /// `kind` is a builtin transition name (`crossfade`, `wipe_left`, ...), as v7 stored it.
+    fn transition(mut self, kind: &str, duration_secs: f64) -> Self {
+        self.clip.outgoing_transition = Some(ClipTransition::new(
+            format!("builtin:{kind}@1"),
+            secs(duration_secs),
+        ));
         self
     }
 
@@ -868,14 +908,49 @@ impl Layer {
     }
 }
 
-fn kf(time_secs: f64, value: f64, easing: Easing) -> Keyframe {
-    Keyframe {
-        time_secs,
-        value,
-        easing,
-        handle_left: None,
-        handle_right: None,
+/// The v7 easings a golden scene can ask for.
+#[derive(Clone, Copy)]
+enum V7Easing {
+    Linear,
+    EaseIn,
+    EaseOut,
+    EaseInOut,
+    Bezier,
+}
+
+/// A keyframe in its v7 JSON shape (easing as a string), converted by the migration.
+struct LegacyKey(Value);
+
+fn kf(time_secs: f64, value: f64, ease: V7Easing) -> LegacyKey {
+    let easing = match ease {
+        V7Easing::Linear => "linear",
+        V7Easing::EaseIn => "ease_in",
+        V7Easing::EaseOut => "ease_out",
+        V7Easing::EaseInOut => "ease_in_out",
+        V7Easing::Bezier => "bezier",
+    };
+    LegacyKey(serde_json::json!({
+        "time_us": secs(time_secs),
+        "value": value,
+        "easing": easing,
+    }))
+}
+
+/// A Bezier key with explicit handles (time offsets in µs).
+fn kf_bezier(
+    time_secs: f64,
+    value: f64,
+    handle_left: Option<(i64, f64)>,
+    handle_right: Option<(i64, f64)>,
+) -> LegacyKey {
+    let mut k = kf(time_secs, value, V7Easing::Bezier);
+    if let Some(h) = handle_left {
+        k.0["handle_left"] = serde_json::json!([h.0, h.1]);
     }
+    if let Some(h) = handle_right {
+        k.0["handle_right"] = serde_json::json!([h.0, h.1]);
+    }
+    k
 }
 
 fn xf(x: f64, y: f64, sx: f64, sy: f64, rot: f64, opacity: f64) -> ClipTransform {
@@ -895,7 +970,7 @@ fn new_project() -> Project {
     Project::new(
         "golden",
         Settings {
-            fps: 30.0,
+            fps: renderly_core::time::Fps::new(30, 1),
             width: W,
             height: H,
             sample_rate: 48_000,
@@ -916,7 +991,7 @@ fn ensure_media(project: &mut Project, src: Src, kind: MediaKind) {
             _ => src.mkv_path(),
         },
         kind,
-        duration_secs: Some(4.0),
+        duration_us: Some(4000000),
         width: Some(w),
         height: Some(h),
         fps: Some(10.0),
@@ -980,7 +1055,7 @@ fn add_sequence(
         id: media_id,
         path: PathBuf::new(),
         kind: MediaKind::Sequence,
-        duration_secs: None,
+        duration_us: None,
         width: None,
         height: None,
         fps: None,
@@ -1061,44 +1136,45 @@ fn scenes() -> Vec<Scene> {
                 .keys(
                     AnimProperty::PosX,
                     vec![
-                        kf(0.0, -0.6, Easing::EaseInOut),
-                        kf(2.0, 0.6, Easing::Linear),
+                        kf(0.0, -0.6, V7Easing::EaseInOut),
+                        kf(2.0, 0.6, V7Easing::Linear),
                     ],
                 )
                 .keys(
                     AnimProperty::PosY,
-                    vec![
-                        Keyframe {
-                            time_secs: 0.0,
-                            value: 0.5,
-                            easing: Easing::Bezier,
-                            handle_left: None,
-                            handle_right: Some((0.6, -0.3)),
-                        },
-                        Keyframe {
-                            time_secs: 2.0,
-                            value: -0.5,
-                            easing: Easing::Linear,
-                            handle_left: Some((-0.6, 0.1)),
-                            handle_right: None,
-                        },
-                    ],
+                    vec![kf_bezier(0.0, 0.5, None, Some((600000, -0.3))), {
+                        let mut k = kf(2.0, -0.5, V7Easing::Linear);
+                        k.0["handle_left"] = serde_json::json!([-600000, 0.1]);
+                        k
+                    }],
                 )
                 .keys(
                     AnimProperty::ScaleX,
-                    vec![kf(0.0, 0.35, Easing::EaseIn), kf(2.0, 0.8, Easing::Linear)],
+                    vec![
+                        kf(0.0, 0.35, V7Easing::EaseIn),
+                        kf(2.0, 0.8, V7Easing::Linear),
+                    ],
                 )
                 .keys(
                     AnimProperty::ScaleY,
-                    vec![kf(0.0, 0.35, Easing::EaseOut), kf(2.0, 0.8, Easing::Linear)],
+                    vec![
+                        kf(0.0, 0.35, V7Easing::EaseOut),
+                        kf(2.0, 0.8, V7Easing::Linear),
+                    ],
                 )
                 .keys(
                     AnimProperty::Rotation,
-                    vec![kf(0.0, 0.0, Easing::EaseOut), kf(2.0, 90.0, Easing::Linear)],
+                    vec![
+                        kf(0.0, 0.0, V7Easing::EaseOut),
+                        kf(2.0, 90.0, V7Easing::Linear),
+                    ],
                 )
                 .keys(
                     AnimProperty::Opacity,
-                    vec![kf(0.0, 1.0, Easing::Linear), kf(2.0, 0.4, Easing::Linear)],
+                    vec![
+                        kf(0.0, 1.0, V7Easing::Linear),
+                        kf(2.0, 0.4, V7Easing::Linear),
+                    ],
                 ),
         ],
     ));
@@ -1246,22 +1322,22 @@ fn scenes() -> Vec<Scene> {
     ));
 
     // --- transitions: all ten kinds, mid-way; crossfade also at 25% / 75% ----------------
-    for kind in TransitionKind::ALL {
+    for kind in builtins::transition_ids() {
         // fade_black is pure black at exactly 50%, so sample it at 35% instead.
         let times: &[f64] = match kind {
-            TransitionKind::Crossfade => &[1.25, 1.5, 1.75],
-            TransitionKind::FadeBlack => &[1.35],
+            "crossfade" => &[1.25, 1.5, 1.75],
+            "fade_black" => &[1.35],
             _ => &[1.5],
         };
         let mut sc = scene_tracks(
-            &format!("transition_{}", kind.as_str()),
+            &format!("transition_{kind}"),
             times,
             vec![vec![
-                Layer::new(Src::Bars, 0.0, 2.0).transition(*kind, 1.0),
+                Layer::new(Src::Bars, 0.0, 2.0).transition(kind, 1.0),
                 Layer::new(Src::Stripes, 2.0, 2.0),
             ]],
         );
-        if *kind == TransitionKind::BlurDissolve {
+        if kind == "blur_dissolve" {
             sc = sc.tol(HASH_NOISE_TOL);
         }
         v.push(sc);
@@ -1453,7 +1529,7 @@ fn scenes() -> Vec<Scene> {
         |p| {
             let seq = add_sequence(p, "Bars", None, vec![vec![full(Src::Bars)]]);
             vec![vec![
-                Layer::sequence(seq, 0.0, 0.0, 2.0).transition(TransitionKind::Crossfade, 1.0),
+                Layer::sequence(seq, 0.0, 0.0, 2.0).transition("crossfade", 1.0),
                 Layer::new(Src::Stripes, 2.0, 2.0),
             ]]
         },
@@ -1482,8 +1558,30 @@ fn export_settings() -> ExportSettings {
     }
 }
 
+/// The packs a scene carries (the `legacy_pack_paths` folders that hold a `pack.json`), loaded
+/// like a host would. Tests never touch the real user library.
+fn scene_packs(project: &Project) -> Vec<LoadedPack> {
+    project
+        .legacy_pack_paths
+        .iter()
+        .filter(|p| p.join("pack.json").is_file())
+        .filter_map(|p| load_pack(p).ok())
+        .collect()
+}
+
+/// An export renderer with no packs (hermetic: the user library is never read).
 fn export_renderer() -> FrameRenderer {
-    FrameRenderer::new(export_settings(), DecodeOptions::default()).expect("FrameRenderer::new")
+    let mut renderer = FrameRenderer::new(export_settings(), DecodeOptions::default())
+        .expect("FrameRenderer::new");
+    renderer.set_packs(Vec::new());
+    renderer
+}
+
+/// An export renderer resolving item refs against the packs `project` carries.
+fn export_renderer_for(project: &Project) -> FrameRenderer {
+    let mut renderer = export_renderer();
+    renderer.set_packs(scene_packs(project));
+    renderer
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1578,42 +1676,33 @@ impl PreviewPipeline {
             self.mattes.insert(req.key);
         }
         let mut changed = false;
-        for (pack_id, lut_id) in referenced_pack_luts(project) {
+        for used in referenced_pack_items(project) {
+            let Ok(ItemRef::Pack { pack, item, .. }) = ItemRef::parse(&used.item_ref) else {
+                continue;
+            };
             if self
                 .pack_luts
-                .get(&pack_id)
-                .is_some_and(|l| l.contains_key(&lut_id))
+                .get(&pack)
+                .is_some_and(|l| l.contains_key(&item))
             {
                 continue;
             }
-            // Stand-in for the backend command: find the project pack with this id and read
-            // the LUT's `.cube` text.
-            let (root, rel) = project
-                .asset_pack_paths
+            // Stand-in for the backend command: find the pack the ref names and read the
+            // LUT's `.cube` text from its folder.
+            let packs = scene_packs(project);
+            let loaded = packs
                 .iter()
-                .find_map(|root| {
-                    let manifest: serde_json::Value = serde_json::from_str(
-                        &std::fs::read_to_string(root.join("pack.json")).ok()?,
-                    )
-                    .ok()?;
-                    if manifest["id"] != pack_id.as_str() {
-                        return None;
-                    }
-                    let rel = manifest["luts"]
-                        .as_array()?
-                        .iter()
-                        .find(|l| l["id"] == lut_id.as_str())?["path"]
-                        .as_str()?
-                        .to_string();
-                    Some((root.clone(), rel))
-                })
+                .find(|p| renderly_core::packs::refs::pack_matches(p, &pack))
+                .expect("pack exists");
+            let rel = loaded
+                .items
+                .iter()
+                .find(|i| i.kind == "lut" && i.id == item)
+                .and_then(|i| i.path.clone())
                 .expect("pack lut exists");
-            let text = std::fs::read_to_string(root.join(rel)).expect("read cube text");
+            let text = std::fs::read_to_string(loaded.root.join(rel)).expect("read cube text");
             let cube = parse_cube_text(&text).expect("parse cube");
-            self.pack_luts
-                .entry(pack_id)
-                .or_default()
-                .insert(lut_id, cube);
+            self.pack_luts.entry(pack).or_default().insert(item, cube);
             changed = true;
         }
         if changed {
@@ -1653,8 +1742,8 @@ impl PreviewPipeline {
         let view = self.overrides.apply(project);
         let project: &Project = &view;
         self.sync_assets(project);
-        let steps = eval::active_steps(project, t).expect("active_steps");
-        let captions = eval::active_captions(project, t);
+        let steps = eval::active_steps(project, secs(t)).expect("active_steps");
+        let captions = eval::active_captions(project, secs(t));
 
         let mut host = PreviewHost {
             device: &self.device,
@@ -1667,7 +1756,14 @@ impl PreviewPipeline {
             SceneError::Host(never) => match never {},
         });
         for cap in &captions {
-            let frame = render_caption(&cap.text, &cap.style_id, W, H).expect("render_caption");
+            let frame = renderly_core::captions::render_caption_styled(
+                &cap.text,
+                &cap.style_id,
+                &cap.overrides,
+                W,
+                H,
+            )
+            .expect("render_caption");
             let texture = self.upload(W, H, &frame.pixels);
             scene.push(SceneStep::Layer(ComposeLayer::caption(
                 LayerSource::Texture {
@@ -1731,6 +1827,14 @@ impl SceneHost for PreviewHost<'_> {
         )))
     }
 
+    fn text_layer(
+        &mut self,
+        _layer: &ActiveLayer,
+        _size: (u32, u32),
+    ) -> Result<Option<ComposeLayer>, Self::Error> {
+        Ok(None)
+    }
+
     fn sequence_mask(&mut self, layer: &ActiveLayer) -> Option<ClipMask> {
         self.compositor.preview_layer_mask(layer)
     }
@@ -1762,7 +1866,7 @@ fn parity_check(
     t: f64,
     images: &HashMap<Uuid, RgbaImage>,
 ) -> Result<Metrics, String> {
-    let exported = export.render(project, t).expect("export render");
+    let exported = export.render(project, secs(t)).expect("export render");
     let previewed = preview.render(project, t, images);
     let m = compare(&previewed, &exported, &PARITY_TOL);
     if within(&m, &PARITY_TOL) || cross_backend_probe() {
@@ -1794,9 +1898,11 @@ fn parity_check(
 fn run_golden(name: &str) {
     let Some(_env) = env() else { return };
     let scene = find_scene(name);
-    let mut renderer = export_renderer();
+    let mut renderer = export_renderer_for(&scene.project);
     for &t in &scene.times {
-        let pixels = renderer.render(&scene.project, t).expect("export render");
+        let pixels = renderer
+            .render(&scene.project, secs(t))
+            .expect("export render");
         // Guard against the classic golden failure mode: an all-black/empty frame that
         // happens to match a bad committed golden. Only the gap scene may be empty.
         if name != "gap_after_clip_black" {
@@ -1932,14 +2038,14 @@ fn every_builtin_effect_is_covered_by_a_scene() {
         for track in &s.project.tracks {
             for clip in &track.clips {
                 if let Some(c) = clip.as_media() {
-                    for e in c.effects.iter().filter(|e| e.enabled) {
-                        *used.entry(e.effect_id.clone()).or_default() += 1;
+                    for e in c.effect_stack().into_iter().filter(|e| e.enabled) {
+                        *used.entry(e.item_ref.clone()).or_default() += 1;
                     }
                 }
             }
         }
     }
-    for id in BUILTIN_EFFECT_IDS {
+    for id in BUILTIN_EFFECT_REFS {
         assert!(
             used.contains_key(*id),
             "builtin effect {id} has no golden scene - add one to scenes()"
@@ -1954,15 +2060,15 @@ fn every_transition_kind_is_covered_by_a_scene() {
         for track in &s.project.tracks {
             for clip in &track.clips {
                 if let Some(t) = clip.as_media().and_then(|c| c.outgoing_transition.as_ref()) {
-                    used.insert(t.kind);
+                    used.insert(t.item_ref.clone());
                 }
             }
         }
     }
-    for kind in TransitionKind::ALL {
+    for kind in builtins::transition_ids() {
         assert!(
-            used.contains(kind),
-            "transition {kind:?} has no golden scene"
+            used.contains(&format!("builtin:{kind}@1")),
+            "transition {kind} has no golden scene"
         );
     }
 }
@@ -1991,7 +2097,7 @@ fn preview_layer_mask_requires_registered_file_mattes() {
         let mut track = Track::new(TrackKind::Video, "V");
         track.clips.push(Clip::Video(clip));
         project.tracks.push(track);
-        let mut layers = eval::leaf_media_layers(&project, 0.5).expect("leaf_media_layers");
+        let mut layers = eval::leaf_media_layers(&project, 500000).expect("leaf_media_layers");
         layers.remove(0)
     };
 
@@ -2081,7 +2187,7 @@ fn fixture_decode_is_bit_exact() {
     let mut renderer = export_renderer();
     // Full-frame, identity transform, opaque 16:9 source -> output must equal the source.
     let scene = find_scene("baseline_bars");
-    let out = renderer.render(&scene.project, 0.5).expect("render");
+    let out = renderer.render(&scene.project, 500000).expect("render");
     let src = &env.images[&Src::Bars.id()];
     let m = compare(
         &out,
@@ -2111,7 +2217,7 @@ fn preview_style_pipeline_matches_export_for_all_scenes() {
     let mut worst = 0u8;
     let mut checked = 0;
     for s in scenes() {
-        let mut export = export_renderer();
+        let mut export = export_renderer_for(&s.project);
         for &t in &s.times {
             checked += 1;
             match parity_check(
@@ -2152,11 +2258,11 @@ fn perceive_png_matches_frame_renderer() {
     let scene = find_scene("transform_pos_scale_rot");
     let png = renderly_core::perceive::render_frame_png(
         &scene.project,
-        1.0,
+        1000000,
         ExportPreset::Custom {
             width: W,
             height: H,
-            fps: 30.0,
+            fps: renderly_core::time::Fps::new(30, 1),
         },
     )
     .expect("render_frame_png");
@@ -2164,7 +2270,7 @@ fn perceive_png_matches_frame_renderer() {
         .expect("decode png")
         .to_rgba8();
     let direct = export_renderer()
-        .render(&scene.project, 1.0)
+        .render(&scene.project, 1000000)
         .expect("render");
     assert_eq!(decoded.as_raw(), &direct);
 }
@@ -2177,8 +2283,8 @@ fn export_render_is_deterministic_across_renderers() {
     for name in ["keyframed_transform_ease", "fx_glitch", "transition_iris"] {
         let scene = find_scene(name);
         let t = scene.times[0];
-        let a = export_renderer().render(&scene.project, t).unwrap();
-        let b = export_renderer().render(&scene.project, t).unwrap();
+        let a = export_renderer().render(&scene.project, secs(t)).unwrap();
+        let b = export_renderer().render(&scene.project, secs(t)).unwrap();
         assert_eq!(a, b, "{name}: two fresh renderers disagree");
     }
 }
@@ -2197,7 +2303,7 @@ fn assert_gap_scenes_match(names: &[&str]) {
     let mut failures = Vec::new();
     for name in names {
         let s = find_scene(name);
-        let mut export = export_renderer();
+        let mut export = export_renderer_for(&s.project);
         for &t in &s.times {
             if let Err(e) = parity_check(name, &mut export, &mut preview, &s.project, t, env.images)
             {
@@ -2260,7 +2366,7 @@ fn caption_box_is_semi_transparent_over_video() {
     let Some(_env) = env() else { return };
     let scene = find_scene("caption_box");
     let out = export_renderer()
-        .render(&scene.project, 1.0)
+        .render(&scene.project, 1000000)
         .expect("render");
     // Left padding of the box (x 46..66, y 94..100) holds no glyph ink; the stripes below are
     // orange (R=250) / purple (R=60), so a 160/255 black box leaves mean R of roughly 57.
@@ -2297,12 +2403,7 @@ fn preview_override_matches_export_of_the_saved_change() {
     base.tracks.push(track);
     let clip_id = base.tracks[0].clips[0].id();
 
-    let blur = EffectInstance {
-        id: Uuid::new_v4(),
-        effect_id: "builtin:blur".into(),
-        enabled: true,
-        params: [("radius".to_string(), 6.0)].into_iter().collect(),
-    };
+    let blur = EffectInstance::new("builtin:blur@1").with_param("radius", 6.0);
     let mut saved = base.clone();
     if let Clip::Video(m) = &mut saved.tracks[0].clips[0] {
         m.effects = vec![blur.clone()];
@@ -2323,7 +2424,7 @@ fn preview_override_matches_export_of_the_saved_change() {
     assert_ne!(overridden, before, "the override changes the preview frame");
 
     let exported = export_renderer()
-        .render(&saved, t)
+        .render(&saved, secs(t))
         .expect("export render of the saved change");
     let m = compare(&overridden, &exported, &PARITY_TOL);
     assert!(

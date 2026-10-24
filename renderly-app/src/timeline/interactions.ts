@@ -3,19 +3,53 @@
 // mutation), then issues exactly one command on mouseup — see docs/architecture.md.
 
 import { useEffect, useRef, type RefObject } from "react";
-import { deleteClip, moveClip, setAdjustmentLayer, setCaption, splitClip, trimClip } from "../lib/commands";
+import {
+  deleteClip,
+  moveClip,
+  setAdjustmentLayer,
+  setCaption,
+  setTextTiming,
+  splitClip,
+  trimClip,
+} from "../lib/commands";
+import { magneticInsertBoundaryUs } from "../lib/magnetic";
+import { nearestMarker } from "../lib/text";
 import { activeTracks, replaceActiveTracks, selectActiveView, trimAdjustment } from "../lib/container";
-import type { Clip, Project } from "../lib/types";
+import { normalizeFps, pxToUs, snapToFrameUs } from "../lib/time";
+import { clipDurationUs, type CaptionClip, type Clip, type Project, type TextClip } from "../lib/types";
 import { useEditorStore } from "../store/editorStore";
 import {
+  clipLeft,
   dropTargetAtY,
   hitTestClip,
   hitTestTransitionJunction,
   RULER_H,
   TRACK_LABEL_W,
-  secsFromCanvasX,
+  usFromCanvasX,
 } from "./layout";
 import { snapTime } from "./snap";
+
+/// Shortest source range a trim may leave (µs) and shortest caption (µs).
+const MIN_TRIM_US = 50_000;
+const MIN_CAPTION_US = 100_000;
+
+/// Snap a trimmed/derived time to a frame boundary of the project rate.
+function frameSnap(project: Project, us: number): number {
+  return snapToFrameUs(normalizeFps(project.settings.fps), us);
+}
+
+/// Captions and titles are timed by position + duration (no source range): a trim is committed
+/// with `SetCaption` / `SetTextTiming`, not `TrimClip`.
+function isTimed(clip: Clip): clip is CaptionClip | TextClip {
+  return clip.type === "caption" || clip.type === "text";
+}
+
+function timingCommand(trackId: string, clip: CaptionClip | TextClip, fields: { startUs?: number; durationUs?: number }) {
+  return clip.type === "caption" ? setCaption(trackId, clip.id, fields) : setTextTiming(trackId, clip.id, fields);
+}
+
+/// Pixels a click may be off a ruler marker's flag and still hit it.
+const MARKER_HIT_PX = 7;
 
 type DragState =
   | {
@@ -91,13 +125,13 @@ function moveClipAcrossTracks(
   srcTrackId: string,
   destTrackId: string,
   clipId: string,
-  newPositionSecs: number,
+  newStartUs: number,
 ): Project {
   let moved: Clip | undefined;
   const withoutSrc = project.tracks.map((t) => {
     if (t.id !== srcTrackId) return t;
     const clip = t.clips.find((c) => c.id === clipId);
-    if (clip) moved = { ...clip, position_secs: newPositionSecs };
+    if (clip) moved = { ...clip, start_us: newStartUs };
     return { ...t, clips: t.clips.filter((c) => c.id !== clipId) };
   });
   if (!moved) return project;
@@ -111,17 +145,17 @@ function moveClipAcrossTracks(
 function scrubTo(x: number, store: ReturnType<typeof useEditorStore.getState>, altKey: boolean) {
   const project = selectActiveView(store);
   if (!project) return;
-  const secs = snapTime(
-    secsFromCanvasX(x, store.pxPerSec, store.scrollX),
+  const us = snapTime(
+    usFromCanvasX(x, store.pxPerSec, store.scrollX),
     project,
     store.playhead,
     store.pxPerSec,
     store.snapEnabled && !altKey,
   );
-  store.scrubAt(secs);
+  store.scrubAt(us);
   if (store.snapEnabled && !altKey) {
-    const raw = secsFromCanvasX(x, store.pxPerSec, store.scrollX);
-    store.setSnapGuide(Math.abs(secs - raw) > 1e-6 ? secs : null);
+    const raw = usFromCanvasX(x, store.pxPerSec, store.scrollX);
+    store.setSnapGuide(us !== raw ? us : null);
   } else {
     store.setSnapGuide(null);
   }
@@ -143,12 +177,12 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
       if (ev.ctrlKey || ev.metaKey) {
         const rect = canvas.getBoundingClientRect();
         const x = ev.clientX - rect.left;
-        const beforeSecs = secsFromCanvasX(x, store.pxPerSec, store.scrollX);
+        const beforeUs = usFromCanvasX(x, store.pxPerSec, store.scrollX);
         const nextPx = store.pxPerSec + (ev.deltaY > 0 ? -12 : 12);
         store.setZoom(nextPx);
         const after = useEditorStore.getState();
         // Keep the time under the cursor fixed.
-        const newScrollX = beforeSecs * after.pxPerSec - (x - TRACK_LABEL_W - 8);
+        const newScrollX = (beforeUs / 1_000_000) * after.pxPerSec - (x - TRACK_LABEL_W - 8);
         after.setScroll(newScrollX, after.scrollY);
         return;
       }
@@ -186,6 +220,16 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
       }
 
       if (ev.button !== 0) return;
+
+      // A click on a marker flag in the ruler jumps the playhead to it.
+      if (y < RULER_H && (project.markers?.length ?? 0) > 0) {
+        const raw = usFromCanvasX(x, store.pxPerSec, store.scrollX);
+        const hitMarker = nearestMarker(project.markers, raw, (MARKER_HIT_PX / store.pxPerSec) * 1_000_000);
+        if (hitMarker && Math.abs(clipLeft(hitMarker.time_us, store.pxPerSec, store.scrollX) - x) <= MARKER_HIT_PX) {
+          void store.seekTo(hitMarker.time_us);
+          return;
+        }
+      }
 
       const junctionHit = hitTestTransitionJunction(
         project,
@@ -226,7 +270,7 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
 
         if (store.toolMode === "razor") {
           const at = snapTime(
-            secsFromCanvasX(x, store.pxPerSec, store.scrollX),
+            usFromCanvasX(x, store.pxPerSec, store.scrollX),
             project,
             store.playhead,
             store.pxPerSec,
@@ -261,17 +305,17 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
             trackId: hit.trackId,
             clipId: hit.clip.id,
             startX: x,
-            origPos: hit.clip.position_secs,
-            origDur: hit.clip.duration_secs,
+            origPos: hit.clip.start_us,
+            origDur: hit.clip.duration_us,
           };
-        } else if (store.toolMode === "select" && edge === "left" && hit.clip.type === "caption") {
+        } else if (store.toolMode === "select" && edge === "left" && isTimed(hit.clip)) {
           dragStateRef.current = {
             mode: "trim-left-caption",
             trackId: hit.trackId,
             clipId: hit.clip.id,
             startX: x,
-            origPos: hit.clip.position_secs,
-            origDur: hit.clip.duration_secs,
+            origPos: hit.clip.start_us,
+            origDur: hit.clip.duration_us,
           };
         } else if (
           store.toolMode === "select" &&
@@ -283,9 +327,9 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
             trackId: hit.trackId,
             clipId: hit.clip.id,
             startX: x,
-            origIn: hit.clip.source_in_secs,
-            origOut: hit.clip.source_out_secs,
-            origPos: hit.clip.position_secs,
+            origIn: hit.clip.source_in_us,
+            origOut: hit.clip.source_out_us,
+            origPos: hit.clip.start_us,
           };
         } else if (store.toolMode === "select" && edge === "right" && hit.clip.type !== "adjustment") {
           dragStateRef.current = {
@@ -293,7 +337,7 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
             trackId: hit.trackId,
             clipId: hit.clip.id,
             startX: x,
-            origOut: hit.clip.type === "caption" ? hit.clip.duration_secs : hit.clip.source_out_secs,
+            origOut: isTimed(hit.clip) ? hit.clip.duration_us : hit.clip.source_out_us,
           };
         } else if (store.toolMode === "select") {
           const fresh = useEditorStore.getState();
@@ -302,7 +346,7 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
             group = [];
             for (const s of fresh.selections) {
               const c = findClip(project, s.trackId, s.clipId);
-              if (c) group.push({ trackId: s.trackId, clipId: s.clipId, origPos: c.position_secs });
+              if (c) group.push({ trackId: s.trackId, clipId: s.clipId, origPos: c.start_us });
             }
             if (group.length < 2) group = null;
           }
@@ -312,7 +356,7 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
             currentTrackId: hit.trackId,
             clipId: hit.clip.id,
             startX: x,
-            origPos: hit.clip.position_secs,
+            origPos: hit.clip.start_us,
             group,
           };
         }
@@ -382,26 +426,54 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
         return;
       }
 
-      const delta = (x - drag.startX) / store.pxPerSec;
+      const delta = pxToUs(x - drag.startX, store.pxPerSec);
       let nextProject: Project | null = null;
 
       if (drag.mode === "move") {
         const clip = findClip(project, drag.currentTrackId, drag.clipId);
         if (!clip) return;
         const rawPos = Math.max(0, drag.origPos + delta);
-        const pos = snapTime(
-          rawPos,
-          project,
-          store.playhead,
-          store.pxPerSec,
-          store.snapEnabled && !ev.altKey,
-          clip.id,
-        );
-        store.setSnapGuide(Math.abs(pos - rawPos) > 1e-6 ? pos : null);
+
+        // Where the clip is heading: another lane of the same kind, or the one it is on.
+        // Plain clip-drag never auto-creates a track (only media-panel drops do, via
+        // `dropMediaOnTimeline`) - `dropTargetAtY` returning `trackIndex: null` (drag
+        // above the top lane or below the bottom lane) correctly falls through to
+        // `destTrack` being `undefined` below.
+        const grouped = !!drag.group && drag.group.length > 1;
+        const destTrackIndex = grouped ? null : dropTargetAtY(project, rect.height, y, store.scrollY).trackIndex;
+        const destTrack = destTrackIndex != null ? project.tracks[destTrackIndex] : undefined;
+        const srcTrack = project.tracks.find((t) => t.id === drag.currentTrackId);
+        const canCrossMove =
+          !grouped &&
+          destTrack &&
+          srcTrack &&
+          destTrack.id !== srcTrack.id &&
+          destTrack.kind === srcTrack.kind &&
+          !destTrack.locked;
+        const landingTrack = canCrossMove ? destTrack : srcTrack;
+        // On a magnetic track core decides where the clip lands (insert by centre, then
+        // ripple), so the clip just follows the pointer and an indicator shows the slot.
+        const magnetic = landingTrack?.magnetic === true;
+
+        const pos = magnetic
+          ? frameSnap(project, rawPos)
+          : snapTime(
+              rawPos,
+              project,
+              store.playhead,
+              store.pxPerSec,
+              store.snapEnabled && !ev.altKey,
+              clip.id,
+            );
+        if (magnetic && landingTrack) {
+          store.setSnapGuide(magneticInsertBoundaryUs(landingTrack, clip.id, pos, clipDurationUs(clip)));
+        } else {
+          store.setSnapGuide(pos !== rawPos ? pos : null);
+        }
         const appliedDelta = pos - drag.origPos;
 
         // C3 group move: same delta for every selected clip; no cross-track.
-        if (drag.group && drag.group.length > 1) {
+        if (grouped && drag.group) {
           // Clamp so none go negative.
           let minOrig = Infinity;
           for (const g of drag.group) minOrig = Math.min(minOrig, g.origPos);
@@ -410,35 +482,18 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
           for (const g of drag.group) {
             next = withClip(next, g.trackId, g.clipId, (c) => ({
               ...c,
-              position_secs: Math.max(0, g.origPos + clampedDelta),
+              start_us: Math.max(0, g.origPos + clampedDelta),
             }));
           }
           nextProject = next;
+        } else if (canCrossMove && destTrack) {
+          nextProject = moveClipAcrossTracks(project, drag.currentTrackId, destTrack.id, clip.id, pos);
+          dragStateRef.current = { ...drag, currentTrackId: destTrack.id };
         } else {
-          // Plain clip-drag never auto-creates a track (only media-panel drops do, via
-          // `dropMediaOnTimeline`) — `dropTargetAtY` returning `trackIndex: null` (drag
-          // above the top lane or below the bottom lane) correctly falls through to
-          // `destTrack` being `undefined` below, same as it did before this used the
-          // CapCut display-order mapping.
-          const destTrackIndex = dropTargetAtY(project, rect.height, y, store.scrollY).trackIndex;
-          const destTrack = destTrackIndex != null ? project.tracks[destTrackIndex] : undefined;
-          const srcTrack = project.tracks.find((t) => t.id === drag.currentTrackId);
-          const canCrossMove =
-            destTrack &&
-            srcTrack &&
-            destTrack.id !== srcTrack.id &&
-            destTrack.kind === srcTrack.kind &&
-            !destTrack.locked;
-
-          if (canCrossMove) {
-            nextProject = moveClipAcrossTracks(project, drag.currentTrackId, destTrack.id, clip.id, pos);
-            dragStateRef.current = { ...drag, currentTrackId: destTrack.id };
-          } else {
-            nextProject = withClip(project, drag.currentTrackId, clip.id, (c) => ({
-              ...c,
-              position_secs: pos,
-            }));
-          }
+          nextProject = withClip(project, drag.currentTrackId, clip.id, (c) => ({
+            ...c,
+            start_us: pos,
+          }));
         }
 
         // Edge auto-scroll while dragging clips.
@@ -448,33 +503,33 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
         const clip = findClip(project, drag.trackId, drag.clipId);
         if (!clip || clip.type !== "adjustment") return;
         const origEdge = drag.edge === "left" ? drag.origPos : drag.origPos + drag.origDur;
-        let edgeSecs = Math.max(0, origEdge + delta);
+        let edgeUs = Math.max(0, origEdge + delta);
         if (store.snapEnabled && !ev.altKey) {
-          const snapped = snapTime(edgeSecs, project, store.playhead, store.pxPerSec, true, clip.id);
-          store.setSnapGuide(Math.abs(snapped - edgeSecs) > 1e-6 ? snapped : null);
-          edgeSecs = snapped;
+          const snapped = snapTime(edgeUs, project, store.playhead, store.pxPerSec, true, clip.id);
+          store.setSnapGuide(snapped !== edgeUs ? snapped : null);
+          edgeUs = snapped;
+        } else {
+          edgeUs = frameSnap(project, edgeUs);
         }
-        const next = trimAdjustment(drag.edge, drag.origPos, drag.origDur, edgeSecs);
+        const next = trimAdjustment(drag.edge, drag.origPos, drag.origDur, edgeUs);
         nextProject = withClip(project, drag.trackId, drag.clipId, (c) =>
           c.type === "adjustment"
-            ? { ...c, position_secs: next.position, duration_secs: next.duration }
+            ? { ...c, start_us: next.position, duration_us: next.duration }
             : c,
         );
       } else {
         const clip = findClip(project, drag.trackId, drag.clipId);
         if (!clip || clip.type === "adjustment") return;
+        const magneticTrim = project.tracks.find((t) => t.id === drag.trackId)?.magnetic === true;
 
         if (drag.mode === "trim-right") {
-          const raw =
-            clip.type === "caption"
-              ? Math.max(0.1, drag.origOut + delta)
-              : Math.max(clip.source_in_secs + 0.05, drag.origOut + delta);
-          let next = raw;
+          const raw = isTimed(clip)
+            ? Math.max(MIN_CAPTION_US, drag.origOut + delta)
+            : Math.max(clip.source_in_us + MIN_TRIM_US, drag.origOut + delta);
+          // Caption length is measured to a frame-snapped END, so start + duration stays on a frame.
+          let next = isTimed(clip) ? frameSnap(project, clip.start_us + raw) - clip.start_us : frameSnap(project, raw);
           if (store.snapEnabled && !ev.altKey) {
-            const absEnd =
-              clip.type === "caption"
-                ? clip.position_secs + raw
-                : clip.position_secs + (raw - clip.source_in_secs);
+            const absEnd = isTimed(clip) ? clip.start_us + raw : clip.start_us + (raw - clip.source_in_us);
             const snappedAbs = snapTime(
               absEnd,
               project,
@@ -483,23 +538,24 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
               true,
               clip.id,
             );
-            store.setSnapGuide(Math.abs(snappedAbs - absEnd) > 1e-6 ? snappedAbs : null);
-            if (clip.type === "caption") {
-              next = Math.max(0.1, snappedAbs - clip.position_secs);
+            store.setSnapGuide(snappedAbs !== absEnd ? snappedAbs : null);
+            if (isTimed(clip)) {
+              next = Math.max(MIN_CAPTION_US, snappedAbs - clip.start_us);
             } else {
               next = Math.max(
-                clip.source_in_secs + 0.05,
-                snappedAbs - clip.position_secs + clip.source_in_secs,
+                clip.source_in_us + MIN_TRIM_US,
+                snappedAbs - clip.start_us + clip.source_in_us,
               );
             }
           }
           nextProject = withClip(project, drag.trackId, drag.clipId, (c) =>
-            c.type === "caption"
-              ? { ...c, duration_secs: next }
-              : { ...c, source_out_secs: next },
+            isTimed(c) ? { ...c, duration_us: next } : c.type === "adjustment" ? c : { ...c, source_out_us: next },
           );
-        } else if (drag.mode === "trim-left" && clip.type !== "caption") {
-          let newIn = Math.min(drag.origOut - 0.05, Math.max(0, drag.origIn + delta));
+        } else if (drag.mode === "trim-left" && !isTimed(clip)) {
+          let newIn = frameSnap(
+            project,
+            Math.min(drag.origOut - MIN_TRIM_US, Math.max(0, drag.origIn + delta)),
+          );
           const inDelta = newIn - drag.origIn;
           let newPos = drag.origPos + inDelta;
           if (store.snapEnabled && !ev.altKey) {
@@ -511,12 +567,12 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
               true,
               clip.id,
             );
-            store.setSnapGuide(Math.abs(snappedPos - newPos) > 1e-6 ? snappedPos : null);
+            store.setSnapGuide(snappedPos !== newPos ? snappedPos : null);
             const posDelta = snappedPos - drag.origPos;
             newIn = drag.origIn + posDelta;
             newPos = snappedPos;
-            if (newIn > drag.origOut - 0.05) {
-              newIn = drag.origOut - 0.05;
+            if (newIn > drag.origOut - MIN_TRIM_US) {
+              newIn = drag.origOut - MIN_TRIM_US;
               newPos = drag.origPos + (newIn - drag.origIn);
             }
             if (newIn < 0) {
@@ -525,13 +581,13 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
             }
           }
           const finalIn = newIn;
-          const finalPos = newPos;
+          // On a magnetic track the clip's start is where the track packs it; a left trim
+          // only shortens it and core pulls the later clips in.
+          const finalPos = magneticTrim ? drag.origPos : newPos;
           nextProject = withClip(project, drag.trackId, drag.clipId, (c) =>
-            c.type === "caption"
-              ? c
-              : { ...c, source_in_secs: finalIn, position_secs: finalPos },
+            isTimed(c) || c.type === "adjustment" ? c : { ...c, source_in_us: finalIn, start_us: finalPos },
           );
-        } else if (drag.mode === "trim-left-caption" && clip.type === "caption") {
+        } else if (drag.mode === "trim-left-caption" && isTimed(clip)) {
           const newPos = snapTime(
             Math.max(0, drag.origPos + delta),
             project,
@@ -541,14 +597,18 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
             clip.id,
           );
           store.setSnapGuide(
-            store.snapEnabled && !ev.altKey && Math.abs(newPos - (drag.origPos + delta)) > 1e-6
+            store.snapEnabled && !ev.altKey && newPos !== drag.origPos + delta
               ? newPos
               : null,
           );
           const posDelta = newPos - drag.origPos;
           nextProject = withClip(project, drag.trackId, drag.clipId, (c) =>
-            c.type === "caption"
-              ? { ...c, position_secs: newPos, duration_secs: Math.max(0.1, drag.origDur - posDelta) }
+            isTimed(c)
+              ? {
+                  ...c,
+                  start_us: magneticTrim ? drag.origPos : newPos,
+                  duration_us: Math.max(MIN_CAPTION_US, drag.origDur - posDelta),
+                }
               : c,
           );
         }
@@ -584,7 +644,7 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
         if (drag.group && drag.group.length > 1) {
           const primary = findClip(project, drag.currentTrackId, drag.clipId);
           if (!primary) return;
-          const appliedDelta = primary.position_secs - drag.origPos;
+          const appliedDelta = primary.start_us - drag.origPos;
           let minOrig = Infinity;
           for (const g of drag.group) minOrig = Math.min(minOrig, g.origPos);
           const clampedDelta = appliedDelta < -minOrig ? -minOrig : appliedDelta;
@@ -597,14 +657,19 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
 
         const clip = findClip(project, drag.currentTrackId, drag.clipId);
         if (!clip) return;
-        const pos = snapTime(
-          clip.position_secs,
-          project,
-          store.playhead,
-          store.pxPerSec,
-          store.snapEnabled && !ev.altKey,
-          clip.id,
-        );
+        const landing = project.tracks.find((t) => t.id === drag.currentTrackId);
+        // Magnetic landing track: send the raw (frame-snapped) drop position; core picks the slot.
+        const pos =
+          landing?.magnetic === true
+            ? frameSnap(project, clip.start_us)
+            : snapTime(
+                clip.start_us,
+                project,
+                store.playhead,
+                store.pxPerSec,
+                store.snapEnabled && !ev.altKey,
+                clip.id,
+              );
         const newTrackId = drag.currentTrackId !== drag.origTrackId ? drag.currentTrackId : null;
         void store.dispatch(moveClip(drag.origTrackId, clip.id, pos, newTrackId));
         return;
@@ -614,13 +679,13 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
         const adj = findClip(project, drag.trackId, drag.clipId);
         if (!adj || adj.type !== "adjustment") return;
         if (
-          Math.abs(adj.position_secs - drag.origPos) > 1e-6 ||
-          Math.abs(adj.duration_secs - drag.origDur) > 1e-6
+          adj.start_us !== drag.origPos ||
+          adj.duration_us !== drag.origDur
         ) {
           void store.dispatch(
             setAdjustmentLayer(drag.trackId, adj.id, {
-              positionSecs: adj.position_secs,
-              durationSecs: adj.duration_secs,
+              startUs: adj.start_us,
+              durationUs: adj.duration_us,
             }),
           );
         }
@@ -630,28 +695,34 @@ export function useTimelineInteractions(canvasRef: RefObject<HTMLCanvasElement |
       const clip = findClip(project, drag.trackId, drag.clipId);
       if (!clip || clip.type === "adjustment") return;
 
+      const magnetic = project.tracks.find((t) => t.id === drag.trackId)?.magnetic === true;
       if (drag.mode === "trim-right") {
-        if (clip.type === "caption") {
+        if (isTimed(clip)) {
           void store.dispatch(
-            setCaption(drag.trackId, clip.id, { durationSecs: Math.max(0.1, clip.duration_secs) }),
+            timingCommand(drag.trackId, clip, { durationUs: Math.max(MIN_CAPTION_US, clip.duration_us) }),
           );
         } else {
-          void store.dispatch(trimClip(drag.trackId, clip.id, null, clip.source_out_secs));
+          void store.dispatch(trimClip(drag.trackId, clip.id, null, clip.source_out_us));
         }
-      } else if (drag.mode === "trim-left-caption" && clip.type === "caption") {
+      } else if (drag.mode === "trim-left-caption" && isTimed(clip)) {
         void store.dispatch(
-          setCaption(drag.trackId, clip.id, {
-            positionSecs: clip.position_secs,
-            durationSecs: Math.max(0.1, clip.duration_secs),
+          timingCommand(drag.trackId, clip, {
+            // A magnetic track keeps the clip where it packs; only the length changes.
+            ...(magnetic ? {} : { startUs: clip.start_us }),
+            durationUs: Math.max(MIN_CAPTION_US, clip.duration_us),
           }),
         );
-      } else if (drag.mode === "trim-left" && clip.type !== "caption") {
-        const inDelta = clip.source_in_secs - drag.origIn;
-        if (Math.abs(inDelta) > 1e-6) {
-          void store.dispatchBatch([
-            trimClip(drag.trackId, clip.id, clip.source_in_secs, null),
-            moveClip(drag.trackId, clip.id, clip.position_secs),
-          ]);
+      } else if (drag.mode === "trim-left" && !isTimed(clip)) {
+        const inDelta = clip.source_in_us - drag.origIn;
+        if (inDelta !== 0) {
+          void store.dispatchBatch(
+            magnetic
+              ? [trimClip(drag.trackId, clip.id, clip.source_in_us, null)]
+              : [
+                  trimClip(drag.trackId, clip.id, clip.source_in_us, null),
+                  moveClip(drag.trackId, clip.id, clip.start_us),
+                ],
+          );
         }
       }
     };
@@ -682,7 +753,8 @@ export async function splitSelectedAtPlayhead(): Promise<void> {
     store.toast("Track is locked — unlock it to edit", "info");
     return;
   }
-  await store.dispatch(splitClip(store.selection.trackId, store.selection.clipId, store.playhead));
+  const at = store.project ? frameSnap(store.project, store.playhead) : store.playhead;
+  await store.dispatch(splitClip(store.selection.trackId, store.selection.clipId, at));
 }
 
 export async function deleteSelected(ripple: boolean): Promise<void> {

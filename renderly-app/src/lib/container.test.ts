@@ -4,12 +4,12 @@ import {
   activeContainerSize,
   activeTracks,
   breadcrumbItems,
-  containerDurationSecs,
+  containerDurationUs,
   containerOfTrack,
   containerView,
   findTrackAnywhere,
   isNestedClip,
-  MIN_ADJUSTMENT_SECS,
+  MIN_ADJUSTMENT_US,
   newTrackKindForDrop,
   normalizeSequencePath,
   pathAfterOpen,
@@ -28,8 +28,8 @@ import type { AdjustmentClip, Project } from "./types";
 const adj: AdjustmentClip = {
   type: "adjustment",
   id: "adj1",
-  position_secs: 1,
-  duration_secs: 4,
+  start_us: 1_000_000,
+  duration_us: 4_000_000,
   enabled: true,
 };
 
@@ -39,9 +39,9 @@ function sample(): Project {
     track("v1", "video", [videoClip("A", 0, 0, 2), videoClip("N", 3, 0, 3, { media_id: "m-intro" })]),
   ]);
   p.media = [
-    { id: "m-a", path: "a.mp4", kind: "video", duration_secs: 10, width: 1, height: 1, fps: 30 },
-    { id: "m-intro", path: "", kind: "sequence", sequence_id: "s-intro", duration_secs: null, width: null, height: null, fps: null },
-    { id: "m-titles", path: "", kind: "sequence", sequence_id: "s-titles", duration_secs: null, width: null, height: null, fps: null },
+    { id: "m-a", path: "a.mp4", kind: "video", duration_us: 10_000_000, width: 1, height: 1, fps: 30 },
+    { id: "m-intro", path: "", kind: "sequence", sequence_id: "s-intro", duration_us: null, width: null, height: null, fps: null },
+    { id: "m-titles", path: "", kind: "sequence", sequence_id: "s-titles", duration_us: null, width: null, height: null, fps: null },
   ];
   p.sequences = [
     {
@@ -137,8 +137,8 @@ describe("replaceActiveTracks / updateClip", () => {
 
   it("updateClip finds the clip in a sequence and keeps untouched containers by identity", () => {
     const p = sample();
-    const next = updateClip(p, "iv1", "IA", (c) => ({ ...c, position_secs: 9 }));
-    expect(next.sequences![0]!.tracks[0]!.clips[0]!.position_secs).toBe(9);
+    const next = updateClip(p, "iv1", "IA", (c) => ({ ...c, start_us: 9_000_000 }));
+    expect(next.sequences![0]!.tracks[0]!.clips[0]!.start_us).toBe(9_000_000);
     expect(next.tracks).toBe(p.tracks);
     expect(next.sequences![1]).toBe(p.sequences![1]);
     expect(updateClip(p, "nope", "IA", (c) => c)).toBe(p);
@@ -167,10 +167,10 @@ describe("lookups", () => {
 
   it("measures the open container's duration", () => {
     const p = sample();
-    expect(containerDurationSecs(p, null)).toBe(6);
+    expect(containerDurationUs(p, null)).toBe(6_000_000);
     // Intro: IA 0..3 and the adjustment layer 1..5.
-    expect(containerDurationSecs(p, "s-intro")).toBe(5);
-    expect(containerDurationSecs(p, "s-titles")).toBe(1);
+    expect(containerDurationUs(p, "s-intro")).toBe(5_000_000);
+    expect(containerDurationUs(p, "s-titles")).toBe(1_000_000);
   });
 });
 
@@ -205,17 +205,17 @@ describe("breadcrumb and path", () => {
 
 describe("trimAdjustment", () => {
   it("right edge keeps the start and clamps to the minimum length", () => {
-    expect(trimAdjustment("right", 2, 4, 9)).toEqual({ position: 2, duration: 7 });
-    expect(trimAdjustment("right", 2, 4, 2.01).duration).toBeCloseTo(MIN_ADJUSTMENT_SECS);
-    expect(trimAdjustment("right", 2, 4, 0).duration).toBeCloseTo(MIN_ADJUSTMENT_SECS);
+    expect(trimAdjustment("right", 2_000_000, 4_000_000, 9_000_000)).toEqual({ position: 2_000_000, duration: 7_000_000 });
+    expect(trimAdjustment("right", 2_000_000, 4_000_000, 2_010_000).duration).toBe(MIN_ADJUSTMENT_US);
+    expect(trimAdjustment("right", 2_000_000, 4_000_000, 0).duration).toBe(MIN_ADJUSTMENT_US);
   });
 
   it("left edge keeps the end fixed, never goes below 0 and keeps the minimum length", () => {
-    expect(trimAdjustment("left", 2, 4, 3)).toEqual({ position: 3, duration: 3 });
-    expect(trimAdjustment("left", 2, 4, -5)).toEqual({ position: 0, duration: 6 });
-    const t = trimAdjustment("left", 2, 4, 50);
-    expect(t.position).toBeCloseTo(6 - MIN_ADJUSTMENT_SECS);
-    expect(t.position + t.duration).toBeCloseTo(6);
+    expect(trimAdjustment("left", 2_000_000, 4_000_000, 3_000_000)).toEqual({ position: 3_000_000, duration: 3_000_000 });
+    expect(trimAdjustment("left", 2_000_000, 4_000_000, -5_000_000)).toEqual({ position: 0, duration: 6_000_000 });
+    const t = trimAdjustment("left", 2_000_000, 4_000_000, 50_000_000);
+    expect(t.position).toBe(6_000_000 - MIN_ADJUSTMENT_US);
+    expect(t.position + t.duration).toBe(6_000_000);
   });
 });
 

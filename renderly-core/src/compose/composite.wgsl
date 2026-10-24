@@ -11,7 +11,8 @@ struct LayerParams {
     user_scale: vec2<f32>,
     rotation_rad: f32,
     opacity: f32,
-    _pad: vec2<f32>,
+    blend_mode: u32,
+    _pad: u32,
 };
 
 @group(0) @binding(2) var<uniform> layer: LayerParams;
@@ -55,4 +56,16 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let color = textureSample(layer_tex, layer_sampler, input.uv);
     return vec4<f32>(color.rgb, color.a * layer.opacity);
+}
+
+// Blend modes other than normal (see blend.wgsl). The pipeline has blending off: this reads the
+// premultiplied accumulation so far (a copy of the target) and writes the whole result for the
+// pixels the layer covers. Where the layer is transparent the backdrop passes through.
+@group(0) @binding(3) var backdrop_tex: texture_2d<f32>;
+
+@fragment
+fn fs_blend(input: VertexOutput) -> @location(0) vec4<f32> {
+    let color = textureSample(layer_tex, layer_sampler, input.uv);
+    let backdrop = textureLoad(backdrop_tex, vec2<i32>(input.position.xy), 0);
+    return blend_over(layer.blend_mode, backdrop, color.rgb, color.a * layer.opacity);
 }

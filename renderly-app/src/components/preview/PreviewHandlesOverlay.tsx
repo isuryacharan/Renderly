@@ -13,7 +13,7 @@ import {
   type HandleKind,
 } from "../../lib/previewMath";
 import type { ClipTransform, MediaClip } from "../../lib/types";
-import { clipDurationSecs } from "../../lib/types";
+import { clipDurationUs } from "../../lib/types";
 import { activeContainerSize, activeTracks } from "../../lib/container";
 import { useEditorStore } from "../../store/editorStore";
 
@@ -49,8 +49,8 @@ function activeVideoSelection(
   if (!track || track.kind !== "video" || track.hidden) return null;
   const clip = track.clips.find((c) => c.id === selection.clipId);
   if (!clip || clip.type !== "video" || !clip.enabled) return null;
-  const end = clip.position_secs + clipDurationSecs(clip);
-  if (playhead < clip.position_secs || playhead >= end) return null;
+  const end = clip.start_us + clipDurationUs(clip);
+  if (playhead < clip.start_us || playhead >= end) return null;
   return { trackId: track.id, clip, locked: track.locked };
 }
 

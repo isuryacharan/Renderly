@@ -17,6 +17,7 @@ use crate::project::{
     evaluate_volume_db, Clip, ClipMask, MediaClip, MediaKind, Project, TrackAudioRole, TrackKind,
     MAX_SEQUENCE_DEPTH,
 };
+use crate::time::us_to_seconds;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -108,9 +109,9 @@ impl Default for ExportSettings {
 impl ExportSettings {
     pub fn from_preset(preset: &ExportPreset, project: &Project) -> Self {
         let (width, height, fps) = match preset {
-            ExportPreset::TikTok9x16 => (1080, 1920, project.settings.fps),
-            ExportPreset::Youtube16x9 => (1920, 1080, project.settings.fps),
-            ExportPreset::Custom { width, height, fps } => (*width, *height, *fps),
+            ExportPreset::TikTok9x16 => (1080, 1920, project.settings.fps.as_f64()),
+            ExportPreset::Youtube16x9 => (1920, 1080, project.settings.fps.as_f64()),
+            ExportPreset::Custom { width, height, fps } => (*width, *height, fps.as_f64()),
         };
         Self {
             width,
@@ -137,7 +138,7 @@ struct DecoderState {
     reader: Option<VideoReader>,
     /// A still image (`MediaKind::Image`), decoded once and returned for every source time.
     still: Option<RgbaFrame>,
-    last_source_time: f64,
+    last_source_time: i64,
     /// A5: LRU of recently decoded frames keyed by quantized source time. Avoids
     /// respawning FFmpeg on every backward scrub / small seek within the window.
     cache: FrameLru,
@@ -184,8 +185,8 @@ impl FrameLru {
     }
 }
 
-fn quantize_source_time_ms(source_time: f64) -> i64 {
-    (source_time * 1000.0).round() as i64
+fn quantize_source_time_ms(source_time_us: i64) -> i64 {
+    (source_time_us + 500).div_euclid(1000)
 }
 
 impl DecoderState {
@@ -195,12 +196,12 @@ impl DecoderState {
             reader_opts,
             reader: None,
             still: None,
-            last_source_time: f64::NAN,
+            last_source_time: i64::MIN,
             cache: FrameLru::default(),
         }
     }
 
-    fn frame_at(&mut self, source_time: f64) -> Result<Option<RgbaFrame>, FfmpegCliError> {
+    fn frame_at(&mut self, source_time: i64) -> Result<Option<RgbaFrame>, FfmpegCliError> {
         if crate::media::is_still_image(&self.path) {
             if self.still.is_none() {
                 let img = image::open(&self.path)
@@ -227,13 +228,13 @@ impl DecoderState {
         }
 
         let needs_reopen = self.reader.is_none()
-            || source_time + 1e-6 < self.last_source_time
-            || (source_time - self.last_source_time).abs() > 0.5;
+            || source_time < self.last_source_time
+            || (source_time - self.last_source_time).abs() > 500_000;
 
         if needs_reopen {
             self.reader = Some(VideoReader::open_with(
                 &self.path,
-                source_time,
+                us_to_seconds(source_time),
                 &self.reader_opts,
             )?);
         }
@@ -278,9 +279,24 @@ pub struct FrameRenderer {
     /// Render-only overrides (see [`PreviewOverrides`]). Empty for export; the live app sets
     /// them so `render_frame` and the MCP `look` show what the preview shows. Never saved.
     overrides: PreviewOverrides,
+    /// The packs item refs resolve against. Loaded from the user library on the first frame
+    /// unless the host supplies them with [`FrameRenderer::set_packs`].
+    packs: Option<std::sync::Arc<Vec<crate::packs::LoadedPack>>>,
 }
 
 impl FrameRenderer {
+    /// Resolve item refs against exactly these packs (hosts and tests that manage their own
+    /// set). Without a call, the installed library is loaded once, on the first frame.
+    pub fn set_packs(&mut self, packs: Vec<crate::packs::LoadedPack>) {
+        self.packs = Some(std::sync::Arc::new(packs));
+    }
+
+    /// Forget the loaded packs so the next frame reloads the library (after an install or an
+    /// uninstall).
+    pub fn reload_packs(&mut self) {
+        self.packs = None;
+    }
+
     /// Render with these preview overrides applied (replaces any previous set). Export never
     /// calls this, so exported files always match the saved project.
     pub fn set_preview_overrides(&mut self, overrides: PreviewOverrides) {
@@ -296,6 +312,7 @@ impl FrameRenderer {
             decoders: HashMap::new(),
             frame_mattes: HashMap::new(),
             overrides: PreviewOverrides::new(),
+            packs: None,
         })
     }
 
@@ -315,6 +332,7 @@ impl FrameRenderer {
             decoders: HashMap::new(),
             frame_mattes: HashMap::new(),
             overrides: PreviewOverrides::new(),
+            packs: None,
         })
     }
 
@@ -326,28 +344,27 @@ impl FrameRenderer {
         (self.compositor.width(), self.compositor.height())
     }
 
-    /// A5: warm the per-track decode LRU around `time_secs` so scrubbing nearby
+    /// A5: warm the per-track decode LRU around `time_us` so scrubbing nearby
     /// (especially backward) hits cache instead of respawning FFmpeg. Decodes only —
     /// does not composite or present. Safe to call from the scrub worker after a present;
     /// respects the same decoder reopen rules as [`Self::render`].
     pub fn prefetch_around(
         &mut self,
         project: &Project,
-        time_secs: f64,
-        window_secs: f64,
+        time_us: i64,
+        window_us: i64,
     ) -> Result<(), ExportError> {
-        let fps = self.settings.fps.max(1.0);
-        let step = 1.0 / fps;
-        let window = window_secs.max(0.0);
-        let start = (time_secs - window).max(0.0);
-        let end = time_secs + window;
+        let fps = project.settings.fps;
+        let window = window_us.max(0);
+        let start = (time_us - window).max(0);
+        let end = time_us + window;
         let reader_opts = ReaderOptions {
             target_height: self.decode_opts.target_height,
             output_fps: self.decode_opts.output_fps,
         };
 
         let mut t = start;
-        while t <= end + 1e-9 {
+        while t <= end {
             // Includes layers inside nested sequences.
             let layers = eval::leaf_media_layers(project, t)?;
             for layer in &layers {
@@ -363,13 +380,14 @@ impl FrameRenderer {
                 }
                 let _ = decoder.frame_at(source_time)?;
             }
-            t += step;
+            // Next frame boundary at the project rate.
+            t = fps.frame_start(fps.frame_at(t) + 1);
         }
         Ok(())
     }
 
-    pub fn render(&mut self, project: &Project, time_secs: f64) -> Result<Vec<u8>, ExportError> {
-        self.render_inner(project, time_secs, true)
+    pub fn render(&mut self, project: &Project, time_us: i64) -> Result<Vec<u8>, ExportError> {
+        self.render_inner(project, time_us, true)
             .map(|(pixels, _)| pixels.expect("readback requested"))
     }
 
@@ -381,9 +399,9 @@ impl FrameRenderer {
     pub fn render_timed(
         &mut self,
         project: &Project,
-        time_secs: f64,
+        time_us: i64,
     ) -> Result<(Vec<u8>, FrameTiming), ExportError> {
-        self.render_inner(project, time_secs, true)
+        self.render_inner(project, time_us, true)
             .map(|(pixels, timing)| (pixels.expect("readback requested"), timing))
     }
 
@@ -392,24 +410,27 @@ impl FrameRenderer {
     pub fn render_to_texture(
         &mut self,
         project: &Project,
-        time_secs: f64,
+        time_us: i64,
     ) -> Result<FrameTiming, ExportError> {
-        self.render_inner(project, time_secs, false)
+        self.render_inner(project, time_us, false)
             .map(|(_, timing)| timing)
     }
 
     fn render_inner(
         &mut self,
         project: &Project,
-        time_secs: f64,
+        time_us: i64,
         readback: bool,
     ) -> Result<(Option<Vec<u8>>, FrameTiming), ExportError> {
         // Same projected view the wasm preview builds (compose::preview_overrides): overrides
         // are applied before evaluation, so both paths render an override identically.
         let view = self.overrides.apply(project);
         let project: &Project = &view;
-        let steps = eval::active_steps(project, time_secs)?;
-        let packs = crate::packs::load_project_packs(project);
+        let steps = eval::active_steps(project, time_us)?;
+        let packs = self
+            .packs
+            .get_or_insert_with(|| std::sync::Arc::new(crate::packs::load_installed_packs()))
+            .clone();
         let plugin_host = crate::plugins::PluginHost::for_project(project).ok();
 
         let reader_opts = ReaderOptions {
@@ -420,23 +441,25 @@ impl FrameRenderer {
             decoders: &mut self.decoders,
             plugin_host: plugin_host.as_ref(),
             reader_opts,
-            decode_secs: 0.0,
+            decode_s: 0.0,
             frame_mattes: Vec::new(),
+            project,
         };
         let mut scene = build_scene(project, steps, &mut host).map_err(|e| match e {
             SceneError::Eval(e) => ExportError::from(e),
             SceneError::Host(e) => e,
         })?;
-        let decode_secs = host.decode_secs;
+        let decode_s = host.decode_s;
         let wanted_mattes = std::mem::take(&mut host.frame_mattes);
         self.register_frame_mattes(&wanted_mattes)?;
 
-        for cap in eval::active_captions(project, time_secs) {
+        for cap in eval::active_captions(project, time_us) {
             scene.push(SceneStep::Layer(ComposeLayer::caption(LayerSource::Frame(
                 crate::captions::render_caption_for_project(
                     project,
                     &cap.text,
                     &cap.style_id,
+                    &cap.overrides,
                     self.settings.width,
                     self.settings.height,
                 )?,
@@ -450,13 +473,13 @@ impl FrameRenderer {
             self.compositor.compose_steps_to_texture(&packs, &scene)?;
             None
         };
-        let compose_secs = compose_start.elapsed().as_secs_f64();
+        let compose_s = compose_start.elapsed().as_secs_f64();
 
         Ok((
             pixels,
             FrameTiming {
-                decode_ms: decode_secs * 1000.0,
-                compose_ms: compose_secs * 1000.0,
+                decode_ms: decode_s * 1000.0,
+                compose_ms: compose_s * 1000.0,
             },
         ))
     }
@@ -500,9 +523,11 @@ struct ExportHost<'a> {
     decoders: &'a mut HashMap<InstanceKey, DecoderState>,
     plugin_host: Option<&'a crate::plugins::PluginHost>,
     reader_opts: ReaderOptions,
-    decode_secs: f64,
+    decode_s: f64,
     /// Per-frame background-removal mattes the layers built so far need.
     frame_mattes: Vec<FrameMatte>,
+    /// The project being rendered (pack caption styles resolve against the library).
+    project: &'a Project,
 }
 
 impl SceneHost for ExportHost<'_> {
@@ -522,7 +547,7 @@ impl SceneHost for ExportHost<'_> {
         }
         let decode_start = Instant::now();
         let frame = decoder.frame_at(source_time)?;
-        self.decode_secs += decode_start.elapsed().as_secs_f64();
+        self.decode_s += decode_start.elapsed().as_secs_f64();
         let Some(mut frame) = frame else {
             return Ok(None);
         };
@@ -561,6 +586,29 @@ impl SceneHost for ExportHost<'_> {
         )))
     }
 
+    fn text_layer(
+        &mut self,
+        layer: &ActiveLayer,
+        size: (u32, u32),
+    ) -> Result<Option<ComposeLayer>, ExportError> {
+        let Some(text) = layer.text() else {
+            return Ok(None);
+        };
+        let frame = crate::captions::render_caption_for_project(
+            self.project,
+            &text.text,
+            &text.style_id,
+            &text.overrides,
+            size.0,
+            size.1,
+        )?;
+        Ok(Some(ComposeLayer::from_active(
+            layer,
+            LayerSource::Frame(frame),
+            layer.mask.clone(),
+        )))
+    }
+
     fn sequence_mask(&mut self, layer: &ActiveLayer) -> Option<ClipMask> {
         // Background removal without a baked matte is per inner clip; a baked matte or the
         // clip's own mask applies to the sequence's picture.
@@ -583,7 +631,7 @@ pub struct FrameTiming {
     pub compose_ms: f64,
 }
 
-/// Render one composited RGBA frame at `time_secs` (video + burned-in captions).
+/// Render one composited RGBA frame at `time_us` (video + burned-in captions).
 ///
 /// One-shot convenience wrapper: builds a `FrameRenderer` (fresh GPU device + decoders)
 /// for a single frame. Fine for perception/MCP call sites that render one isolated frame;
@@ -591,11 +639,11 @@ pub struct FrameTiming {
 /// avoid rebuilding the compositor and decoders per frame.
 pub fn render_frame_at(
     project: &Project,
-    time_secs: f64,
+    time_us: i64,
     settings: ExportSettings,
 ) -> Result<Vec<u8>, ExportError> {
     let mut renderer = FrameRenderer::new(settings, DecodeOptions::default())?;
-    renderer.render(project, time_secs)
+    renderer.render(project, time_us)
 }
 
 /// Render the project's timeline to an MP4 file (video + captions + mixed audio).
@@ -634,8 +682,8 @@ pub fn export_project_with_settings(
         return Err(FfmpegCliError::NotFound.into());
     }
 
-    let duration_secs = timeline_duration(project);
-    if duration_secs <= 0.0 {
+    let duration_us = timeline_duration(project);
+    if duration_us <= 0 {
         return Err(ExportError::EmptyTimeline);
     }
 
@@ -643,7 +691,9 @@ pub fn export_project_with_settings(
         return Err(ExportError::EmptyTimeline);
     }
 
-    let total_frames = (duration_secs * settings.fps).ceil() as u64;
+    // Frames are paced at the export rate, which may differ from the project rate.
+    let total_frames =
+        (crate::time::Fps::from_f64(settings.fps).frame_at(duration_us - 1) + 1).max(0) as u64;
     if total_frames == 0 {
         return Err(ExportError::EmptyTimeline);
     }
@@ -656,7 +706,7 @@ pub fn export_project_with_settings(
         project,
         output_path,
         settings,
-        duration_secs,
+        duration_us,
         total_frames,
         &temp_dir,
         &temp_video,
@@ -674,12 +724,13 @@ fn export_project_with_progress_inner(
     project: &Project,
     output_path: &Path,
     settings: ExportSettings,
-    duration_secs: f64,
+    duration_us: i64,
     total_frames: u64,
     temp_dir: &Path,
     temp_video: &Path,
     on_progress: &mut dyn FnMut(ExportProgress) -> bool,
 ) -> Result<(), ExportError> {
+    let export_fps = crate::time::Fps::from_f64(settings.fps);
     let mut encoder = VideoEncoder::open(temp_video, &settings.encode_config())?;
     // `output_fps: Some(settings.fps)` paces each source decoder to the export frame rate
     // (ffmpeg duplicates/drops frames to match) rather than the source's native fps —
@@ -700,7 +751,7 @@ fn export_project_with_progress_inner(
         }) {
             return Err(ExportError::Cancelled);
         }
-        let t = frame_idx as f64 / settings.fps;
+        let t = export_fps.frame_start(frame_idx as i64);
         let pixels = renderer.render(project, t)?;
         encoder.write_frame(&pixels)?;
     }
@@ -736,7 +787,7 @@ fn export_project_with_progress_inner(
     let mix_result = mix_timeline_audio(
         &audio_clips,
         project.settings.sample_rate,
-        duration_secs,
+        duration_us,
         &temp_audio,
         duck,
     );
@@ -773,6 +824,19 @@ impl Drop for AudioTemp {
     }
 }
 
+/// Shortest audio piece kept by the mixer (100 µs): shorter pieces are rounding noise.
+const MIN_PIECE_US: i64 = 100;
+
+/// `d` µs divided by a playback rate, rounded to µs.
+fn scale_us(d: i64, rate: f64) -> i64 {
+    (d as f64 / rate).round() as i64
+}
+
+/// `d` µs multiplied by a playback rate, rounded to µs.
+fn mul_us(d: i64, rate: f64) -> i64 {
+    (d as f64 * rate).round() as i64
+}
+
 /// Mix pieces for one audio clip on its own timeline: one per constant-speed segment.
 fn leaf_audio_pieces(
     a: &MediaClip,
@@ -781,23 +845,19 @@ fn leaf_audio_pieces(
 ) -> Vec<AudioMixClip> {
     let mut clips = Vec::new();
     for (local_off, tl_dur, speed) in crate::project::anim::speed_segments(a) {
-        let src_in = a.source_time_at(a.position_secs + local_off);
-        let src_out = a.source_time_at(a.position_secs + local_off + tl_dur);
+        let src_in = a.source_time_at(a.start_us + local_off);
+        let src_out = a.source_time_at(a.start_us + local_off + tl_dur);
         clips.push(AudioMixClip {
             path: path.to_path_buf(),
-            position_secs: a.position_secs + local_off,
-            source_in_secs: src_in,
-            source_out_secs: src_out.max(src_in + 1e-4),
-            gain_db: evaluate_volume_db(a, a.position_secs + local_off),
-            fade_in_secs: if local_off < 1e-6 {
-                a.fade_in_secs
+            start_us: a.start_us + local_off,
+            source_in_us: src_in,
+            source_out_us: src_out.max(src_in + MIN_PIECE_US),
+            gain_db: evaluate_volume_db(a, a.start_us + local_off),
+            fade_in_us: if local_off < 1 { a.fade_in_us } else { 0 },
+            fade_out_us: if (local_off + tl_dur - a.timeline_duration_us()).abs() < 60_000 {
+                a.fade_out_us
             } else {
-                0.0
-            },
-            fade_out_secs: if (local_off + tl_dur - a.timeline_duration_secs()).abs() < 0.06 {
-                a.fade_out_secs
-            } else {
-                0.0
+                0
             },
             role,
             speed,
@@ -888,10 +948,10 @@ fn expand_sequence_audio(
 fn premix_sequence_bus(
     project: &Project,
     mut pieces: Vec<AudioMixClip>,
-    duration_secs: f64,
+    duration_us: i64,
     temp: &mut AudioTemp,
 ) -> Result<Vec<AudioMixClip>, ExportError> {
-    if project.settings.duck_db >= 0.0 || duration_secs <= 0.0 {
+    if project.settings.duck_db >= 0.0 || duration_us <= 0 {
         return Ok(pieces);
     }
     let has_voice = pieces.iter().any(|c| {
@@ -914,7 +974,7 @@ fn premix_sequence_bus(
     mix_timeline_audio(
         &pieces,
         project.settings.sample_rate,
-        duration_secs,
+        duration_us,
         &wav,
         Some(DuckSettings {
             duck_db: project.settings.duck_db,
@@ -922,12 +982,12 @@ fn premix_sequence_bus(
     )?;
     Ok(vec![AudioMixClip {
         path: wav,
-        position_secs: 0.0,
-        source_in_secs: 0.0,
-        source_out_secs: duration_secs,
+        start_us: 0,
+        source_in_us: 0,
+        source_out_us: duration_us,
         gain_db: 0.0,
-        fade_in_secs: 0.0,
-        fade_out_secs: 0.0,
+        fade_in_us: 0,
+        fade_out_us: 0,
         role: None,
         speed: 1.0,
         effects: Vec::new(),
@@ -947,48 +1007,45 @@ fn map_through_outer(
     outer_role: Option<TrackAudioRole>,
 ) -> Vec<AudioMixClip> {
     let mut out = Vec::new();
-    let outer_dur = outer.timeline_duration_secs();
+    let outer_dur = outer.timeline_duration_us();
     for (local_off, tl_dur, speed_o) in crate::project::anim::speed_segments(outer) {
-        let seg_start = outer.position_secs + local_off;
+        let seg_start = outer.start_us + local_off;
         let w0 = outer.source_time_at(seg_start);
         let w1 = outer.source_time_at(seg_start + tl_dur);
         let outer_gain = evaluate_volume_db(outer, seg_start);
-        let first = local_off < 1e-6;
-        let last = (local_off + tl_dur - outer_dur).abs() < 0.06;
+        let first = local_off < 1;
+        let last = (local_off + tl_dur - outer_dur).abs() < 60_000;
         for p in pieces {
             let speed_p = p.speed.max(1e-6);
-            let p0 = p.position_secs;
-            let p1 = p0 + (p.source_out_secs - p.source_in_secs) / speed_p;
+            let p0 = p.start_us;
+            let p1 = p0 + scale_us(p.source_out_us - p.source_in_us, speed_p);
             let lo = p0.max(w0);
             let hi = p1.min(w1);
-            if hi - lo <= 1e-4 {
+            if hi - lo <= MIN_PIECE_US {
                 continue;
             }
-            let src_in = p.source_in_secs + (lo - p0) * speed_p;
-            let src_out = p.source_in_secs + (hi - p0) * speed_p;
-            let at_piece_start = lo <= p0 + 1e-9;
-            let at_piece_end = hi >= p1 - 1e-9;
-            let fade_in = if at_piece_start { p.fade_in_secs } else { 0.0 }.max(
-                if first && lo <= w0 + 1e-9 {
-                    outer.fade_in_secs
-                } else {
-                    0.0
-                },
-            );
-            let fade_out =
-                if at_piece_end { p.fade_out_secs } else { 0.0 }.max(if last && hi >= w1 - 1e-9 {
-                    outer.fade_out_secs
-                } else {
-                    0.0
-                });
+            let src_in = p.source_in_us + mul_us(lo - p0, speed_p);
+            let src_out = p.source_in_us + mul_us(hi - p0, speed_p);
+            let at_piece_start = lo <= p0;
+            let at_piece_end = hi >= p1;
+            let fade_in = if at_piece_start { p.fade_in_us } else { 0 }.max(if first && lo <= w0 {
+                outer.fade_in_us
+            } else {
+                0
+            });
+            let fade_out = if at_piece_end { p.fade_out_us } else { 0 }.max(if last && hi >= w1 {
+                outer.fade_out_us
+            } else {
+                0
+            });
             out.push(AudioMixClip {
                 path: p.path.clone(),
-                position_secs: seg_start + (lo - w0) / speed_o,
-                source_in_secs: src_in,
-                source_out_secs: src_out.max(src_in + 1e-4),
+                start_us: seg_start + scale_us(lo - w0, speed_o),
+                source_in_us: src_in,
+                source_out_us: src_out.max(src_in + MIN_PIECE_US),
                 gain_db: p.gain_db + outer_gain,
-                fade_in_secs: fade_in,
-                fade_out_secs: fade_out,
+                fade_in_us: fade_in,
+                fade_out_us: fade_out,
                 role: outer_role,
                 speed: p.speed * speed_o,
                 effects: p.effects.clone(),
@@ -1000,24 +1057,24 @@ fn map_through_outer(
 }
 
 /// Cut a mix piece to `[start, end)` on its timeline and shift so `start` becomes t=0.
-fn clip_piece_to_range(p: &AudioMixClip, start: f64, end: f64) -> Option<AudioMixClip> {
+fn clip_piece_to_range(p: &AudioMixClip, start: i64, end: i64) -> Option<AudioMixClip> {
     let speed = p.speed.max(1e-6);
-    let p0 = p.position_secs;
-    let p1 = p0 + (p.source_out_secs - p.source_in_secs) / speed;
+    let p0 = p.start_us;
+    let p1 = p0 + scale_us(p.source_out_us - p.source_in_us, speed);
     let lo = p0.max(start);
     let hi = p1.min(end);
-    if hi - lo <= 1e-6 {
+    if hi - lo < 1 {
         return None;
     }
     let mut out = p.clone();
-    out.position_secs = lo - start;
-    out.source_in_secs = p.source_in_secs + (lo - p0) * speed;
-    out.source_out_secs = p.source_in_secs + (hi - p0) * speed;
-    if lo > p0 + 1e-9 {
-        out.fade_in_secs = 0.0;
+    out.start_us = lo - start;
+    out.source_in_us = p.source_in_us + mul_us(lo - p0, speed);
+    out.source_out_us = p.source_in_us + mul_us(hi - p0, speed);
+    if lo > p0 {
+        out.fade_in_us = 0;
     }
-    if hi < p1 - 1e-9 {
-        out.fade_out_secs = 0.0;
+    if hi < p1 {
+        out.fade_out_us = 0;
     }
     Some(out)
 }
@@ -1027,11 +1084,9 @@ fn bake_wasm_audio_effects(
     project: &Project,
     clips: &mut [AudioMixClip],
 ) -> Result<Option<PathBuf>, ExportError> {
-    let needs = clips.iter().any(|c| {
-        c.effects
-            .iter()
-            .any(|e| e.enabled && e.effect_id.starts_with("wasm:"))
-    });
+    let needs = clips
+        .iter()
+        .any(|c| c.effects.iter().any(|e| e.enabled && e.is_wasm()));
     if !needs {
         return Ok(None);
     }
@@ -1047,14 +1102,14 @@ fn bake_wasm_audio_effects(
         let wasm_fx: Vec<_> = clip
             .effects
             .iter()
-            .filter(|e| e.enabled && e.effect_id.starts_with("wasm:"))
+            .filter(|e| e.enabled && e.is_wasm())
             .cloned()
             .collect();
         if wasm_fx.is_empty() {
             continue;
         }
         let has_audio_plugin = wasm_fx.iter().any(|e| {
-            e.effect_id
+            e.item_ref
                 .strip_prefix("wasm:")
                 .map(|id| host.plugin_is_audio(id))
                 .unwrap_or(false)
@@ -1063,7 +1118,7 @@ fn bake_wasm_audio_effects(
             continue;
         }
 
-        let seg_dur = (clip.source_out_secs - clip.source_in_secs).max(1e-4);
+        let seg_dur = (clip.source_out_us - clip.source_in_us).max(MIN_PIECE_US);
         let raw_path = temp_dir.join(format!("raw_{i}.f32"));
         let wav_path = temp_dir.join(format!("proc_{i}.wav"));
 
@@ -1074,13 +1129,13 @@ fn bake_wasm_audio_effects(
                 "error",
                 "-y",
                 "-ss",
-                &format!("{:.6}", clip.source_in_secs),
+                &format!("{:.6}", us_to_seconds(clip.source_in_us)),
                 "-i",
             ])
             .arg(&clip.path)
             .args([
                 "-t",
-                &format!("{seg_dur:.6}"),
+                &format!("{:.6}", us_to_seconds(seg_dur)),
                 "-f",
                 "f32le",
                 "-ac",
@@ -1156,8 +1211,9 @@ fn bake_wasm_audio_effects(
         }
 
         clip.path = wav_path;
-        clip.source_in_secs = 0.0;
-        clip.source_out_secs = samples.len() as f64 / 2.0 / sample_rate as f64;
+        clip.source_in_us = 0;
+        clip.source_out_us =
+            (samples.len() as f64 / 2.0 / sample_rate as f64 * 1_000_000.0).round() as i64;
         clip.effects.clear();
     }
 
@@ -1205,33 +1261,33 @@ fn has_video_content(project: &Project) -> bool {
     })
 }
 
-pub fn timeline_duration(project: &Project) -> f64 {
+pub fn timeline_duration(project: &Project) -> i64 {
     project
         .tracks
         .iter()
         .flat_map(|t| t.clips.iter())
-        .map(|c| c.end_secs())
-        .fold(0.0_f64, f64::max)
+        .map(|c| c.end_us())
+        .fold(0_i64, i64::max)
 }
 
-/// Mix timeline audio in `[start_secs, start_secs + duration_secs)` to a WAV file,
-/// shifted so the file's own t=0 is `start_secs`. Returns `false` (and writes nothing) if
+/// Mix timeline audio in `[start_us, start_us + duration_us)` to a WAV file,
+/// shifted so the file's own t=0 is `start_us`. Returns `false` (and writes nothing) if
 /// no enabled audio clip overlaps the range. File-backed rather than in-memory so the
 /// playback engine can pre-mix ranges spanning minutes, not just short scrub segments.
 pub fn mix_timeline_audio_range_to_file(
     project: &Project,
-    start_secs: f64,
-    duration_secs: f64,
+    start_us: i64,
+    duration_us: i64,
     out_path: &Path,
 ) -> Result<bool, ExportError> {
-    if duration_secs <= 0.0 {
+    if duration_us <= 0 {
         return Ok(false);
     }
     if !crate::media::ffmpeg_available() {
         return Err(FfmpegCliError::NotFound.into());
     }
 
-    let end_secs = start_secs + duration_secs;
+    let end_us = start_us + duration_us;
     let mut audio_temp = AudioTemp::default();
     let mut shifted = Vec::new();
     for track in &project.tracks {
@@ -1260,27 +1316,27 @@ pub fn mix_timeline_audio_range_to_file(
                 shifted.extend(
                     pieces
                         .iter()
-                        .filter_map(|p| clip_piece_to_range(p, start_secs, end_secs)),
+                        .filter_map(|p| clip_piece_to_range(p, start_us, end_us)),
                 );
                 continue;
             }
-            let clip_len = a.timeline_duration_secs();
-            let clip_end = a.position_secs + clip_len;
-            let overlap_start = start_secs.max(a.position_secs);
-            let overlap_end = end_secs.min(clip_end);
+            let clip_len = a.timeline_duration_us();
+            let clip_end = a.start_us + clip_len;
+            let overlap_start = start_us.max(a.start_us);
+            let overlap_end = end_us.min(clip_end);
             if overlap_end <= overlap_start {
                 continue;
             }
-            let offset = (overlap_start - a.position_secs) * a.speed_factor();
-            let overlap_src = (overlap_end - overlap_start) * a.speed_factor();
+            let offset = mul_us(overlap_start - a.start_us, a.speed_factor());
+            let overlap_src = mul_us(overlap_end - overlap_start, a.speed_factor());
             shifted.push(AudioMixClip {
                 path: media.path.clone(),
-                position_secs: overlap_start - start_secs,
-                source_in_secs: a.source_in_secs + offset,
-                source_out_secs: a.source_in_secs + offset + overlap_src,
+                start_us: overlap_start - start_us,
+                source_in_us: a.source_in_us + offset,
+                source_out_us: a.source_in_us + offset + overlap_src,
                 gain_db: evaluate_volume_db(a, overlap_start),
-                fade_in_secs: a.fade_in_secs,
-                fade_out_secs: a.fade_out_secs,
+                fade_in_us: a.fade_in_us,
+                fade_out_us: a.fade_out_us,
                 role: track.audio_role,
                 speed: a.speed_factor(),
                 effects: a.effects.clone(),
@@ -1297,7 +1353,7 @@ pub fn mix_timeline_audio_range_to_file(
     let result = mix_timeline_audio(
         &shifted,
         project.settings.sample_rate,
-        duration_secs,
+        duration_us,
         out_path,
         duck,
     );
@@ -1311,14 +1367,14 @@ pub fn mix_timeline_audio_range_to_file(
 /// Mix a slice of timeline audio into an in-memory WAV (for preview scrub).
 pub fn mix_timeline_audio_segment(
     project: &Project,
-    start_secs: f64,
-    duration_secs: f64,
+    start_us: i64,
+    duration_us: i64,
 ) -> Result<Vec<u8>, ExportError> {
     let temp_dir = std::env::temp_dir().join(format!("renderly-scrub-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&temp_dir).map_err(FfmpegCliError::Io)?;
     let temp_wav = temp_dir.join("segment.wav");
 
-    let wrote = mix_timeline_audio_range_to_file(project, start_secs, duration_secs, &temp_wav)?;
+    let wrote = mix_timeline_audio_range_to_file(project, start_us, duration_us, &temp_wav)?;
     let bytes = if wrote {
         std::fs::read(&temp_wav).map_err(FfmpegCliError::Io)?
     } else {
@@ -1406,7 +1462,7 @@ mod tests {
             id: media_id,
             path: video_path.clone(),
             kind: MediaKind::Video,
-            duration_secs: Some(1.0),
+            duration_us: Some(1000000),
             width: Some(320),
             height: Some(240),
             fps: Some(30.0),
@@ -1419,13 +1475,13 @@ mod tests {
             .push(Clip::Video(crate::project::MediaClip {
                 id: uuid::Uuid::new_v4(),
                 media_id,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 0.5,
+                start_us: 0,
+                source_in_us: 0,
+                source_out_us: 500_000,
                 gain_db: 0.0,
                 enabled: true,
-                fade_in_secs: 0.0,
-                fade_out_secs: 0.0,
+                fade_in_us: 0,
+                fade_out_us: 0,
                 ..Default::default()
             }));
 
@@ -1471,7 +1527,7 @@ mod tests {
             id: media_id,
             path: video_path.clone(),
             kind: MediaKind::Video,
-            duration_secs: Some(1.0),
+            duration_us: Some(1000000),
             width: Some(320),
             height: Some(240),
             fps: Some(30.0),
@@ -1484,13 +1540,13 @@ mod tests {
             .push(Clip::Video(crate::project::MediaClip {
                 id: uuid::Uuid::new_v4(),
                 media_id,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 0.5,
+                start_us: 0,
+                source_in_us: 0,
+                source_out_us: 500_000,
                 gain_db: 0.0,
                 enabled: true,
-                fade_in_secs: 0.0,
-                fade_out_secs: 0.0,
+                fade_in_us: 0,
+                fade_out_us: 0,
                 ..Default::default()
             }));
 
@@ -1551,22 +1607,22 @@ mod tests {
             .push(Clip::Video(crate::project::MediaClip {
                 id: uuid::Uuid::new_v4(),
                 media_id: uuid::Uuid::new_v4(),
-                position_secs: 1.0,
-                source_in_secs: 0.0,
-                source_out_secs: 2.0,
+                start_us: 1000000,
+                source_in_us: 0,
+                source_out_us: 2000000,
                 gain_db: 0.0,
                 enabled: true,
-                fade_in_secs: 0.0,
-                fade_out_secs: 0.0,
+                fade_in_us: 0,
+                fade_out_us: 0,
                 ..Default::default()
             }));
-        assert!((timeline_duration(&project) - 3.0).abs() < 1e-9);
+        assert!((timeline_duration(&project) - 3000000).abs() < 1);
     }
 
     #[test]
     fn mix_timeline_audio_segment_empty_without_audio() {
         let project = Project::new("t", Settings::default());
-        let bytes = mix_timeline_audio_segment(&project, 0.0, 0.5).unwrap();
+        let bytes = mix_timeline_audio_segment(&project, 0, 500000).unwrap();
         assert!(bytes.is_empty());
     }
 
@@ -1578,7 +1634,7 @@ mod tests {
             id: media_id,
             path: "voice.wav".into(),
             kind: MediaKind::Audio,
-            duration_secs: Some(5.0),
+            duration_us: Some(5000000),
             width: None,
             height: None,
             fps: None,
@@ -1589,13 +1645,13 @@ mod tests {
         track.clips.push(Clip::Audio(crate::project::MediaClip {
             id: uuid::Uuid::new_v4(),
             media_id,
-            position_secs: 0.0,
-            source_in_secs: 0.0,
-            source_out_secs: 5.0,
+            start_us: 0,
+            source_in_us: 0,
+            source_out_us: 5000000,
             gain_db: 0.0,
             enabled: true,
-            fade_in_secs: 0.0,
-            fade_out_secs: 0.0,
+            fade_in_us: 0,
+            fade_out_us: 0,
             ..Default::default()
         }));
         project.tracks.push(track);
@@ -1613,7 +1669,7 @@ mod tests {
             id: media_id,
             path: "clip.mp4".into(),
             kind: MediaKind::Video,
-            duration_secs: Some(5.0),
+            duration_us: Some(5000000),
             width: Some(320),
             height: Some(240),
             fps: Some(30.0),
@@ -1624,19 +1680,19 @@ mod tests {
         track.clips.push(Clip::Video(crate::project::MediaClip {
             id: uuid::Uuid::new_v4(),
             media_id,
-            position_secs: 0.0,
-            source_in_secs: 0.0,
-            source_out_secs: 5.0,
+            start_us: 0,
+            source_in_us: 0,
+            source_out_us: 5000000,
             gain_db: 0.0,
             enabled: true,
-            fade_in_secs: 0.0,
-            fade_out_secs: 0.0,
+            fade_in_us: 0,
+            fade_out_us: 0,
             ..Default::default()
         }));
         project.tracks.push(track);
 
         assert!(!has_video_content(&project));
-        assert!(eval::active_steps(&project, 0.0).unwrap().is_empty());
+        assert!(eval::active_steps(&project, 0).unwrap().is_empty());
     }
 
     #[test]
@@ -1645,7 +1701,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("renderly-mixtest-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("out.wav");
-        let wrote = mix_timeline_audio_range_to_file(&project, 0.0, 0.5, &out).unwrap();
+        let wrote = mix_timeline_audio_range_to_file(&project, 0, 500000, &out).unwrap();
         assert!(!wrote);
         assert!(!out.exists());
         std::fs::remove_dir_all(&dir).ok();
@@ -1670,7 +1726,7 @@ mod tests {
             id: media_id,
             path: video_path.clone(),
             kind: MediaKind::Video,
-            duration_secs: Some(1.0),
+            duration_us: Some(1000000),
             width: Some(320),
             height: Some(240),
             fps: Some(30.0),
@@ -1683,13 +1739,13 @@ mod tests {
             .push(Clip::Video(crate::project::MediaClip {
                 id: uuid::Uuid::new_v4(),
                 media_id,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 1.0,
+                start_us: 0,
+                source_in_us: 0,
+                source_out_us: 1000000,
                 gain_db: 0.0,
                 enabled: true,
-                fade_in_secs: 0.0,
-                fade_out_secs: 0.0,
+                fade_in_us: 0,
+                fade_out_us: 0,
                 ..Default::default()
             }));
 
@@ -1701,9 +1757,9 @@ mod tests {
         };
         let mut renderer = FrameRenderer::new(settings, DecodeOptions::default()).expect("new");
         // Sequential monotonic renders reuse the same decoder without reopening ffmpeg.
-        let frame_a = renderer.render(&project, 0.0).expect("render frame 0");
+        let frame_a = renderer.render(&project, 0).expect("render frame 0");
         let frame_b = renderer
-            .render(&project, 1.0 / 30.0)
+            .render(&project, 1000000 / 30000000)
             .expect("render frame 1");
         assert_eq!(frame_a.len(), (320 * 240 * 4) as usize);
         assert_eq!(frame_b.len(), (320 * 240 * 4) as usize);
@@ -1729,7 +1785,7 @@ mod tests {
             id: media_id,
             path: video_path.clone(),
             kind: MediaKind::Video,
-            duration_secs: Some(1.0),
+            duration_us: Some(1000000),
             width: Some(320),
             height: Some(240),
             fps: Some(30.0),
@@ -1742,13 +1798,13 @@ mod tests {
             .push(Clip::Video(crate::project::MediaClip {
                 id: uuid::Uuid::new_v4(),
                 media_id,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 1.0,
+                start_us: 0,
+                source_in_us: 0,
+                source_out_us: 1000000,
                 gain_db: 0.0,
                 enabled: true,
-                fade_in_secs: 0.0,
-                fade_out_secs: 0.0,
+                fade_in_us: 0,
+                fade_out_us: 0,
                 ..Default::default()
             }));
 
@@ -1761,12 +1817,12 @@ mod tests {
         let mut timed_renderer =
             FrameRenderer::new(settings, DecodeOptions::default()).expect("new");
         let (timed_pixels, timing) = timed_renderer
-            .render_timed(&project, 0.0)
+            .render_timed(&project, 0)
             .expect("render_timed");
 
         let mut plain_renderer =
             FrameRenderer::new(settings, DecodeOptions::default()).expect("new");
-        let plain_pixels = plain_renderer.render(&project, 0.0).expect("render");
+        let plain_pixels = plain_renderer.render(&project, 0).expect("render");
 
         assert_eq!(timed_pixels, plain_pixels);
         // A real decode + composite of an actual video frame never completes in 0ms; a
@@ -1796,7 +1852,7 @@ mod tests {
             id: media_id,
             path: video_path.clone(),
             kind: MediaKind::Video,
-            duration_secs: Some(1.0),
+            duration_us: Some(1000000),
             width: Some(320),
             height: Some(240),
             fps: Some(30.0),
@@ -1811,13 +1867,13 @@ mod tests {
             track.clips.push(Clip::Video(crate::project::MediaClip {
                 id: uuid::Uuid::new_v4(),
                 media_id,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 1.0,
+                start_us: 0,
+                source_in_us: 0,
+                source_out_us: 1000000,
                 gain_db: 0.0,
                 enabled: true,
-                fade_in_secs: 0.0,
-                fade_out_secs: 0.0,
+                fade_in_us: 0,
+                fade_out_us: 0,
                 ..Default::default()
             }));
             project.tracks.push(track);
@@ -1830,7 +1886,7 @@ mod tests {
             ..Default::default()
         };
         let mut renderer = FrameRenderer::new(settings, DecodeOptions::default()).expect("new");
-        renderer.render(&project, 0.0).expect("render");
+        renderer.render(&project, 0).expect("render");
 
         assert_eq!(
             renderer.decoders.len(),
@@ -1860,7 +1916,7 @@ mod tests {
             id: media_id,
             path: video_path,
             kind: MediaKind::Video,
-            duration_secs: Some(1.0),
+            duration_us: Some(1000000),
             width: Some(320),
             height: Some(240),
             fps: Some(30.0),
@@ -1872,9 +1928,9 @@ mod tests {
         inner.clips.push(Clip::Video(crate::project::MediaClip {
             id: uuid::Uuid::new_v4(),
             media_id,
-            position_secs: 0.0,
-            source_in_secs: 0.0,
-            source_out_secs: 1.0,
+            start_us: 0,
+            source_in_us: 0,
+            source_out_us: 1000000,
             enabled: true,
             ..Default::default()
         }));
@@ -1889,7 +1945,7 @@ mod tests {
             id: seq_media,
             path: Default::default(),
             kind: MediaKind::Sequence,
-            duration_secs: None,
+            duration_us: None,
             width: None,
             height: None,
             fps: None,
@@ -1901,9 +1957,9 @@ mod tests {
             t.clips.push(Clip::Video(crate::project::MediaClip {
                 id: uuid::Uuid::new_v4(),
                 media_id: seq_media,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 1.0,
+                start_us: 0,
+                source_in_us: 0,
+                source_out_us: 1000000,
                 enabled: true,
                 ..Default::default()
             }));
@@ -1913,9 +1969,9 @@ mod tests {
         raw.clips.push(Clip::Video(crate::project::MediaClip {
             id: uuid::Uuid::new_v4(),
             media_id,
-            position_secs: 0.0,
-            source_in_secs: 0.0,
-            source_out_secs: 1.0,
+            start_us: 0,
+            source_in_us: 0,
+            source_out_us: 1000000,
             enabled: true,
             ..Default::default()
         }));
@@ -1929,7 +1985,7 @@ mod tests {
             ..Default::default()
         };
         let mut renderer = FrameRenderer::new(settings, DecodeOptions::default()).expect("new");
-        let frame = renderer.render(&project, 0.2).expect("render");
+        let frame = renderer.render(&project, 200000).expect("render");
         assert_eq!(frame.len(), (320 * 240 * 4) as usize);
         assert_eq!(
             renderer.decoders.len(),
@@ -1937,7 +1993,7 @@ mod tests {
             "two sequence placements + the raw clip each get their own decoder"
         );
         // timeline_duration stays the root timeline's span.
-        assert!((timeline_duration(&project) - 1.0).abs() < 1e-9);
+        assert!((timeline_duration(&project) - 1000000).abs() < 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1956,7 +2012,7 @@ mod tests {
             id: wav_media,
             path: "tone.wav".into(),
             kind: MediaKind::Audio,
-            duration_secs: Some(20.0),
+            duration_us: Some(20000000),
             width: None,
             height: None,
             fps: None,
@@ -1980,7 +2036,7 @@ mod tests {
             id: seq_media,
             path: Default::default(),
             kind: MediaKind::Sequence,
-            duration_secs: None,
+            duration_us: None,
             width: None,
             height: None,
             fps: None,
@@ -1999,9 +2055,9 @@ mod tests {
         MediaClip {
             id: uuid::Uuid::new_v4(),
             media_id: uuid::Uuid::new_v4(),
-            position_secs: position,
-            source_in_secs: src_in,
-            source_out_secs: src_out,
+            start_us: (position * 1e6).round() as i64,
+            source_in_us: (src_in * 1e6).round() as i64,
+            source_out_us: (src_out * 1e6).round() as i64,
             enabled: true,
             ..Default::default()
         }
@@ -2022,13 +2078,14 @@ mod tests {
         let c = &clips[0];
         // The inner clip covers sequence time [2, 6); the outer window [1, 5) keeps [2, 5):
         // source [0, 3), starting 1 sequence-second (0.5 s at 2x) into the outer clip.
-        assert!((c.source_in_secs - 0.0).abs() < 1e-9);
-        assert!((c.source_out_secs - 3.0).abs() < 1e-9);
-        assert!((c.position_secs - 10.5).abs() < 1e-9);
+        assert_eq!(c.source_in_us, 0);
+        assert!((c.source_out_us - 3000000).abs() < 1);
+        assert!((c.start_us - 10500000).abs() < 1);
         assert!((c.speed - 2.0).abs() < 1e-9);
         assert!((c.gain_db - (-9.0)).abs() < 1e-9);
         // Ends where the outer clip ends: 10 + 4/2 = 12.
-        let end = c.position_secs + (c.source_out_secs - c.source_in_secs) / c.speed;
+        let end =
+            c.start_us as f64 / 1e6 + ((c.source_out_us - c.source_in_us) as f64 / 1e6) / c.speed;
         assert!((end - 12.0).abs() < 1e-9, "{end}");
         // The expanded clip takes the outer track's role on the parent.
         assert_eq!(c.role, Some(TrackAudioRole::Music));
@@ -2038,8 +2095,8 @@ mod tests {
     fn nested_audio_is_clipped_to_the_outer_span_and_keeps_inner_settings() {
         use crate::project::AudioDenoise;
         let mut inner = audio_clip(0.0, 3.0, 7.0);
-        inner.fade_in_secs = 0.5;
-        inner.fade_out_secs = 0.25;
+        inner.fade_in_us = 500000;
+        inner.fade_out_us = 250000;
         inner.audio_denoise = Some(AudioDenoise {
             enabled: true,
             backend: "rnnoise".into(),
@@ -2052,16 +2109,12 @@ mod tests {
         let clips = collect_audio_clips(&project, &mut AudioTemp::default()).unwrap();
         assert_eq!(clips.len(), 1);
         let c = &clips[0];
-        assert!((c.source_in_secs - 3.0).abs() < 1e-9);
-        assert!(
-            (c.source_out_secs - 4.5).abs() < 1e-9,
-            "{}",
-            c.source_out_secs
-        );
-        assert!((c.position_secs - 5.0).abs() < 1e-9);
+        assert!((c.source_in_us - 3000000).abs() < 1);
+        assert!((c.source_out_us - 4500000).abs() < 1, "{}", c.source_out_us);
+        assert!((c.start_us - 5000000).abs() < 1);
         // The inner clip's start fade survives; its end fade was cut off by the outer span.
-        assert!((c.fade_in_secs - 0.5).abs() < 1e-9);
-        assert_eq!(c.fade_out_secs, 0.0);
+        assert!((c.fade_in_us - 500000).abs() < 1);
+        assert_eq!(c.fade_out_us, 0);
         // RNNoise denoise stays attached to the leaf clip so `mix_clip_bus` still substitutes
         // the denoised input for nested clips.
         let d = c.denoise.as_ref().expect("denoise survives expansion");
@@ -2074,13 +2127,13 @@ mod tests {
     fn nested_audio_outer_fades_apply_at_the_outer_clip_edges() {
         let inner = audio_clip(0.0, 0.0, 10.0);
         let mut outer = audio_clip(0.0, 0.0, 4.0);
-        outer.fade_in_secs = 1.0;
-        outer.fade_out_secs = 2.0;
+        outer.fade_in_us = 1_000_000;
+        outer.fade_out_us = 2_000_000;
         let project = seq_audio_project(outer, inner, None, None);
         let clips = collect_audio_clips(&project, &mut AudioTemp::default()).unwrap();
         assert_eq!(clips.len(), 1);
-        assert_eq!(clips[0].fade_in_secs, 1.0);
-        assert_eq!(clips[0].fade_out_secs, 2.0);
+        assert_eq!(clips[0].fade_in_us, 1000000);
+        assert_eq!(clips[0].fade_out_us, 2000000);
     }
 
     #[test]
@@ -2089,11 +2142,11 @@ mod tests {
         let outer = audio_clip(0.0, 0.0, 10.0);
         let project = seq_audio_project(outer, inner, None, None);
         let pieces = collect_audio_clips(&project, &mut AudioTemp::default()).unwrap();
-        let cut = clip_piece_to_range(&pieces[0], 2.0, 4.0).unwrap();
-        assert!((cut.position_secs - 0.0).abs() < 1e-9);
-        assert!((cut.source_in_secs - 2.0).abs() < 1e-9);
-        assert!((cut.source_out_secs - 4.0).abs() < 1e-9);
-        assert!(clip_piece_to_range(&pieces[0], 11.0, 12.0).is_none());
+        let cut = clip_piece_to_range(&pieces[0], 2000000, 4000000).unwrap();
+        assert_eq!(cut.start_us, 0);
+        assert!((cut.source_in_us - 2000000).abs() < 1);
+        assert!((cut.source_out_us - 4000000).abs() < 1);
+        assert!(clip_piece_to_range(&pieces[0], 11000000, 12000000).is_none());
     }
 
     /// Decode 16-bit PCM WAV samples (the only format `mix_clip_bus` writes).
@@ -2164,7 +2217,7 @@ mod tests {
             }
         }
         // Flat equivalent of the nested clip: tone[1, 2.5) = the nested clip's visible span.
-        flat_clip.source_out_secs = 2.5;
+        flat_clip.source_out_us = 2500000;
         let flat_media = nested
             .media
             .iter()
@@ -2186,8 +2239,8 @@ mod tests {
 
         let flat_wav = dir.join("flat.wav");
         let nested_wav = dir.join("nested.wav");
-        mix_timeline_audio(&flat_clips, 48_000, 8.0, &flat_wav, None).unwrap();
-        mix_timeline_audio(&nested_clips, 48_000, 8.0, &nested_wav, None).unwrap();
+        mix_timeline_audio(&flat_clips, 48_000, 8000000, &flat_wav, None).unwrap();
+        mix_timeline_audio(&nested_clips, 48_000, 8000000, &nested_wav, None).unwrap();
         let (a, b) = (wav_samples(&flat_wav), wav_samples(&nested_wav));
         assert_eq!(a.len(), b.len());
         let max_diff = a
@@ -2241,7 +2294,7 @@ mod tests {
             id: wav,
             path: tone.clone(),
             kind: MediaKind::Audio,
-            duration_secs: Some(4.0),
+            duration_us: Some(4000000),
             width: None,
             height: None,
             fps: None,
@@ -2271,7 +2324,7 @@ mod tests {
             id: seq_media,
             path: Default::default(),
             kind: MediaKind::Sequence,
-            duration_secs: None,
+            duration_us: None,
             width: None,
             height: None,
             fps: None,
@@ -2294,7 +2347,7 @@ mod tests {
             "the bus exists while the guard lives"
         );
         assert_eq!(clips[0].role, Some(TrackAudioRole::Music));
-        assert!((clips[0].position_secs - 2.0).abs() < 1e-9);
+        assert!((clips[0].start_us - 2000000).abs() < 1);
         let bus_dir = clips[0].path.parent().unwrap().to_path_buf();
         drop(temp);
         assert!(

@@ -13,18 +13,24 @@ pub mod preview_overrides;
 pub mod runtime;
 mod transition;
 
-pub use effects::{builtin_effect_ids, default_params, BUILTIN_EFFECT_IDS};
+pub use effects::{
+    builtin_effect_refs, clamp_effect_params, default_params, manifest_params, validate_params,
+    BUILTIN_EFFECT_REFS,
+};
 pub use eval::{
     active_captions, active_steps, leaf_media_layers, sequence_steps, ActiveCaption, ActiveLayer,
-    ActiveSource, ComposeStep, EvalError, InstanceKey,
+    ActiveSource, ActiveText, ComposeStep, EvalError, InstanceKey,
 };
 pub use preview_overrides::{PreviewOverride, PreviewOverrideEntry, PreviewOverrides};
 
 use crate::frame::RgbaFrame;
+use crate::packs::status::{resolve_target, Target as ResolvedTarget};
 use crate::packs::LoadedPack;
-use crate::project::{ClipMask, ClipTransform, EffectInstance, TransitionKind};
+use crate::project::{BlendMode, ClipMask, ClipTransform, EffectInstance, EffectParams};
 use effects::EffectProcessor;
+use runtime::manifest::ItemKind;
 use std::collections::HashMap;
+use std::sync::Arc as StdArc;
 use std::sync::Arc;
 use thiserror::Error;
 use transition::TransitionPass;
@@ -40,12 +46,42 @@ pub enum ComposeError {
     Effect(String),
 }
 
+/// Clip-relative time values the effects see (`t`, `duration`, `frame`, `speed` in shaping
+/// expressions and the host block): seconds since the effect started on the clip, following
+/// clip speed, so a 2x clip runs an effect's motion at 2x.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FxTiming {
+    pub time: f64,
+    pub duration: f64,
+    pub frame: u32,
+    pub speed: f64,
+}
+
+impl Default for FxTiming {
+    fn default() -> Self {
+        Self {
+            time: 0.0,
+            duration: 0.0,
+            frame: 0,
+            speed: 1.0,
+        }
+    }
+}
+
 /// Marks a layer as one side of an outgoing→incoming transition pair.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LayerTransition {
-    pub kind: TransitionKind,
+    /// `builtin:<id>@<v>` or `pack:<pack>/<item>@<v>`.
+    pub item_ref: String,
+    pub hash: Option<String>,
+    pub params: EffectParams,
+    /// Linear 0..1 position in the transition window, or already eased when the transition
+    /// stores its own easing (`default_easing == false`).
     pub progress: f32,
     pub is_incoming: bool,
+    /// True when the transition has no stored easing: the compositor applies the item's
+    /// declared default easing to `progress`.
+    pub default_easing: bool,
 }
 
 /// Pixel source for one composited layer.
@@ -100,13 +136,19 @@ pub struct SequenceScene {
 /// An adjustment layer ready to composite: `effects` run on everything composited so far,
 /// and the result is mixed with the unadjusted picture by `opacity` x `mask`.
 pub struct ComposeAdjustment {
+    /// The stack in render order (filter, adjust, `effects[]`), animated params evaluated.
     pub effects: Vec<EffectInstance>,
     pub opacity: f32,
     /// Output-frame (canvas) UVs.
     pub mask: Option<ClipMask>,
+    pub blend_mode: BlendMode,
+    pub timing: FxTiming,
 }
 
 /// One compositing step: a layer or an adjustment, bottom to top.
+// A step is built once per layer per frame and consumed at once; boxing the layer would only add
+// an allocation per layer per frame.
+#[allow(clippy::large_enum_variant)]
 pub enum SceneStep {
     Layer(ComposeLayer),
     Adjustment(ComposeAdjustment),
@@ -114,11 +156,19 @@ pub enum SceneStep {
 
 impl SceneStep {
     /// Build an adjustment step from the evaluated [`ComposeStep::Adjustment`] fields.
-    pub fn adjustment(effects: Vec<EffectInstance>, opacity: f32, mask: Option<ClipMask>) -> Self {
+    pub fn adjustment(
+        effects: Vec<EffectInstance>,
+        opacity: f32,
+        mask: Option<ClipMask>,
+        blend_mode: BlendMode,
+        timing: FxTiming,
+    ) -> Self {
         Self::Adjustment(ComposeAdjustment {
             effects,
             opacity,
             mask,
+            blend_mode,
+            timing,
         })
     }
 
@@ -144,6 +194,15 @@ pub trait SceneHost {
 
     /// The mask applied to a nested-sequence layer's picture.
     fn sequence_mask(&mut self, layer: &ActiveLayer) -> Option<ClipMask>;
+
+    /// The ready-to-composite layer for a text clip: its text drawn at `size`, the output size
+    /// of the timeline it sits on (the project's, or a nested sequence's own), usually
+    /// [`ComposeLayer::from_active`] over the caption renderer's bitmap; `None` skips it.
+    fn text_layer(
+        &mut self,
+        layer: &ActiveLayer,
+        size: (u32, u32),
+    ) -> Result<Option<ComposeLayer>, Self::Error>;
 }
 
 /// Failure assembling a scene: evaluation, or the host's own error.
@@ -166,6 +225,17 @@ pub fn build_scene<H: SceneHost>(
     steps: Vec<ComposeStep>,
     host: &mut H,
 ) -> Result<Vec<SceneStep>, SceneError<H::Error>> {
+    let size = (project.settings.width, project.settings.height);
+    build_scene_at(project, steps, host, size)
+}
+
+/// [`build_scene`] for the timeline whose output is `size` (a nested sequence has its own).
+fn build_scene_at<H: SceneHost>(
+    project: &crate::project::Project,
+    steps: Vec<ComposeStep>,
+    host: &mut H,
+    size: (u32, u32),
+) -> Result<Vec<SceneStep>, SceneError<H::Error>> {
     let mut scene = Vec::with_capacity(steps.len() + 1);
     for step in steps {
         let layer = match step {
@@ -173,8 +243,12 @@ pub fn build_scene<H: SceneHost>(
                 effects,
                 opacity,
                 mask,
+                blend_mode,
+                timing,
             } => {
-                scene.push(SceneStep::adjustment(effects, opacity, mask));
+                scene.push(SceneStep::adjustment(
+                    effects, opacity, mask, blend_mode, timing,
+                ));
                 continue;
             }
             ComposeStep::Layer(layer) => layer,
@@ -185,17 +259,22 @@ pub fn build_scene<H: SceneHost>(
                     scene.push(SceneStep::Layer(composed));
                 }
             }
+            ActiveSource::Text(_) => {
+                if let Some(composed) = host.text_layer(&layer, size).map_err(SceneError::Host)? {
+                    scene.push(SceneStep::Layer(composed));
+                }
+            }
             ActiveSource::Sequence {
                 sequence_id,
-                time_secs,
+                time_us,
                 instance,
             } => {
                 let seq = project
                     .find_sequence(*sequence_id)
                     .ok_or(EvalError::SequenceNotFound(*sequence_id))?;
                 let (width, height) = project.sequence_size(seq);
-                let inner = sequence_steps(project, *sequence_id, *time_secs, instance)?;
-                let inner = build_scene(project, inner, host)?;
+                let inner = sequence_steps(project, *sequence_id, *time_us, instance)?;
+                let inner = build_scene_at(project, inner, host, (width, height))?;
                 let mask = host.sequence_mask(&layer);
                 scene.push(SceneStep::Layer(ComposeLayer::from_active(
                     &layer,
@@ -223,12 +302,15 @@ enum StepRef<'a> {
 pub struct ComposeLayer {
     pub source: LayerSource,
     pub transform: ClipTransform,
-    /// Builtin effect instances (Phase 3.4). Empty / all-disabled → identity path.
+    /// The effect stack in render order (filter, key, adjust, `effects[]`) with animated params
+    /// evaluated at the frame time. Empty / all-disabled / unresolvable → identity path.
     pub effects: Vec<EffectInstance>,
     /// Optional clip mask (Phase 4).
     pub mask: Option<ClipMask>,
     /// When set on two consecutive layers (outgoing then incoming), uses the transition pass.
     pub transition: Option<LayerTransition>,
+    pub blend_mode: BlendMode,
+    pub timing: FxTiming,
 }
 
 impl ComposeLayer {
@@ -246,7 +328,9 @@ impl ComposeLayer {
             transform: layer.transform,
             effects: layer.effects.clone(),
             mask,
-            transition: layer.transition,
+            transition: layer.transition.clone(),
+            blend_mode: layer.blend_mode,
+            timing: layer.timing,
         }
     }
 
@@ -260,6 +344,8 @@ impl ComposeLayer {
             effects: Vec::new(),
             mask: None,
             transition: None,
+            blend_mode: BlendMode::Normal,
+            timing: FxTiming::default(),
         }
     }
 }
@@ -330,6 +416,8 @@ impl From<RgbaFrame> for ComposeLayer {
             effects: Vec::new(),
             mask: None,
             transition: None,
+            blend_mode: BlendMode::Normal,
+            timing: FxTiming::default(),
         }
     }
 }
@@ -345,7 +433,8 @@ struct LayerParamsUniform {
     user_scale: [f32; 2],
     rotation_rad: f32,
     opacity: f32,
-    _pad: [f32; 2],
+    blend_mode: u32,
+    _pad: u32,
 }
 
 /// "Cover" fit: scale/offset (in source-texture UV space) that fill the output rect
@@ -389,6 +478,7 @@ fn layer_params(
     out_w: u32,
     out_h: u32,
     transform: &ClipTransform,
+    blend_mode: BlendMode,
 ) -> LayerParamsUniform {
     let t = transform.clamp_opacity().clamp_fit();
     let (cover_scale, cover_offset) = cover_uv(
@@ -406,7 +496,8 @@ fn layer_params(
         user_scale: [t.scale_x as f32, t.scale_y as f32],
         rotation_rad: (t.rotation_deg as f32).to_radians(),
         opacity: t.opacity as f32,
-        _pad: [0.0, 0.0],
+        blend_mode: blend_mode.shader_index(),
+        _pad: 0,
     }
 }
 
@@ -420,6 +511,10 @@ pub struct Compositor {
     readback_buffer: wgpu::Buffer,
     bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
+    /// Blend modes other than normal: reads a copy of the accumulation (binding 3), blending
+    /// off.
+    blend_bind_group_layout: wgpu::BindGroupLayout,
+    blend_pipeline: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
     effects: EffectProcessor,
     transitions: TransitionPass,
@@ -430,6 +525,38 @@ pub struct Compositor {
     // v7: render-target textures for nested sequences and adjustment scratch, pooled per
     // size the same way so a steady-state frame allocates nothing.
     target_pool: TexturePool,
+}
+
+/// Layer draw bindings: 0 picture, 1 sampler, 2 layer params.
+fn bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
+    vec![
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+    ]
 }
 
 /// Textures a frame borrowed from the pools; handed back after the commands are submitted
@@ -443,6 +570,7 @@ struct FrameScratch {
 /// A colour target the steps are composited into: the main output, or a nested sequence's
 /// offscreen texture. `width`/`height` drive cover-fit and the effect/transition RT sizes.
 struct Target {
+    texture: wgpu::Texture,
     view: wgpu::TextureView,
     width: u32,
     height: u32,
@@ -689,40 +817,44 @@ impl Compositor {
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("layer"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
+            entries: &bind_group_layout_entries(),
         });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("composite"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("composite.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                format!(
+                    "{}\n{}",
+                    include_str!("blend.wgsl"),
+                    include_str!("composite.wgsl")
+                )
+                .into(),
+            ),
         });
+
+        // Blend modes read the accumulation so far from a copy bound at 3.
+        let mut blend_entries = bind_group_layout_entries();
+        blend_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 3,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        });
+        let blend_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("layer-blend"),
+                entries: &blend_entries,
+            });
+        let blend_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("composite-blend"),
+                bind_group_layouts: &[Some(&blend_bind_group_layout)],
+                immediate_size: 0,
+            });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("composite"),
@@ -756,6 +888,32 @@ impl Compositor {
             cache: None,
         });
 
+        let blend_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("composite-blend"),
+            layout: Some(&blend_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_blend"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let effects = EffectProcessor::new(&device);
         let transitions = TransitionPass::new(&device);
 
@@ -769,6 +927,8 @@ impl Compositor {
             readback_buffer,
             bind_group_layout,
             pipeline,
+            blend_bind_group_layout,
+            blend_pipeline,
             sampler,
             effects,
             transitions,
@@ -935,6 +1095,7 @@ impl Compositor {
         encoder: &mut wgpu::CommandEncoder,
     ) -> Result<FrameScratch, ComposeError> {
         let target = Target {
+            texture: self.output_texture.clone(),
             view: self.output_view.clone(),
             width: self.width,
             height: self.height,
@@ -998,11 +1159,11 @@ impl Compositor {
                 StepRef::Layer(layer) => layer,
             };
 
-            let pair = match (layer.transition, steps.peek().copied()) {
+            let pair = match (layer.transition.as_ref(), steps.peek().copied()) {
                 (Some(ta), Some(StepRef::Layer(incoming))) if !ta.is_incoming => {
-                    match incoming.transition {
-                        Some(tb) if tb.is_incoming && ta.kind == tb.kind => {
-                            Some((incoming, ta.kind, ta.progress))
+                    match incoming.transition.as_ref() {
+                        Some(tb) if tb.is_incoming && ta.item_ref == tb.item_ref => {
+                            Some((incoming, ta.clone()))
                         }
                         _ => None,
                     }
@@ -1010,8 +1171,23 @@ impl Compositor {
                 _ => None,
             };
 
-            if let Some((incoming, kind, progress)) = pair {
+            if let Some((incoming, transition)) = pair {
                 steps.next();
+                // A transition that is not installed (or not runnable here) passes through:
+                // the outgoing clip shows until the cut, params stay in the project.
+                let Some(item) = transition_item(packs, &transition) else {
+                    let prepared = self.prepare_layer(packs, layer, encoder, scratch)?;
+                    self.draw_prepared(
+                        packs,
+                        layer,
+                        &prepared,
+                        target,
+                        DrawDest::Main,
+                        encoder,
+                        scratch,
+                    )?;
+                    continue;
+                };
                 // Prepare both pictures first: preparing a nested sequence can itself use the
                 // shared transition render targets, which must not be clobbered between the
                 // two draws below.
@@ -1026,6 +1202,7 @@ impl Compositor {
                     target,
                     DrawDest::TransitionA,
                     encoder,
+                    scratch,
                 )?;
                 self.draw_prepared(
                     packs,
@@ -1034,20 +1211,29 @@ impl Compositor {
                     target,
                     DrawDest::TransitionB,
                     encoder,
+                    scratch,
                 )?;
                 self.transitions.blend(
                     &self.device,
                     &self.queue,
                     encoder,
                     &target.view,
-                    kind,
-                    progress,
+                    &item,
+                    &transition,
                 )?;
                 continue;
             }
 
             let prepared = self.prepare_layer(packs, layer, encoder, scratch)?;
-            self.draw_prepared(packs, layer, &prepared, target, DrawDest::Main, encoder)?;
+            self.draw_prepared(
+                packs,
+                layer,
+                &prepared,
+                target,
+                DrawDest::Main,
+                encoder,
+                scratch,
+            )?;
         }
 
         Ok(())
@@ -1085,6 +1271,7 @@ impl Compositor {
             &adjustment.effects,
             None,
             packs,
+            &adjustment.timing,
         )?;
         if wrote {
             self.effects.mix_adjustment(
@@ -1095,6 +1282,7 @@ impl Compositor {
                 &target.view,
                 opacity,
                 adjustment.mask.as_ref(),
+                adjustment.blend_mode,
             )?;
         }
         Ok(())
@@ -1115,7 +1303,9 @@ impl Compositor {
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             }),
         }
@@ -1198,6 +1388,7 @@ impl Compositor {
         let (width, height) = (scene.width.max(1), scene.height.max(1));
         let accumulation = self.take_target(width, height);
         let target = Target {
+            texture: accumulation.clone(),
             view: accumulation.create_view(&Default::default()),
             width,
             height,
@@ -1224,6 +1415,7 @@ impl Compositor {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_prepared(
         &mut self,
         packs: &[LoadedPack],
@@ -1232,6 +1424,7 @@ impl Compositor {
         target: &Target,
         dest: DrawDest,
         encoder: &mut wgpu::CommandEncoder,
+        scratch: &mut FrameScratch,
     ) -> Result<(), ComposeError> {
         let (src_w, src_h) = (prepared.width, prepared.height);
         let uploaded_view = &prepared.view;
@@ -1246,9 +1439,24 @@ impl Compositor {
             &layer.effects,
             layer.mask.as_ref(),
             packs,
+            &layer.timing,
         )?;
 
-        let params = layer_params(src_w, src_h, target.width, target.height, &layer.transform);
+        // Blend modes other than normal apply when the layer is drawn onto the accumulation;
+        // the two sides of a transition are drawn normally and the transition blends them.
+        let blend_mode = if matches!(dest, DrawDest::Main) {
+            layer.blend_mode
+        } else {
+            BlendMode::Normal
+        };
+        let params = layer_params(
+            src_w,
+            src_h,
+            target.width,
+            target.height,
+            &layer.transform,
+            blend_mode,
+        );
         let params_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1257,28 +1465,68 @@ impl Compositor {
                 usage: wgpu::BufferUsages::UNIFORM,
             });
 
+        let backdrop_view = if blend_mode != BlendMode::Normal {
+            // Copy the accumulation so far; the blend shader reads it while writing the target.
+            let backdrop = self.take_target(target.width, target.height);
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &target.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &backdrop,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width: target.width,
+                    height: target.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            let view = backdrop.create_view(&Default::default());
+            scratch.targets.push(backdrop);
+            Some(view)
+        } else {
+            None
+        };
+
         let sample_view = match (use_effects, self.effects.result_view()) {
             (true, Some(view)) => view,
             _ => uploaded_view,
         };
 
+        let mut entries = vec![
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(sample_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&self.sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: params_buffer.as_entire_binding(),
+            },
+        ];
+        if let Some(view) = &backdrop_view {
+            entries.push(wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(view),
+            });
+        }
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("layer-bind"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(sample_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: params_buffer.as_entire_binding(),
-                },
-            ],
+            layout: if backdrop_view.is_some() {
+                &self.blend_bind_group_layout
+            } else {
+                &self.bind_group_layout
+            },
+            entries: &entries,
         });
 
         let clear = matches!(dest, DrawDest::TransitionA | DrawDest::TransitionB);
@@ -1314,12 +1562,31 @@ impl Compositor {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.pipeline);
+            pass.set_pipeline(if backdrop_view.is_some() {
+                &self.blend_pipeline
+            } else {
+                &self.pipeline
+            });
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..6, 0..1);
         }
 
         Ok(())
+    }
+}
+
+/// The compiled transition item behind a layer's `LayerTransition`, if it resolves to a
+/// transition this build can run.
+fn transition_item(
+    packs: &[LoadedPack],
+    transition: &LayerTransition,
+) -> Option<StdArc<runtime::CompiledEffect>> {
+    match resolve_target(packs, &transition.item_ref, transition.hash.as_deref()).target? {
+        ResolvedTarget::Compiled(item) => item
+            .compiled
+            .clone()
+            .filter(|c| c.manifest().kind == ItemKind::Transition),
+        ResolvedTarget::Lut { .. } => None,
     }
 }
 
@@ -1360,12 +1627,30 @@ mod tests {
         sum / n as f64
     }
 
-    fn effect(effect_id: &str, params: BTreeMap<String, f64>) -> EffectInstance {
+    fn adjustment_step(
+        effects: Vec<EffectInstance>,
+        opacity: f32,
+        mask: Option<ClipMask>,
+    ) -> SceneStep {
+        SceneStep::adjustment(
+            effects,
+            opacity,
+            mask,
+            BlendMode::Normal,
+            FxTiming::default(),
+        )
+    }
+
+    fn effect(item_ref: &str, params: BTreeMap<String, f64>) -> EffectInstance {
         EffectInstance {
             id: Id::new_v4(),
-            effect_id: effect_id.into(),
+            item_ref: item_ref.into(),
+            hash: None,
             enabled: true,
-            params,
+            params: params
+                .into_iter()
+                .map(|(k, v)| (k, crate::project::EffectParam::Number(v)))
+                .collect(),
         }
     }
 
@@ -1419,7 +1704,14 @@ mod tests {
 
     #[test]
     fn identity_transform_params_match_cover_only() {
-        let params = layer_params(1920, 1080, 1080, 1920, &ClipTransform::default());
+        let params = layer_params(
+            1920,
+            1080,
+            1080,
+            1920,
+            &ClipTransform::default(),
+            BlendMode::Normal,
+        );
         let (scale, offset) = cover_uv(1920, 1080, 1080, 1920, 0.0, 0.0);
         assert_eq!(params.cover_scale, scale);
         assert_eq!(params.cover_offset, offset);
@@ -1456,7 +1748,7 @@ mod tests {
             fit_y: -9.0,
             ..ClipTransform::default()
         };
-        let p = layer_params(1920, 1080, 1080, 1920, &t);
+        let p = layer_params(1920, 1080, 1080, 1920, &t, BlendMode::Normal);
         assert!((p.cover_offset[0] - (1.0 - p.cover_scale[0])).abs() < 1e-6);
         assert_eq!(p.cover_offset[1], 0.0);
     }
@@ -1501,6 +1793,8 @@ mod tests {
                 effects: vec![],
                 mask: None,
                 transition: None,
+                blend_mode: BlendMode::Normal,
+                timing: FxTiming::default(),
             };
             c.composite(&[], &[layer]).unwrap()
         };
@@ -1586,6 +1880,8 @@ mod tests {
             effects: vec![],
             mask: None,
             transition: None,
+            blend_mode: BlendMode::Normal,
+            timing: FxTiming::default(),
         }];
         let cpu = c.composite(&[], &layers).unwrap();
         c.compose_to_texture(
@@ -1596,6 +1892,8 @@ mod tests {
                 effects: vec![],
                 mask: None,
                 transition: None,
+                blend_mode: BlendMode::Normal,
+                timing: FxTiming::default(),
             }],
         )
         .unwrap();
@@ -1610,6 +1908,8 @@ mod tests {
                     effects: vec![],
                     mask: None,
                     transition: None,
+                    blend_mode: BlendMode::Normal,
+                    timing: FxTiming::default(),
                 }],
             )
             .unwrap();
@@ -1634,6 +1934,8 @@ mod tests {
                     effects: vec![],
                     mask: None,
                     transition: None,
+                    blend_mode: BlendMode::Normal,
+                    timing: FxTiming::default(),
                 }],
             )
             .unwrap();
@@ -1644,11 +1946,13 @@ mod tests {
                     source: LayerSource::Frame(frame),
                     transform: ClipTransform::default(),
                     effects: vec![effect(
-                        "builtin:color_adjust",
+                        "builtin:color_adjust@1",
                         [("exposure".into(), 1.0)].into_iter().collect(),
                     )],
                     mask: None,
                     transition: None,
+                    blend_mode: BlendMode::Normal,
+                    timing: FxTiming::default(),
                 }],
             )
             .unwrap();
@@ -1677,6 +1981,8 @@ mod tests {
                     effects: vec![],
                     mask: None,
                     transition: None,
+                    blend_mode: BlendMode::Normal,
+                    timing: FxTiming::default(),
                 }],
             )
             .unwrap();
@@ -1689,13 +1995,15 @@ mod tests {
                     effects: vec![],
                     mask: None,
                     transition: None,
+                    blend_mode: BlendMode::Normal,
+                    timing: FxTiming::default(),
                 }],
             )
             .unwrap();
         assert_eq!(identity, empty_chain);
 
         let mut disabled = effect(
-            "builtin:color_adjust",
+            "builtin:color_adjust@1",
             [("exposure".into(), 2.0)].into_iter().collect(),
         );
         disabled.enabled = false;
@@ -1708,6 +2016,8 @@ mod tests {
                     effects: vec![disabled],
                     mask: None,
                     transition: None,
+                    blend_mode: BlendMode::Normal,
+                    timing: FxTiming::default(),
                 }],
             )
             .unwrap();
@@ -1731,6 +2041,8 @@ mod tests {
                     effects: vec![],
                     mask: None,
                     transition: None,
+                    blend_mode: BlendMode::Normal,
+                    timing: FxTiming::default(),
                 }],
             )
             .unwrap();
@@ -1741,11 +2053,13 @@ mod tests {
                     source: LayerSource::Frame(frame),
                     transform: ClipTransform::default(),
                     effects: vec![effect(
-                        "builtin:blur",
+                        "builtin:blur@1",
                         [("radius".into(), 0.0)].into_iter().collect(),
                     )],
                     mask: None,
                     transition: None,
+                    blend_mode: BlendMode::Normal,
+                    timing: FxTiming::default(),
                 }],
             )
             .unwrap();
@@ -1772,10 +2086,15 @@ mod tests {
                         effects: vec![],
                         mask: None,
                         transition: Some(LayerTransition {
-                            kind: TransitionKind::Crossfade,
+                            item_ref: "builtin:crossfade@1".into(),
+                            hash: None,
+                            params: Default::default(),
+                            default_easing: false,
                             progress: 0.5,
                             is_incoming: false,
                         }),
+                        blend_mode: BlendMode::Normal,
+                        timing: FxTiming::default(),
                     },
                     ComposeLayer {
                         source: LayerSource::Frame(blue),
@@ -1783,10 +2102,15 @@ mod tests {
                         effects: vec![],
                         mask: None,
                         transition: Some(LayerTransition {
-                            kind: TransitionKind::Crossfade,
+                            item_ref: "builtin:crossfade@1".into(),
+                            hash: None,
+                            params: Default::default(),
+                            default_easing: false,
                             progress: 0.5,
                             is_incoming: true,
                         }),
+                        blend_mode: BlendMode::Normal,
+                        timing: FxTiming::default(),
                     },
                 ],
             )
@@ -1847,6 +2171,8 @@ mod tests {
                 effects: vec![],
                 mask: None,
                 transition: None,
+                blend_mode: BlendMode::Normal,
+                timing: FxTiming::default(),
             },
             ComposeLayer {
                 source: LayerSource::Frame(ck_frame()),
@@ -1854,6 +2180,8 @@ mod tests {
                 effects,
                 mask,
                 transition: None,
+                blend_mode: BlendMode::Normal,
+                timing: FxTiming::default(),
             },
         ]
     }
@@ -1886,7 +2214,7 @@ mod tests {
     #[test]
     fn chroma_key_keys_background_keeps_foreground_and_softens_edge() {
         let Some(mut c) = ck_compositor() else { return };
-        let fx = effect("builtin:chroma_key", ck_params(0.3, 0.4, 0.0));
+        let fx = effect("builtin:chroma_key@1", ck_params(0.3, 0.4, 0.0));
         let out = c.composite(&[], &ck_layers(vec![fx], None)).unwrap();
         // Pure green is inside tolerance -> fully transparent -> base shows through.
         assert_near(px(&out, 4), CK_BASE, 2, "keyed background");
@@ -1911,9 +2239,12 @@ mod tests {
         let mut p = ck_params(0.3, 0.4, 0.0);
         p.remove("spill");
         let absent = c
-            .composite(&[], &ck_layers(vec![effect("builtin:chroma_key", p)], None))
+            .composite(
+                &[],
+                &ck_layers(vec![effect("builtin:chroma_key@1", p)], None),
+            )
             .unwrap();
-        let fx = |spill| effect("builtin:chroma_key", ck_params(0.3, 0.4, spill));
+        let fx = |spill| effect("builtin:chroma_key@1", ck_params(0.3, 0.4, spill));
         let zero = c.composite(&[], &ck_layers(vec![fx(0.0)], None)).unwrap();
         assert_eq!(absent, zero, "absent spill param must equal spill = 0");
         let full = c.composite(&[], &ck_layers(vec![fx(1.0)], None)).unwrap();
@@ -1933,11 +2264,11 @@ mod tests {
         let Some(mut c) = ck_compositor() else { return };
         let desat = || {
             effect(
-                "builtin:color_adjust",
+                "builtin:color_adjust@1",
                 [("saturation".to_string(), 0.0)].into_iter().collect(),
             )
         };
-        let key = || effect("builtin:chroma_key", ck_params(0.3, 0.05, 0.0));
+        let key = || effect("builtin:chroma_key@1", ck_params(0.3, 0.05, 0.0));
         // Key first: green is removed, then the (now keyed) layer is desaturated.
         let key_first = c
             .composite(&[], &ck_layers(vec![key(), desat()], None))
@@ -1970,7 +2301,7 @@ mod tests {
                 height: 1.0,
             },
         };
-        let fx = effect("builtin:chroma_key", ck_params(0.3, 0.4, 0.0));
+        let fx = effect("builtin:chroma_key@1", ck_params(0.3, 0.4, 0.0));
         let out = c.composite(&[], &ck_layers(vec![fx], Some(mask))).unwrap();
         assert_near(px(&out, 4), CK_BASE, 2, "keyed bg inside mask");
         assert_near(px(&out, 24), CK_FG, 2, "foreground inside mask");
@@ -1986,7 +2317,10 @@ mod tests {
         let mut run = |effects: Vec<EffectInstance>| {
             let t = |is_incoming| {
                 Some(LayerTransition {
-                    kind: TransitionKind::Crossfade,
+                    item_ref: "builtin:crossfade@1".into(),
+                    hash: None,
+                    params: Default::default(),
+                    default_easing: false,
                     progress: 0.5,
                     is_incoming,
                 })
@@ -2000,6 +2334,8 @@ mod tests {
                         effects,
                         mask: None,
                         transition: t(false),
+                        blend_mode: BlendMode::Normal,
+                        timing: FxTiming::default(),
                     },
                     ComposeLayer {
                         source: LayerSource::Frame(blue.clone()),
@@ -2007,6 +2343,8 @@ mod tests {
                         effects: vec![],
                         mask: None,
                         transition: t(true),
+                        blend_mode: BlendMode::Normal,
+                        timing: FxTiming::default(),
                     },
                 ],
             )
@@ -2014,7 +2352,10 @@ mod tests {
         };
         let plain = px(&run(vec![]), 8);
         let keyed = px(
-            &run(vec![effect("builtin:chroma_key", ck_params(0.3, 0.1, 0.0))]),
+            &run(vec![effect(
+                "builtin:chroma_key@1",
+                ck_params(0.3, 0.1, 0.0),
+            )]),
             8,
         );
         assert!(
@@ -2028,15 +2369,15 @@ mod tests {
     }
 
     #[test]
-    fn builtin_effect_ids_lists_locked_set() {
-        let ids = builtin_effect_ids();
+    fn builtin_effect_refs_lists_locked_set() {
+        let ids = builtin_effect_refs();
         assert_eq!(ids.len(), 6);
-        assert!(ids.contains(&"builtin:color_adjust"));
-        assert!(ids.contains(&"builtin:blur"));
-        assert!(ids.contains(&"builtin:lut_contrast"));
-        assert!(ids.contains(&"builtin:lut_warm"));
-        assert!(ids.contains(&"builtin:glitch"));
-        assert!(ids.contains(&"builtin:chroma_key"));
+        assert!(ids.contains(&"builtin:color_adjust@1"));
+        assert!(ids.contains(&"builtin:blur@1"));
+        assert!(ids.contains(&"builtin:lut_contrast@1"));
+        assert!(ids.contains(&"builtin:lut_warm@1"));
+        assert!(ids.contains(&"builtin:glitch@1"));
+        assert!(ids.contains(&"builtin:chroma_key@1"));
     }
 
     // ---- schema v7: adjustment layers and nested sequences ------------------------------
@@ -2048,6 +2389,8 @@ mod tests {
             effects: vec![],
             mask: None,
             transition: None,
+            blend_mode: BlendMode::Normal,
+            timing: FxTiming::default(),
         }
     }
 
@@ -2074,6 +2417,8 @@ mod tests {
             effects: vec![],
             mask: None,
             transition: None,
+            blend_mode: BlendMode::Normal,
+            timing: FxTiming::default(),
         })
     }
 
@@ -2092,9 +2437,9 @@ mod tests {
             Err(ComposeError::NoAdapter) => return,
             Err(e) => panic!("{e}"),
         };
-        let grey = SceneStep::adjustment(
+        let grey = adjustment_step(
             vec![effect(
-                "builtin:color_adjust",
+                "builtin:color_adjust@1",
                 [("saturation".into(), 0.0)].into_iter().collect(),
             )],
             1.0,
@@ -2137,15 +2482,15 @@ mod tests {
             .composite(&[], &[layer(solid_frame(16, 16, 40, 80, 120))])
             .unwrap();
         let strong = effect(
-            "builtin:color_adjust",
+            "builtin:color_adjust@1",
             [("exposure".into(), 2.0)].into_iter().collect(),
         );
         let mut disabled = strong.clone();
         disabled.enabled = false;
         for adj in [
-            SceneStep::adjustment(vec![strong.clone()], 0.0, None),
-            SceneStep::adjustment(vec![disabled], 1.0, None),
-            SceneStep::adjustment(vec![], 1.0, None),
+            adjustment_step(vec![strong.clone()], 0.0, None),
+            adjustment_step(vec![disabled], 1.0, None),
+            adjustment_step(vec![], 1.0, None),
         ] {
             let out = c
                 .composite_steps(
@@ -2164,7 +2509,7 @@ mod tests {
                 &[],
                 &[
                     SceneStep::Layer(layer(solid_frame(16, 16, 40, 80, 120))),
-                    SceneStep::adjustment(vec![strong.clone()], 0.5, None),
+                    adjustment_step(vec![strong.clone()], 0.5, None),
                 ],
             )
             .unwrap();
@@ -2173,7 +2518,7 @@ mod tests {
                 &[],
                 &[
                     SceneStep::Layer(layer(solid_frame(16, 16, 40, 80, 120))),
-                    SceneStep::adjustment(vec![strong], 1.0, None),
+                    adjustment_step(vec![strong], 1.0, None),
                 ],
             )
             .unwrap();
@@ -2187,9 +2532,9 @@ mod tests {
             Err(ComposeError::NoAdapter) => return,
             Err(e) => panic!("{e}"),
         };
-        let adj = SceneStep::adjustment(
+        let adj = adjustment_step(
             vec![effect(
-                "builtin:color_adjust",
+                "builtin:color_adjust@1",
                 [("saturation".into(), 0.0)].into_iter().collect(),
             )],
             1.0,
@@ -2328,9 +2673,9 @@ mod tests {
             Err(e) => panic!("{e}"),
         };
         let grey = || {
-            SceneStep::adjustment(
+            adjustment_step(
                 vec![effect(
-                    "builtin:color_adjust",
+                    "builtin:color_adjust@1",
                     [("saturation".into(), 0.0)].into_iter().collect(),
                 )],
                 1.0,

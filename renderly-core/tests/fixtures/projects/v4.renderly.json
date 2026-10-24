@@ -1,0 +1,43 @@
+{
+  "schema_version": 4,
+  "id": "44444444-4444-4444-8444-444444444444",
+  "name": "fixture v4",
+  "settings": {
+    "fps": 30.0,
+    "width": 1920,
+    "height": 1080,
+    "sample_rate": 48000,
+    "duck_db": -12.0
+  },
+  "media": [
+    {
+      "id": "a4000000-0000-4000-8000-000000000001",
+      "path": "media/a.mp4",
+      "kind": "video",
+      "duration_secs": 10.0,
+      "width": 1920,
+      "height": 1080,
+      "fps": 30.0
+    }
+  ],
+  "tracks": [
+    {
+      "id": "b4000000-0000-4000-8000-000000000001",
+      "kind": "video",
+      "name": "V1",
+      "clips": [
+        {
+          "type": "video",
+          "id": "c4000000-0000-4000-8000-000000000001",
+          "media_id": "a4000000-0000-4000-8000-000000000001",
+          "position_secs": 0.5,
+          "source_in_secs": 1.0,
+          "source_out_secs": 5.0,
+          "gain_db": 0.0,
+          "enabled": true,
+          "speed": 2.0
+        }
+      ]
+    }
+  ]
+}

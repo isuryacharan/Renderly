@@ -3,6 +3,7 @@ import { activeTracks } from "../../lib/container";
 import { ProjectInspector } from "./ProjectInspector";
 import { MediaClipInspector } from "./MediaClipInspector";
 import { CaptionInspector } from "./CaptionInspector";
+import { TextClipInspector } from "./TextClipInspector";
 import { AdjustmentInspector } from "./AdjustmentInspector";
 
 export function InspectorPanel() {
@@ -26,6 +27,8 @@ export function InspectorPanel() {
           <AdjustmentInspector key={clip.id} track={track} clip={clip} />
         ) : clip.type === "caption" ? (
           <CaptionInspector key={clip.id} track={track} clip={clip} />
+        ) : clip.type === "text" ? (
+          <TextClipInspector key={clip.id} track={track} clip={clip} />
         ) : (
           <MediaClipInspector key={clip.id} track={track} clip={clip} />
         )}

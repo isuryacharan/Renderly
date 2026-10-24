@@ -26,6 +26,7 @@ const PERCEPTION: &[&str] = &[
     "look",
     "find_media",
     "assets",
+    "transcript",
     "edit_help",
     "get_project",
     "get_editor_status",

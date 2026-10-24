@@ -46,6 +46,7 @@ pub(crate) mod proc;
 pub mod project;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod segmentation;
+pub mod time;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tracking;
 
@@ -53,7 +54,7 @@ pub mod tracking;
 pub use audio::{TtsError, VoiceoverProvider};
 #[cfg(not(target_arch = "wasm32"))]
 pub use commands::{apply_command, Command, CommandError, CommandOutcome};
-pub use compose::{builtin_effect_ids, BUILTIN_EFFECT_IDS};
+pub use compose::{builtin_effect_refs, BUILTIN_EFFECT_REFS};
 #[cfg(not(target_arch = "wasm32"))]
 pub use export::{
     export_project, export_project_with_progress, export_project_with_settings,

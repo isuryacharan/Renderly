@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
-import { Film, Music, Type, VolumeX, Lock, EyeOff, MoreHorizontal, GripVertical } from "lucide-react";
+import { Film, Magnet, Music, Type, VolumeX, Lock, EyeOff, MoreHorizontal, GripVertical } from "lucide-react";
 import { useEditorStore } from "../../store/editorStore";
 import { selectActiveView } from "../../lib/container";
 import { deleteTrack, moveTrack, renameTrack, setTrackFlags } from "../../lib/commands";
@@ -165,9 +165,33 @@ export function TrackHeaders({ containerRef }: { containerRef: RefObject<HTMLEle
           >
             <GripVertical size={12} strokeWidth={1.75} />
           </button>
-          <span className="track-header-icon">
-            <TrackKindIcon kind={track.kind} />
-          </span>
+          {track.kind === "video" ? (
+            // The kind icon of a video lane doubles as its magnet toggle (the lane colour strip
+            // already says "video"): clips on a magnetic track stay contiguous, core ripples.
+            <span className="track-header-icon">
+            <Tooltip
+              content={
+                track.magnetic
+                  ? "Magnetic: clips close up when you edit this track (click to turn off)"
+                  : "Turn on magnetic: clips close up when you edit this track"
+              }
+            >
+              <button
+                type="button"
+                className={`track-flag-btn track-magnet-btn${track.magnetic ? " active" : ""}`}
+                aria-label="Magnetic track"
+                aria-pressed={track.magnetic === true}
+                onClick={() => void dispatch(setTrackFlags(track.id, { magnetic: !track.magnetic }))}
+              >
+                <Magnet size={12} strokeWidth={1.75} />
+              </button>
+            </Tooltip>
+            </span>
+          ) : (
+            <span className="track-header-icon">
+              <TrackKindIcon kind={track.kind} />
+            </span>
+          )}
           {renaming === track.id ? (
             <input
               autoFocus

@@ -28,6 +28,24 @@ use tokio_tungstenite::tungstenite::Message;
 /// Well-known discovery path shared by the app and `renderly-mcp` (no Tauri needed on the
 /// MCP side). Windows: `%LOCALAPPDATA%/renderly/bridge.json`; Unix:
 /// `$XDG_DATA_HOME/renderly/bridge.json` or `~/.local/share/renderly/bridge.json`.
+/// A time in a bridge request: a `Time` value (integer microseconds or a string such as "1.5s"
+/// or "90f") under `time`, or integer microseconds under the legacy `time_us`. Frames and
+/// timecode resolve at `fps`.
+fn time_param(params: &serde_json::Value, fps: renderly_core::time::Fps) -> Option<i64> {
+    // Deprecated float-seconds alias, kept for one release.
+    if let Some(secs) = params.get("time_secs").and_then(serde_json::Value::as_f64) {
+        return Some(renderly_core::time::seconds_to_us(secs));
+    }
+    let raw = params.get("time").or_else(|| params.get("time_us"))?;
+    match raw {
+        serde_json::Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f.round() as i64)),
+        serde_json::Value::String(s) => renderly_core::time::Time::parse_str(s)
+            .ok()
+            .map(|t| t.resolve(fps)),
+        _ => None,
+    }
+}
+
 pub fn discovery_path() -> PathBuf {
     let base = if cfg!(windows) {
         std::env::var_os("LOCALAPPDATA")
@@ -277,11 +295,12 @@ async fn dispatch_other(app: &AppHandle, method: &str, params: Value) -> Result<
             Ok(json!({ "ok": true }))
         }
         "play" => {
-            let time = params
-                .get("time_secs")
-                .and_then(|v| v.as_f64())
-                .unwrap_or_else(|| state.playhead_secs());
-            state.set_playhead_secs(time);
+            let fps = state
+                .playback_project()
+                .map(|p| p.settings.fps)
+                .unwrap_or_default();
+            let time = time_param(&params, fps).unwrap_or_else(|| state.playhead_us());
+            state.set_playhead_us(time);
             let project = state.playback_project()?;
             state.playback.play(app.clone(), project, time);
             Ok(json!({ "ok": true }))
@@ -293,15 +312,17 @@ async fn dispatch_other(app: &AppHandle, method: &str, params: Value) -> Result<
             })
             .await
             .map_err(|e| e.to_string())?;
-            state.set_playhead_secs(t);
-            Ok(json!({ "time_secs": t }))
+            state.set_playhead_us(t);
+            Ok(json!({ "time_us": t }))
         }
         "seek" => {
-            let time = params
-                .get("time_secs")
-                .and_then(|v| v.as_f64())
-                .ok_or_else(|| "params.time_secs required".to_string())?;
-            state.set_playhead_secs(time);
+            let fps = state
+                .playback_project()
+                .map(|p| p.settings.fps)
+                .unwrap_or_default();
+            let time = time_param(&params, fps)
+                .ok_or_else(|| "params.time (or time_us) required".to_string())?;
+            state.set_playhead_us(time);
             // While playing, coalesce into the running play session. While paused, there
             // is nothing left to do backend-side — the webview canvas repaints itself
             // from the playhead the frontend reads via `bridge:playhead`/status polling.
@@ -310,14 +331,16 @@ async fn dispatch_other(app: &AppHandle, method: &str, params: Value) -> Result<
         }
         "set_playhead" => {
             // E3: move the user's playhead so the agent can direct attention.
-            let time = params
-                .get("time_secs")
-                .and_then(|v| v.as_f64())
-                .ok_or_else(|| "params.time_secs required".to_string())?;
-            state.set_playhead_secs(time);
+            let fps = state
+                .playback_project()
+                .map(|p| p.settings.fps)
+                .unwrap_or_default();
+            let time = time_param(&params, fps)
+                .ok_or_else(|| "params.time (or time_us) required".to_string())?;
+            state.set_playhead_us(time);
             state.playback.seek_while_playing(time);
-            let _ = app.emit("bridge:playhead", json!({ "time_secs": time }));
-            Ok(json!({ "ok": true, "time_secs": time }))
+            let _ = app.emit("bridge:playhead", json!({ "time_us": time }));
+            Ok(json!({ "ok": true, "time_us": time }))
         }
         "export" => {
             let output_path = params
@@ -354,10 +377,11 @@ async fn dispatch_other(app: &AppHandle, method: &str, params: Value) -> Result<
         "render_frame" => {
             // E3: a fresh `FrameRenderer` over the live session project (not a headless
             // reload from disk) — see `AppState::render_live_frame_png`.
-            let time = params
-                .get("time_secs")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0);
+            let fps = state
+                .playback_project()
+                .map(|p| p.settings.fps)
+                .unwrap_or_default();
+            let time = time_param(&params, fps).unwrap_or(0);
             let preset = params
                 .get("preset")
                 .and_then(|v| v.as_str())
@@ -374,7 +398,7 @@ async fn dispatch_other(app: &AppHandle, method: &str, params: Value) -> Result<
             .await
             .map_err(|e| e.to_string())??;
             Ok(json!({
-                "time_secs": time,
+                "time_us": time,
                 "png_base64": base64_encode(&png),
                 "byte_len": png.len(),
             }))
@@ -403,7 +427,7 @@ async fn dispatch_other(app: &AppHandle, method: &str, params: Value) -> Result<
                 "live": true,
                 "project_path": project_path,
                 "project_name": name,
-                "playhead": state.playhead_secs(),
+                "playhead": state.playhead_us(),
                 "playing": state.playback.is_playing(),
                 "selection": state.selection_json(),
                 "revision": state.revision_value(),

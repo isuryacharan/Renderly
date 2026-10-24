@@ -343,7 +343,7 @@ fn perception_lists_pack_items_beside_the_builtins() {
     let text = catalogue_text(&packs);
     assert!(
         text.contains(
-            "pack:fixture.looks/tint@1 effect \"Tint\" ok | amount:float 0..1 =0.0 init=0.5"
+            "pack:fixture.looks/tint@1 effect \"Tint\" ok slot=effects | amount:float 0..1 =0.0 init=0.5"
         ),
         "{text}"
     );
@@ -353,7 +353,7 @@ fn perception_lists_pack_items_beside_the_builtins() {
         "{text}"
     );
     assert!(
-        text.contains("pack:fixture.looks/cool@1 lut \"Cool\" ok"),
+        text.contains("pack:fixture.looks/cool@1 lut \"Cool\" ok slot=filter"),
         "{text}"
     );
     assert!(

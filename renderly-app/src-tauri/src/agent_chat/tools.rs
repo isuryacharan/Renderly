@@ -42,8 +42,8 @@ pub trait ToolHost: Send + Sync {
     fn project(&self) -> Result<Arc<Project>, String>;
     /// The project's current revision (`project_revision` in reads).
     fn revision(&self) -> u64;
-    /// The playhead in seconds (the default time for `look`).
-    fn playhead_secs(&self) -> f64;
+    /// The playhead in µs (the default time for `look`).
+    fn playhead_us(&self) -> i64;
     /// The sequence open in the timeline, if any (the default for `timeline`).
     fn active_sequence(&self) -> Option<Id>;
     /// Apply `commands` through the edit contract as ONE undo step (or check them, for a dry
@@ -53,8 +53,8 @@ pub trait ToolHost: Send + Sync {
         commands: Vec<Value>,
         options: WriteOptions,
     ) -> BoxFut<'_, Result<CommandsResult, EditError>>;
-    /// Render the composited frame at `time_secs` as PNG bytes. Blocking.
-    fn render_png(&self, time_secs: f64, preset: ExportPreset) -> Result<Vec<u8>, String>;
+    /// Render the composited frame at `time_us` as PNG bytes. Blocking.
+    fn render_png(&self, time_us: i64, preset: ExportPreset) -> Result<Vec<u8>, String>;
 }
 
 /// The app's own state, reached through the Tauri handle.
@@ -73,8 +73,8 @@ impl ToolHost for AppToolHost {
         self.app.state::<AppState>().revision_value()
     }
 
-    fn playhead_secs(&self) -> f64 {
-        self.app.state::<AppState>().playhead_secs()
+    fn playhead_us(&self) -> i64 {
+        self.app.state::<AppState>().playhead_us()
     }
 
     fn active_sequence(&self) -> Option<Id> {
@@ -96,10 +96,10 @@ impl ToolHost for AppToolHost {
         })
     }
 
-    fn render_png(&self, time_secs: f64, preset: ExportPreset) -> Result<Vec<u8>, String> {
+    fn render_png(&self, time_us: i64, preset: ExportPreset) -> Result<Vec<u8>, String> {
         self.app
             .state::<AppState>()
-            .render_live_frame_png(time_secs, preset)
+            .render_live_frame_png(time_us, preset)
     }
 }
 
@@ -204,6 +204,7 @@ pub fn options_from(
         dry_run,
         request_id,
         allow_deletion,
+        deprecations: Vec::new(),
     })
 }
 
@@ -219,10 +220,17 @@ pub struct TimelineRequest {
 }
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
-pub struct LookRequest {
-    /// Time in seconds to render. Defaults to the playhead.
+pub struct TranscriptRequest {
+    /// Optional transcript id or media id (short ids work). Defaults to every transcript.
     #[serde(default)]
-    pub time_secs: Option<f64>,
+    pub id: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct LookRequest {
+    /// Timeline time to render: "1.5s", "90f" or integer microseconds. Defaults to the playhead.
+    #[serde(default)]
+    pub time: Option<renderly_core::time::Time>,
     /// Width of the returned image in pixels (default 768, never above the project width).
     #[serde(default)]
     pub max_width: Option<u32>,
@@ -440,7 +448,13 @@ pub fn run_timeline(host: &dyn ToolHost, sequence_id: Option<&str>) -> Result<St
     ))
 }
 
-/// `assets`: the effect, transition and caption catalog and the loaded packs.
+/// `transcript`: the project's word-level transcripts, compact (see [`outline::transcript_text`]).
+pub fn run_transcript(host: &dyn ToolHost, id: Option<&str>) -> Result<String, String> {
+    let project = host.project()?;
+    outline::transcript_text(&project, id)
+}
+
+/// `assets`: the effect, transition and caption catalog (refs, params) and loaded plugins.
 pub fn run_assets(host: &dyn ToolHost) -> Result<String, String> {
     let project = host.project()?;
     Ok(outline::assets_text(&project))
@@ -454,11 +468,11 @@ pub fn run_find_media(dir: &Path, recursive: bool, max: usize) -> Result<String,
 /// `look`: the composited frame at a time. Renders off the async runtime.
 pub async fn run_look(
     host: Arc<dyn ToolHost>,
-    time_secs: Option<f64>,
+    time_us: Option<i64>,
     max_width: Option<u32>,
 ) -> Result<LookFrame, String> {
     let project = host.project()?;
-    let time = time_secs.unwrap_or_else(|| host.playhead_secs()).max(0.0);
+    let time = time_us.unwrap_or_else(|| host.playhead_us()).max(0);
     let (width, height) = look_size(
         project.settings.width,
         project.settings.height,
@@ -511,7 +525,13 @@ impl RenderlyTools {
         description = "Render the composited frame at a time as a PNG image so you can see it. Defaults to the playhead, at most the project width."
     )]
     async fn look(&self, Parameters(req): Parameters<LookRequest>) -> CallToolResult {
-        match run_look(Arc::clone(&self.host), req.time_secs, req.max_width).await {
+        let fps = self
+            .host
+            .project()
+            .map(|p| p.settings.fps)
+            .unwrap_or_default();
+        let time_us = req.time.map(|t| t.resolve(fps));
+        match run_look(Arc::clone(&self.host), time_us, req.max_width).await {
             Ok(frame) => CallToolResult::success(vec![
                 ContentBlock::text(frame.caption),
                 ContentBlock::image(
@@ -540,7 +560,17 @@ impl RenderlyTools {
     }
 
     #[tool(
-        description = "The asset catalog: built-in effects with parameters and defaults, transition kinds, caption style ids, and loaded packs and plugins."
+        description = "The project's word-level transcripts (made by GenerateCaptions): per transcript its id, media, and the words as w-<n>:word tokens with source-media times at the start of each line; ~word~ is deleted, (filler) a detection tag. Use the word ids with ApplyTranscriptCuts / RestoreTranscriptWords."
+    )]
+    async fn transcript(&self, Parameters(req): Parameters<TranscriptRequest>) -> CallToolResult {
+        match run_transcript(self.host.as_ref(), req.id.as_deref()) {
+            Ok(text) => text_result(text),
+            Err(e) => error_result(e),
+        }
+    }
+
+    #[tool(
+        description = "The asset catalog: every effect, filter, transition and LUT you can apply by ref (builtins and installed packs) with parameter ranges and defaults, caption and text styles, and loaded plugins."
     )]
     async fn assets(&self) -> CallToolResult {
         match run_assets(self.host.as_ref()) {
@@ -623,7 +653,8 @@ mod tests {
                 "find_media",
                 "look",
                 "permission_prompt",
-                "timeline"
+                "timeline",
+                "transcript"
             ]
         );
     }
@@ -640,7 +671,7 @@ mod tests {
             "AddCaption missing from the edit schema"
         );
         assert!(text.contains("\"command\""));
-        assert!(text.contains("style_id"), "AddCaption fields missing");
+        assert!(text.contains("SplitCaptions"), "text commands missing");
         assert!(text.contains("oneOf"));
         eprintln!("edit schema: {} bytes", text.len());
         // Compact enough for a tool listing.
@@ -673,8 +704,8 @@ mod tests {
         fn revision(&self) -> u64 {
             self.state.lock().unwrap().1
         }
-        fn playhead_secs(&self) -> f64 {
-            0.0
+        fn playhead_us(&self) -> i64 {
+            0
         }
         fn active_sequence(&self) -> Option<Id> {
             None
@@ -715,7 +746,7 @@ mod tests {
                 })
             })
         }
-        fn render_png(&self, _time_secs: f64, _preset: ExportPreset) -> Result<Vec<u8>, String> {
+        fn render_png(&self, _time_us: i64, _preset: ExportPreset) -> Result<Vec<u8>, String> {
             Err("no rendering in tests".into())
         }
     }

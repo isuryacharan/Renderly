@@ -158,7 +158,7 @@ pub fn is_frame_matte_path(project: &Project, path: &std::path::Path) -> bool {
 /// inside nested sequences), deduplicated by key. Pure data walk - no filesystem access - and
 /// the same source-time -> frame mapping native export uses, so the preview and export pick the
 /// same matte frame.
-pub fn frame_matte_requests_at(project: &Project, t: f64) -> Vec<FrameMatteRequest> {
+pub fn frame_matte_requests_at(project: &Project, t: i64) -> Vec<FrameMatteRequest> {
     let mut out: Vec<FrameMatteRequest> = Vec::new();
     let Ok(layers) = crate::compose::eval::leaf_media_layers(project, t) else {
         return out;

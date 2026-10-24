@@ -12,10 +12,13 @@
 //! layers are active or their transform/transition params independently, or preview and
 //! export will drift apart.
 
+use super::FxTiming;
 use crate::project::{
-    evaluate_transform, Clip, ClipMask, ClipTransform, EffectInstance, Id, MediaClip, MediaKind,
-    Project, Track, TrackKind, MAX_SEQUENCE_DEPTH,
+    evaluate_effect_stack, evaluate_text_transform, evaluate_transform, BlendMode, Clip, ClipMask,
+    ClipTransform, EffectInstance, Id, MediaClip, MediaKind, Project, TextClip, Track, TrackKind,
+    MAX_SEQUENCE_DEPTH,
 };
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -89,15 +92,39 @@ pub enum ActiveSource {
     Media {
         media_id: Id,
         path: PathBuf,
-        source_time: f64,
+        source_time: i64,
     },
-    /// A nested sequence rendered at `time_secs` (sequence time). `instance` is the key
+    /// A nested sequence rendered at `time_us` (sequence time). `instance` is the key
     /// prefix for the layers inside it: pass it to [`sequence_steps`] to evaluate them.
     Sequence {
         sequence_id: Id,
-        time_secs: f64,
+        time_us: i64,
         instance: InstanceKey,
     },
+    /// A text clip: its picture is rendered text (see [`ActiveText`]), not decoded.
+    Text(ActiveText),
+}
+
+/// What a text clip draws, resolved from the clip: the displayed text and the style the caption
+/// renderer is given. `style_id` is the item part of the style ref (`tiktok-box`); `overrides`
+/// are the clip's style overrides (the renderer reads `fill`, `size` and `anchor`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveText {
+    pub clip_id: Id,
+    pub text: String,
+    pub style_id: String,
+    pub overrides: BTreeMap<String, serde_json::Value>,
+}
+
+impl ActiveText {
+    fn of(clip: &TextClip) -> Self {
+        Self {
+            clip_id: clip.id,
+            text: clip.body.text.clone(),
+            style_id: clip.style.render_style_id(),
+            overrides: clip.style.overrides.clone(),
+        }
+    }
 }
 
 /// One layer to be composited at a given time, bottom-to-top by track order (see
@@ -113,22 +140,34 @@ pub struct ActiveLayer {
     pub instance: InstanceKey,
     pub source: ActiveSource,
     pub transform: ClipTransform,
+    /// The effect stack in render order (filter, key, adjust, `effects[]`), with effect-param
+    /// keyframes evaluated at the frame time.
     pub effects: Vec<EffectInstance>,
     pub transition: Option<crate::compose::LayerTransition>,
     pub mask: Option<ClipMask>,
     pub background_removal: Option<crate::project::BackgroundRemoval>,
+    pub blend_mode: BlendMode,
+    pub timing: FxTiming,
 }
 
 impl ActiveLayer {
     /// `(media_id, path, source_time)` when this layer samples media rather than a sequence.
-    pub fn media(&self) -> Option<(Id, &std::path::Path, f64)> {
+    pub fn media(&self) -> Option<(Id, &std::path::Path, i64)> {
         match &self.source {
             ActiveSource::Media {
                 media_id,
                 path,
                 source_time,
             } => Some((*media_id, path.as_path(), *source_time)),
-            ActiveSource::Sequence { .. } => None,
+            ActiveSource::Sequence { .. } | ActiveSource::Text(_) => None,
+        }
+    }
+
+    /// The text this layer draws, when it is a text clip.
+    pub fn text(&self) -> Option<&ActiveText> {
+        match &self.source {
+            ActiveSource::Text(t) => Some(t),
+            _ => None,
         }
     }
 }
@@ -146,30 +185,35 @@ pub enum ComposeStep {
         effects: Vec<EffectInstance>,
         opacity: f32,
         mask: Option<ClipMask>,
+        blend_mode: BlendMode,
+        timing: FxTiming,
     },
 }
 
 #[derive(Debug, Clone)]
 pub struct ActiveCaption {
     pub text: String,
+    /// The style the renderer is given: the item part of the resolved style ref.
     pub style_id: String,
+    /// The style's overrides (the renderer reads `fill`, `size` and `anchor`).
+    pub overrides: BTreeMap<String, serde_json::Value>,
 }
 
 /// Evaluate the root timeline at `t`: which video-track layers and adjustment layers are
 /// active, with per-layer source time, keyframed transform/opacity, and transition progress.
 /// Tracks are iterated in project order (first = bottom); within a transition window both
 /// the outgoing and incoming clip are emitted so the caller can blend them.
-pub fn active_steps(project: &Project, t: f64) -> Result<Vec<ComposeStep>, EvalError> {
+pub fn active_steps(project: &Project, t: i64) -> Result<Vec<ComposeStep>, EvalError> {
     container_steps(project, &project.tracks, t, &InstanceKey::default())
 }
 
-/// Evaluate the inside of a nested sequence layer: `time_secs` and `instance` come from the
+/// Evaluate the inside of a nested sequence layer: `time_us` and `instance` come from the
 /// layer's [`ActiveSource::Sequence`]. Fails with [`EvalError::SequenceTooDeep`] beyond
 /// [`MAX_SEQUENCE_DEPTH`] nested levels.
 pub fn sequence_steps(
     project: &Project,
     sequence_id: Id,
-    time_secs: f64,
+    time_us: i64,
     instance: &InstanceKey,
 ) -> Result<Vec<ComposeStep>, EvalError> {
     if instance.depth() > MAX_SEQUENCE_DEPTH {
@@ -178,14 +222,14 @@ pub fn sequence_steps(
     let seq = project
         .find_sequence(sequence_id)
         .ok_or(EvalError::SequenceNotFound(sequence_id))?;
-    container_steps(project, &seq.tracks, time_secs, instance)
+    container_steps(project, &seq.tracks, time_us, instance)
 }
 
 /// Every media-sampling layer active at root time `t`, including those inside nested
 /// sequences (flattened, bottom to top per container). For hosts that must open a decoder /
 /// element per leaf regardless of how the picture is assembled (prefetch, the preview's
 /// element manager).
-pub fn leaf_media_layers(project: &Project, t: f64) -> Result<Vec<ActiveLayer>, EvalError> {
+pub fn leaf_media_layers(project: &Project, t: i64) -> Result<Vec<ActiveLayer>, EvalError> {
     let mut out = Vec::new();
     collect_leaves(project, active_steps(project, t)?, &mut out)?;
     Ok(out)
@@ -202,12 +246,13 @@ fn collect_leaves(
         };
         match &layer.source {
             ActiveSource::Media { .. } => out.push(layer),
+            ActiveSource::Text(_) => {}
             ActiveSource::Sequence {
                 sequence_id,
-                time_secs,
+                time_us,
                 instance,
             } => {
-                let inner = sequence_steps(project, *sequence_id, *time_secs, instance)?;
+                let inner = sequence_steps(project, *sequence_id, *time_us, instance)?;
                 collect_leaves(project, inner, out)?;
             }
         }
@@ -220,7 +265,7 @@ fn collect_leaves(
 fn resolve_source(
     project: &Project,
     media_id: Id,
-    source_time: f64,
+    source_time: i64,
     child_prefix: InstanceKey,
 ) -> Result<ActiveSource, EvalError> {
     let media = project
@@ -239,7 +284,7 @@ fn resolve_source(
             }
             Ok(ActiveSource::Sequence {
                 sequence_id,
-                time_secs: source_time,
+                time_us: source_time,
                 instance: child_prefix,
             })
         }
@@ -247,10 +292,144 @@ fn resolve_source(
     }
 }
 
+/// A clip that is a layer of a video track: a media clip, or a text clip (a title).
+#[derive(Clone, Copy)]
+enum LayerClip<'a> {
+    Media(&'a MediaClip),
+    Text(&'a TextClip),
+}
+
+impl<'a> LayerClip<'a> {
+    fn start_us(&self) -> i64 {
+        match self {
+            LayerClip::Media(v) => v.start_us,
+            LayerClip::Text(t) => t.start_us,
+        }
+    }
+
+    fn duration_us(&self) -> i64 {
+        match self {
+            LayerClip::Media(v) => v.timeline_duration_us(),
+            LayerClip::Text(t) => t.duration_us,
+        }
+    }
+
+    fn end_us(&self) -> i64 {
+        self.start_us() + self.duration_us()
+    }
+
+    fn transition(&self) -> Option<&'a crate::project::ClipTransition> {
+        match self {
+            LayerClip::Media(v) => v.outgoing_transition.as_ref(),
+            LayerClip::Text(t) => t.outgoing_transition.as_ref(),
+        }
+    }
+
+    fn transform_at(&self, t: i64) -> ClipTransform {
+        match self {
+            LayerClip::Media(v) => evaluate_transform(v, t),
+            LayerClip::Text(x) => evaluate_text_transform(x, t),
+        }
+    }
+
+    fn effects_at(&self, t: i64) -> Vec<EffectInstance> {
+        match self {
+            LayerClip::Media(v) => clip_effects(v, t),
+            LayerClip::Text(x) => {
+                evaluate_effect_stack(&x.effect_stack(), &x.keyframes, (t - x.start_us).max(0))
+            }
+        }
+    }
+
+    fn mask(&self) -> Option<ClipMask> {
+        match self {
+            LayerClip::Media(v) => v.mask.clone(),
+            LayerClip::Text(t) => t.mask.clone(),
+        }
+    }
+
+    fn background_removal(&self) -> Option<crate::project::BackgroundRemoval> {
+        match self {
+            LayerClip::Media(v) => v.background_removal.clone(),
+            LayerClip::Text(_) => None,
+        }
+    }
+
+    fn blend_mode(&self) -> BlendMode {
+        match self {
+            LayerClip::Media(v) => v.blend_mode,
+            LayerClip::Text(t) => t.blend_mode,
+        }
+    }
+
+    /// What the layer shows at timeline time `t`.
+    fn source_at(
+        &self,
+        project: &Project,
+        t: i64,
+        instance: InstanceKey,
+    ) -> Result<ActiveSource, EvalError> {
+        match self {
+            LayerClip::Media(v) => {
+                resolve_source(project, v.media_id, v.source_time_at(t), instance)
+                    .map_err(|e| not_video_for(e, v.media_id))
+            }
+            LayerClip::Text(x) => Ok(ActiveSource::Text(ActiveText::of(x))),
+        }
+    }
+
+    /// What the incoming side of a transition shows `elapsed` timeline µs into the window.
+    fn incoming_source(
+        &self,
+        project: &Project,
+        elapsed: i64,
+        instance: InstanceKey,
+    ) -> Result<ActiveSource, EvalError> {
+        match self {
+            LayerClip::Media(v) => resolve_source(
+                project,
+                v.media_id,
+                v.source_in_us + (elapsed as f64 * v.speed_factor()).round() as i64,
+                instance,
+            )
+            .map_err(|e| not_video_for(e, v.media_id)),
+            LayerClip::Text(x) => Ok(ActiveSource::Text(ActiveText::of(x))),
+        }
+    }
+
+    /// The effect clock at timeline time `t`.
+    fn timing_at(&self, project: &Project, t: i64) -> FxTiming {
+        match self {
+            LayerClip::Media(v) => clip_timing(project, v, t),
+            LayerClip::Text(x) => text_timing(project, x, (t - x.start_us).max(0)),
+        }
+    }
+
+    /// The effect clock of the incoming side, `elapsed` timeline µs into the window.
+    fn incoming_timing(&self, project: &Project, elapsed: i64) -> FxTiming {
+        match self {
+            LayerClip::Media(v) => {
+                let in_elapsed = ((elapsed as f64) * v.speed_factor()).round() as i64;
+                timing_for(project, v, in_elapsed, v.speed_factor())
+            }
+            LayerClip::Text(x) => text_timing(project, x, elapsed),
+        }
+    }
+}
+
+fn text_timing(project: &Project, clip: &TextClip, elapsed_us: i64) -> FxTiming {
+    FxTiming {
+        time: elapsed_us as f64 / 1e6,
+        duration: clip.duration_us.max(0) as f64 / 1e6,
+        frame: project.settings.fps.frame_at(elapsed_us).max(0) as u32,
+        speed: 1.0,
+    }
+}
+
 fn container_steps(
     project: &Project,
     tracks: &[Track],
-    t: f64,
+    t: i64,
     prefix: &InstanceKey,
 ) -> Result<Vec<ComposeStep>, EvalError> {
     let mut steps = Vec::new();
@@ -260,30 +439,28 @@ fn container_steps(
             continue;
         }
 
-        let mut video_clips: Vec<&MediaClip> = track
+        let mut video_clips: Vec<LayerClip> = track
             .clips
             .iter()
             .filter_map(|c| match c {
-                Clip::Video(v) if v.enabled && multicam_angle_active(project, v) => Some(v),
+                Clip::Video(v) if v.enabled && multicam_angle_active(project, v) => {
+                    Some(LayerClip::Media(v))
+                }
+                Clip::Text(x) if x.enabled => Some(LayerClip::Text(x)),
                 _ => None,
             })
             .collect();
-        video_clips.sort_by(|a, b| {
-            a.position_secs
-                .partial_cmp(&b.position_secs)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        video_clips.sort_by_key(LayerClip::start_us);
 
         // Transition window: during [cut-d, cut) emit outgoing + incoming for WGSL blend.
         let mut handled = false;
         for (i, v) in video_clips.iter().enumerate() {
-            let start = v.position_secs;
-            let end = start + v.timeline_duration_secs();
-            let Some(tr) = v.outgoing_transition.as_ref() else {
+            let end = v.end_us();
+            let Some(tr) = v.transition() else {
                 continue;
             };
-            let d = tr.duration_secs;
-            if d <= 0.0 {
+            let d = tr.duration_us;
+            if d <= 0 {
                 continue;
             }
             let window_start = end - d;
@@ -294,62 +471,64 @@ fn container_steps(
                 continue;
             };
             // Incoming must abut (or nearly abut) this cut for renderer-only overlap.
-            if (incoming.position_secs - end).abs() > 0.05 && incoming.position_secs < end - 1e-6 {
+            if (incoming.start_us() - end).abs() > 50_000 && incoming.start_us() < end - 1 {
                 continue;
             }
 
-            let u = ((t - window_start) / d).clamp(0.0, 1.0) as f32;
+            let u = (((t - window_start) as f64) / (d as f64)).clamp(0.0, 1.0) as f32;
 
-            let out_xf = evaluate_transform(v, t);
-            let in_xf = evaluate_transform(incoming, incoming.position_secs);
+            let out_xf = v.transform_at(t);
+            let in_xf = incoming.transform_at(incoming.start_us());
+            let out_effects = v.effects_at(t);
+            // The incoming clip is held at its first frame for animated values, like its
+            // transform; its effect clock runs from the start of the window.
+            let in_effects = incoming.effects_at(incoming.start_us());
+            let out_timing = v.timing_at(project, t);
+            let in_timing = incoming.incoming_timing(project, t - window_start);
+            let out_transition = |is_incoming: bool| crate::compose::LayerTransition {
+                item_ref: tr.item_ref.clone(),
+                hash: tr.hash.clone(),
+                params: tr.params.clone(),
+                progress: match tr.easing {
+                    Some(e) => e.apply(f64::from(u)) as f32,
+                    None => u,
+                },
+                is_incoming,
+                default_easing: tr.easing.is_none(),
+            };
 
             // Distinct from track.id so decoders/elements keep a second stream open.
             let incoming_key = uuid::Uuid::from_u128(track.id.as_u128() ^ 0xC0_FF_EE_51_u128);
             let out_instance = prefix.with(track.id);
             let in_instance = prefix.with(incoming_key);
             // Resolve both sources before pushing either, so an error leaves no half pair.
-            let out_source = resolve_source(
-                project,
-                v.media_id,
-                v.source_time_at(t),
-                out_instance.clone(),
-            )
-            .map_err(|e| not_video_for(e, v.media_id))?;
-            let in_source = resolve_source(
-                project,
-                incoming.media_id,
-                incoming.source_in_secs + (t - window_start) * incoming.speed_factor(),
-                in_instance.clone(),
-            )
-            .map_err(|e| not_video_for(e, incoming.media_id))?;
+            let out_source = v.source_at(project, t, out_instance.clone())?;
+            let in_source =
+                incoming.incoming_source(project, t - window_start, in_instance.clone())?;
 
             steps.push(ComposeStep::Layer(ActiveLayer {
                 decoder_key: track.id,
                 instance: out_instance,
                 source: out_source,
                 transform: out_xf,
-                effects: v.effects.clone(),
-                transition: Some(crate::compose::LayerTransition {
-                    kind: tr.kind,
-                    progress: u,
-                    is_incoming: false,
-                }),
-                mask: v.mask.clone(),
-                background_removal: v.background_removal.clone(),
+                effects: out_effects,
+                transition: Some(out_transition(false)),
+                mask: v.mask(),
+                background_removal: v.background_removal(),
+                blend_mode: v.blend_mode(),
+                timing: out_timing,
             }));
             steps.push(ComposeStep::Layer(ActiveLayer {
                 decoder_key: incoming_key,
                 instance: in_instance,
                 source: in_source,
                 transform: in_xf,
-                effects: incoming.effects.clone(),
-                transition: Some(crate::compose::LayerTransition {
-                    kind: tr.kind,
-                    progress: u,
-                    is_incoming: true,
-                }),
-                mask: incoming.mask.clone(),
-                background_removal: incoming.background_removal.clone(),
+                effects: in_effects,
+                transition: Some(out_transition(true)),
+                mask: incoming.mask(),
+                background_removal: incoming.background_removal(),
+                blend_mode: incoming.blend_mode(),
+                timing: in_timing,
             }));
             handled = true;
             break;
@@ -360,40 +539,46 @@ fn container_steps(
 
         for clip in &track.clips {
             match clip {
-                Clip::Video(v) => {
-                    if !v.enabled || !multicam_angle_active(project, v) {
-                        continue;
-                    }
-                    let start = v.position_secs;
-                    let end = start + v.timeline_duration_secs();
-                    if t >= start && t < end {
+                Clip::Video(_) | Clip::Text(_) => {
+                    let layer = match clip {
+                        Clip::Video(v) if v.enabled && multicam_angle_active(project, v) => {
+                            LayerClip::Media(v)
+                        }
+                        Clip::Text(x) if x.enabled => LayerClip::Text(x),
+                        _ => continue,
+                    };
+                    if t >= layer.start_us() && t < layer.end_us() {
                         let instance = prefix.with(track.id);
-                        let source = resolve_source(
-                            project,
-                            v.media_id,
-                            v.source_time_at(t),
-                            instance.clone(),
-                        )
-                        .map_err(|e| not_video_for(e, v.media_id))?;
+                        let source = layer.source_at(project, t, instance.clone())?;
                         steps.push(ComposeStep::Layer(ActiveLayer {
                             decoder_key: track.id,
                             instance,
                             source,
-                            transform: evaluate_transform(v, t),
-                            effects: v.effects.clone(),
+                            transform: layer.transform_at(t),
+                            effects: layer.effects_at(t),
                             transition: None,
-                            mask: v.mask.clone(),
-                            background_removal: v.background_removal.clone(),
+                            mask: layer.mask(),
+                            background_removal: layer.background_removal(),
+                            blend_mode: layer.blend_mode(),
+                            timing: layer.timing_at(project, t),
                         }));
                         break;
                     }
                 }
                 Clip::Adjustment(a) => {
-                    if a.enabled && t >= a.position_secs && t < a.position_secs + a.duration_secs {
+                    if a.enabled && t >= a.start_us && t < a.start_us + a.duration_us {
+                        let local = (t - a.start_us).max(0);
                         steps.push(ComposeStep::Adjustment {
-                            effects: a.effects.clone(),
+                            effects: evaluate_effect_stack(&a.effect_stack(), &a.keyframes, local),
                             opacity: a.opacity_at(t) as f32,
                             mask: a.mask.clone(),
+                            blend_mode: a.blend_mode,
+                            timing: FxTiming {
+                                time: local as f64 / 1e6,
+                                duration: a.duration_us as f64 / 1e6,
+                                frame: project.settings.fps.frame_at(local).max(0) as u32,
+                                speed: 1.0,
+                            },
                         });
                         break;
                     }
@@ -404,6 +589,31 @@ fn container_steps(
     }
 
     Ok(steps)
+}
+
+/// The clip's effect stack in render order at absolute time `t`, animated params evaluated.
+fn clip_effects(clip: &MediaClip, t: i64) -> Vec<EffectInstance> {
+    evaluate_effect_stack(
+        &clip.effect_stack(),
+        &clip.keyframes,
+        (t - clip.start_us).max(0),
+    )
+}
+
+/// The effect clock of a clip at absolute time `t`: source time elapsed since the clip's first
+/// frame, so motion follows clip speed.
+fn clip_timing(project: &Project, clip: &MediaClip, t: i64) -> FxTiming {
+    let elapsed = (clip.source_time_at(t) - clip.source_in_us).max(0);
+    timing_for(project, clip, elapsed, clip.speed_at(t))
+}
+
+fn timing_for(project: &Project, clip: &MediaClip, elapsed_us: i64, speed: f64) -> FxTiming {
+    FxTiming {
+        time: elapsed_us as f64 / 1e6,
+        duration: (clip.source_out_us - clip.source_in_us).max(0) as f64 / 1e6,
+        frame: project.settings.fps.frame_at(elapsed_us).max(0) as u32,
+        speed,
+    }
 }
 
 /// A non-video media kind in a transition/clip surfaces as `NotVideo` carrying the clip's
@@ -432,7 +642,7 @@ pub fn multicam_angle_active(project: &Project, clip: &crate::project::MediaClip
 }
 
 /// Evaluate which caption-track clips are active (visible, burned-in) at `t`.
-pub fn active_captions(project: &Project, t: f64) -> Vec<ActiveCaption> {
+pub fn active_captions(project: &Project, t: i64) -> Vec<ActiveCaption> {
     let mut caps = Vec::new();
     for track in &project.tracks {
         if track.kind != TrackKind::Caption || track.hidden {
@@ -440,11 +650,13 @@ pub fn active_captions(project: &Project, t: f64) -> Vec<ActiveCaption> {
         }
         for clip in &track.clips {
             let Clip::Caption(c) = clip else { continue };
-            let end = c.position_secs + c.duration_secs;
-            if t >= c.position_secs && t < end {
+            let end = c.start_us + c.duration_us;
+            if t >= c.start_us && t < end {
+                let style = Project::caption_style_for(track, c);
                 caps.push(ActiveCaption {
-                    text: c.text.clone(),
-                    style_id: c.style_id.clone(),
+                    text: c.body.text.clone(),
+                    style_id: style.render_style_id(),
+                    overrides: style.overrides.clone(),
                 });
             }
         }
@@ -455,12 +667,10 @@ pub fn active_captions(project: &Project, t: f64) -> Vec<ActiveCaption> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::{
-        Clip, ClipTransition, MediaClip, MediaItem, Project, Settings, Track, TransitionKind,
-    };
+    use crate::project::{Clip, ClipTransition, MediaClip, MediaItem, Project, Settings, Track};
 
     /// Root-level media/sequence layers only (adjustment steps are asserted on separately).
-    fn layers_at(project: &Project, t: f64) -> Result<Vec<ActiveLayer>, EvalError> {
+    fn layers_at(project: &Project, t: i64) -> Result<Vec<ActiveLayer>, EvalError> {
         Ok(active_steps(project, t)?
             .into_iter()
             .filter_map(|s| match s {
@@ -482,7 +692,7 @@ mod tests {
             id,
             path: PathBuf::from(path),
             kind,
-            duration_secs: Some(10.0),
+            duration_us: Some(10000000),
             width: Some(1920),
             height: Some(1080),
             fps: Some(30.0),
@@ -494,7 +704,7 @@ mod tests {
     #[test]
     fn active_layers_empty_project_has_no_layers() {
         let project = base_project();
-        let layers = layers_at(&project, 0.0).unwrap();
+        let layers = layers_at(&project, 0).unwrap();
         assert!(layers.is_empty());
     }
 
@@ -505,21 +715,21 @@ mod tests {
         let clip = MediaClip {
             id: uuid::Uuid::new_v4(),
             media_id,
-            position_secs: 2.0,
-            source_in_secs: 0.0,
-            source_out_secs: 5.0,
+            start_us: 2000000,
+            source_in_us: 0,
+            source_out_us: 5000000,
             gain_db: 0.0,
             enabled: true,
             ..Default::default()
         };
         project.tracks[0].clips.push(Clip::Video(clip));
 
-        let layers = layers_at(&project, 3.0).unwrap();
+        let layers = layers_at(&project, 3000000).unwrap();
         assert_eq!(layers.len(), 1);
         let (_, path, source_time) = layers[0].media().unwrap();
         assert_eq!(path, std::path::Path::new("a.mp4"));
         // source_time_at(3.0) for a clip starting at 2.0 with source_in 0.0 and speed 1x = 1.0.
-        assert!((source_time - 1.0).abs() < 1e-9);
+        assert!((source_time - 1000000).abs() < 1);
         assert!(layers[0].transition.is_none());
     }
 
@@ -530,16 +740,16 @@ mod tests {
         let clip = MediaClip {
             id: uuid::Uuid::new_v4(),
             media_id,
-            position_secs: 2.0,
-            source_in_secs: 0.0,
-            source_out_secs: 5.0,
+            start_us: 2000000,
+            source_in_us: 0,
+            source_out_us: 5000000,
             enabled: true,
             ..Default::default()
         };
         project.tracks[0].clips.push(Clip::Video(clip));
 
-        assert!(layers_at(&project, 0.5).unwrap().is_empty());
-        assert!(layers_at(&project, 8.0).unwrap().is_empty());
+        assert!(layers_at(&project, 500000).unwrap().is_empty());
+        assert!(layers_at(&project, 8000000).unwrap().is_empty());
     }
 
     #[test]
@@ -549,15 +759,15 @@ mod tests {
         let clip = MediaClip {
             id: uuid::Uuid::new_v4(),
             media_id: missing_id,
-            position_secs: 0.0,
-            source_in_secs: 0.0,
-            source_out_secs: 5.0,
+            start_us: 0,
+            source_in_us: 0,
+            source_out_us: 5000000,
             enabled: true,
             ..Default::default()
         };
         project.tracks[0].clips.push(Clip::Video(clip));
 
-        let err = layers_at(&project, 0.0).unwrap_err();
+        let err = layers_at(&project, 0).unwrap_err();
         assert_eq!(err, EvalError::MediaNotFound(missing_id));
     }
 
@@ -568,16 +778,16 @@ mod tests {
         let clip = MediaClip {
             id: uuid::Uuid::new_v4(),
             media_id,
-            position_secs: 0.0,
-            source_in_secs: 0.0,
-            source_out_secs: 5.0,
+            start_us: 0,
+            source_in_us: 0,
+            source_out_us: 5000000,
             enabled: true,
             ..Default::default()
         };
         project.tracks[0].clips.push(Clip::Video(clip));
         project.tracks[0].hidden = true;
 
-        assert!(layers_at(&project, 1.0).unwrap().is_empty());
+        assert!(layers_at(&project, 1000000).unwrap().is_empty());
     }
 
     #[test]
@@ -589,22 +799,19 @@ mod tests {
         let clip_a = MediaClip {
             id: uuid::Uuid::new_v4(),
             media_id: media_a,
-            position_secs: 0.0,
-            source_in_secs: 0.0,
-            source_out_secs: 4.0,
+            start_us: 0,
+            source_in_us: 0,
+            source_out_us: 4000000,
             enabled: true,
-            outgoing_transition: Some(ClipTransition {
-                kind: TransitionKind::Crossfade,
-                duration_secs: 1.0,
-            }),
+            outgoing_transition: Some(ClipTransition::new("builtin:crossfade@1", 1000000)),
             ..Default::default()
         };
         let clip_b = MediaClip {
             id: uuid::Uuid::new_v4(),
             media_id: media_b,
-            position_secs: 4.0,
-            source_in_secs: 0.0,
-            source_out_secs: 4.0,
+            start_us: 4000000,
+            source_in_us: 0,
+            source_out_us: 4000000,
             enabled: true,
             ..Default::default()
         };
@@ -613,7 +820,7 @@ mod tests {
         project.tracks[0].clips.push(Clip::Video(clip_b));
 
         // Mid-transition: t = 3.5 is inside [3.0, 4.0) window.
-        let layers = layers_at(&project, 3.5).unwrap();
+        let layers = layers_at(&project, 3500000).unwrap();
         assert_eq!(layers.len(), 2);
         assert!(layers[0].transition.as_ref().unwrap().progress > 0.0);
         assert!(!layers[0].transition.as_ref().unwrap().is_incoming);
@@ -631,14 +838,11 @@ mod tests {
             .clips
             .push(Clip::Caption(crate::project::CaptionClip {
                 id: uuid::Uuid::new_v4(),
-                position_secs: 1.0,
-                duration_secs: 2.0,
-                text: "hello".into(),
-                style_id: "default".into(),
+                ..crate::project::CaptionClip::new(1000000, 2000000, "hello").with_style("default")
             }));
 
-        assert!(active_captions(&project, 0.5).is_empty());
-        let caps = active_captions(&project, 2.0);
+        assert!(active_captions(&project, 500000).is_empty());
+        let caps = active_captions(&project, 2000000);
         assert_eq!(caps.len(), 1);
         assert_eq!(caps[0].text, "hello");
     }
@@ -665,7 +869,7 @@ mod tests {
             id: media_id,
             path: PathBuf::new(),
             kind: MediaKind::Sequence,
-            duration_secs: None,
+            duration_us: None,
             width: None,
             height: None,
             fps: None,
@@ -678,9 +882,9 @@ mod tests {
         MediaClip {
             id: uuid::Uuid::new_v4(),
             media_id,
-            position_secs: position,
-            source_in_secs: 0.0,
-            source_out_secs: dur,
+            start_us: (position * 1e6).round() as i64,
+            source_in_us: 0,
+            source_out_us: (dur * 1e6).round() as i64,
             enabled: true,
             ..Default::default()
         }
@@ -694,7 +898,7 @@ mod tests {
             .clips
             .push(Clip::Video(media_clip(media, 0.0, 5.0)));
         let mut adj_track = Track::new(TrackKind::Video, "adj");
-        let mut adj = AdjustmentClip::new(2.0, 2.0);
+        let mut adj = AdjustmentClip::new(2000000, 2000000);
         adj.opacity = 0.5;
         adj_track.clips.push(Clip::Adjustment(adj));
         project.tracks.push(adj_track);
@@ -703,10 +907,10 @@ mod tests {
         project.tracks.push(top);
 
         // Before the adjustment starts: two layers, no adjustment step.
-        let steps = active_steps(&project, 1.0).unwrap();
+        let steps = active_steps(&project, 1000000).unwrap();
         assert_eq!(steps.len(), 2);
         // During: layer, adjustment, layer (bottom to top).
-        let steps = active_steps(&project, 2.5).unwrap();
+        let steps = active_steps(&project, 2500000).unwrap();
         assert_eq!(steps.len(), 3);
         assert!(matches!(steps[0], ComposeStep::Layer(_)));
         match &steps[1] {
@@ -715,53 +919,38 @@ mod tests {
         }
         assert!(matches!(steps[2], ComposeStep::Layer(_)));
         // The end is exclusive, and a disabled or hidden adjustment contributes nothing.
-        assert_eq!(active_steps(&project, 4.0).unwrap().len(), 2);
+        assert_eq!(active_steps(&project, 4000000).unwrap().len(), 2);
         if let Clip::Adjustment(a) = &mut project.tracks[1].clips[0] {
             a.enabled = false;
         }
-        assert_eq!(active_steps(&project, 2.5).unwrap().len(), 2);
+        assert_eq!(active_steps(&project, 2500000).unwrap().len(), 2);
         if let Clip::Adjustment(a) = &mut project.tracks[1].clips[0] {
             a.enabled = true;
         }
         project.tracks[1].hidden = true;
-        assert_eq!(active_steps(&project, 2.5).unwrap().len(), 2);
+        assert_eq!(active_steps(&project, 2500000).unwrap().len(), 2);
     }
 
     #[test]
     fn adjustment_opacity_follows_keyframes() {
-        use crate::project::{AnimProperty, Easing, Keyframe, KeyframeTrack};
+        use crate::project::{AnimProperty, Keyframe, KeyframeTrack};
         let mut project = base_project();
-        let mut adj = AdjustmentClip::new(1.0, 4.0);
+        let mut adj = AdjustmentClip::new(1000000, 4000000);
         adj.keyframes.push(KeyframeTrack {
-            property: AnimProperty::Opacity,
-            keys: vec![
-                Keyframe {
-                    time_secs: 0.0,
-                    value: 1.0,
-                    easing: Easing::Linear,
-                    handle_left: None,
-                    handle_right: None,
-                },
-                Keyframe {
-                    time_secs: 2.0,
-                    value: 0.0,
-                    easing: Easing::Linear,
-                    handle_left: None,
-                    handle_right: None,
-                },
-            ],
+            property: AnimProperty::Opacity.into(),
+            keys: vec![Keyframe::new(0, 1.0), Keyframe::new(2000000, 0.0)],
         });
         project.tracks[0].clips.push(Clip::Adjustment(adj));
-        let opacity_at = |t: f64| match &active_steps(&project, t).unwrap()[0] {
+        let opacity_at = |t: i64| match &active_steps(&project, t).unwrap()[0] {
             ComposeStep::Adjustment { opacity, .. } => *opacity,
             other => panic!("expected adjustment, got {other:?}"),
         };
-        assert!((opacity_at(1.0) - 1.0).abs() < 1e-6);
+        assert!((opacity_at(1000000) - 1.0).abs() < 1e-6);
         assert!(
-            (opacity_at(2.0) - 0.5).abs() < 1e-6,
+            (opacity_at(2000000) - 0.5).abs() < 1e-6,
             "local t=1 of a 0..2 fade"
         );
-        assert!(opacity_at(4.0).abs() < 1e-6, "held after the last key");
+        assert!(opacity_at(4000000).abs() < 1e-6, "held after the last key");
     }
 
     #[test]
@@ -773,19 +962,19 @@ mod tests {
             add_sequence(&mut project, vec![Clip::Video(media_clip(media, 2.0, 4.0))]);
         // Outer clip plays sequence time 1.0.. at 2x, placed at root t=10.
         let mut outer = media_clip(seq_media, 10.0, 0.0);
-        outer.source_in_secs = 1.0;
-        outer.source_out_secs = 5.0;
+        outer.source_in_us = 1_000_000;
+        outer.source_out_us = 5_000_000;
         outer.speed = 2.0;
         project.tracks[0].clips.push(Clip::Video(outer));
 
-        let steps = active_steps(&project, 11.0).unwrap();
+        let steps = active_steps(&project, 11000000).unwrap();
         assert_eq!(steps.len(), 1);
         let ComposeStep::Layer(layer) = &steps[0] else {
             panic!()
         };
         let ActiveSource::Sequence {
             sequence_id,
-            time_secs,
+            time_us,
             instance,
         } = &layer.source
         else {
@@ -793,10 +982,10 @@ mod tests {
         };
         assert_eq!(*sequence_id, seq_id);
         // 1 s into the outer clip at 2x -> sequence time 1.0 + 2.0.
-        assert!((time_secs - 3.0).abs() < 1e-9);
+        assert!((time_us - 3000000).abs() < 1);
         assert_eq!(instance.depth(), 1);
 
-        let inner = sequence_steps(&project, *sequence_id, *time_secs, instance).unwrap();
+        let inner = sequence_steps(&project, *sequence_id, *time_us, instance).unwrap();
         assert_eq!(inner.len(), 1);
         let ComposeStep::Layer(inner_layer) = &inner[0] else {
             panic!()
@@ -804,14 +993,14 @@ mod tests {
         let (_, path, source_time) = inner_layer.media().unwrap();
         assert_eq!(path, std::path::Path::new("inner.mp4"));
         // Sequence time 3.0 is 1 s into the inner clip (which starts at 2.0).
-        assert!((source_time - 1.0).abs() < 1e-9);
+        assert!((source_time - 1000000).abs() < 1);
         assert_eq!(inner_layer.instance.depth(), 2);
         assert!(inner_layer.instance.is_nested());
         assert!(!layer.instance.is_nested());
 
         // Past the end of the inner timeline the sequence layer is still emitted (it renders
         // transparent), but evaluates to no inner layers.
-        let late = sequence_steps(&project, seq_id, 9.0, instance).unwrap();
+        let late = sequence_steps(&project, seq_id, 9000000, instance).unwrap();
         assert!(late.is_empty());
     }
 
@@ -826,12 +1015,12 @@ mod tests {
             .push(Clip::Video(media_clip(seq_media, 0.0, 4.0)));
         let mut second = Track::new(TrackKind::Video, "V2");
         let mut shifted = media_clip(seq_media, 0.0, 2.0);
-        shifted.source_in_secs = 2.0;
-        shifted.source_out_secs = 4.0;
+        shifted.source_in_us = 2_000_000;
+        shifted.source_out_us = 4_000_000;
         second.clips.push(Clip::Video(shifted));
         project.tracks.push(second);
 
-        let leaves = leaf_media_layers(&project, 1.0).unwrap();
+        let leaves = leaf_media_layers(&project, 1000000).unwrap();
         assert_eq!(leaves.len(), 2, "one inner layer per placement");
         assert_ne!(leaves[0].instance, leaves[1].instance);
         assert_ne!(
@@ -839,7 +1028,10 @@ mod tests {
             leaves[1].instance.to_string()
         );
         // Same media, two different source times in one frame.
-        let times: Vec<f64> = leaves.iter().map(|l| l.media().unwrap().2).collect();
+        let times: Vec<f64> = leaves
+            .iter()
+            .map(|l| l.media().unwrap().2 as f64 / 1e6)
+            .collect();
         assert!(
             (times[0] - 1.0).abs() < 1e-9 && (times[1] - 3.0).abs() < 1e-9,
             "{times:?}"
@@ -858,7 +1050,7 @@ mod tests {
         project.tracks[0]
             .clips
             .push(Clip::Video(media_clip(seq_media, 0.0, 4.0)));
-        let err = leaf_media_layers(&project, 1.0).unwrap_err();
+        let err = leaf_media_layers(&project, 1000000).unwrap_err();
         assert_eq!(err, EvalError::SequenceTooDeep(seq_id));
 
         // Unknown sequence referenced by sequence media.
@@ -869,7 +1061,7 @@ mod tests {
             id: media_id,
             path: PathBuf::new(),
             kind: MediaKind::Sequence,
-            duration_secs: None,
+            duration_us: None,
             width: None,
             height: None,
             fps: None,
@@ -878,20 +1070,20 @@ mod tests {
         project.tracks[0]
             .clips
             .push(Clip::Video(media_clip(media_id, 0.0, 4.0)));
-        let steps = active_steps(&project, 1.0).unwrap();
+        let steps = active_steps(&project, 1000000).unwrap();
         let ComposeStep::Layer(l) = &steps[0] else {
             panic!()
         };
         let ActiveSource::Sequence {
             sequence_id,
-            time_secs,
+            time_us,
             instance,
         } = &l.source
         else {
             panic!()
         };
         assert_eq!(
-            sequence_steps(&project, *sequence_id, *time_secs, instance).unwrap_err(),
+            sequence_steps(&project, *sequence_id, *time_us, instance).unwrap_err(),
             EvalError::SequenceNotFound(ghost)
         );
     }
@@ -906,24 +1098,21 @@ mod tests {
             vec![Clip::Video(media_clip(inner_media, 0.0, 4.0))],
         );
         let mut seq_clip = media_clip(seq_media, 0.0, 4.0);
-        seq_clip.outgoing_transition = Some(ClipTransition {
-            kind: TransitionKind::Crossfade,
-            duration_secs: 1.0,
-        });
+        seq_clip.outgoing_transition = Some(ClipTransition::new("builtin:crossfade@1", 1000000));
         project.tracks[0].clips.push(Clip::Video(seq_clip));
         project.tracks[0]
             .clips
             .push(Clip::Video(media_clip(media, 4.0, 4.0)));
 
-        let steps = active_steps(&project, 3.5).unwrap();
+        let steps = active_steps(&project, 3500000).unwrap();
         assert_eq!(steps.len(), 2);
         let (ComposeStep::Layer(out), ComposeStep::Layer(inc)) = (&steps[0], &steps[1]) else {
             panic!()
         };
         assert!(matches!(out.source, ActiveSource::Sequence { .. }));
         assert!(matches!(inc.source, ActiveSource::Media { .. }));
-        assert!(!out.transition.unwrap().is_incoming);
-        assert!(inc.transition.unwrap().is_incoming);
+        assert!(!out.transition.as_ref().unwrap().is_incoming);
+        assert!(inc.transition.as_ref().unwrap().is_incoming);
         // The two sides never share an instance key (a second decoder/element is needed).
         assert_ne!(out.instance, inc.instance);
         // Sequence on the incoming side works too.
@@ -934,15 +1123,12 @@ mod tests {
             vec![Clip::Video(media_clip(media2, 0.0, 4.0))],
         );
         let mut first = media_clip(media2, 0.0, 4.0);
-        first.outgoing_transition = Some(ClipTransition {
-            kind: TransitionKind::Crossfade,
-            duration_secs: 1.0,
-        });
+        first.outgoing_transition = Some(ClipTransition::new("builtin:crossfade@1", 1000000));
         project2.tracks[0].clips.push(Clip::Video(first));
         project2.tracks[0]
             .clips
             .push(Clip::Video(media_clip(seq_media2, 4.0, 4.0)));
-        let steps = active_steps(&project2, 3.5).unwrap();
+        let steps = active_steps(&project2, 3500000).unwrap();
         let ComposeStep::Layer(inc) = &steps[1] else {
             panic!()
         };

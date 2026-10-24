@@ -5,16 +5,24 @@ import { selectActiveView, sequenceOfMedia, trackAcceptsMedia } from "../../lib/
 import { renderTimeline, renderTimelineOverlay } from "../../timeline/renderer";
 import { useTimelineInteractions } from "../../timeline/interactions";
 import { readMediaDrag } from "../../lib/dragMedia";
-import { readTransitionDrag, transitionFromPayload } from "../../lib/dragTransition";
+import { readTransitionDrag } from "../../lib/dragTransition";
 import { setClipTransition } from "../../lib/commands";
-import { dropTargetAtY, hitTestClip, hitTestTransitionJunction, secsFromCanvasX } from "../../timeline/layout";
+import {
+  clipLeft,
+  dropTargetAtY,
+  hitTestClip,
+  hitTestTransitionJunction,
+  RULER_H,
+  usFromCanvasX,
+} from "../../timeline/layout";
+import { nearestMarker } from "../../lib/text";
 import { snapTime } from "../../timeline/snap";
 
 function currentRenderState() {
   const s = useEditorStore.getState();
   return {
     project: selectActiveView(s),
-    playheadSecs: s.playhead,
+    playheadUs: s.playhead,
     selection: s.selection,
     selections: s.selections,
     pxPerSec: s.pxPerSec,
@@ -22,7 +30,7 @@ function currentRenderState() {
     scrollY: s.scrollY,
     dragGhost: s.dragGhost,
     transitionDropTarget: s.transitionDropTarget,
-    snapGuideSecs: s.snapGuideSecs,
+    snapGuideUs: s.snapGuideUs,
     mediaAssets: s.mediaAssets,
     highlightClipIds: useAgentChatStore.getState().highlightClipIds,
   };
@@ -31,10 +39,10 @@ function currentRenderState() {
 function currentOverlayState() {
   const s = useEditorStore.getState();
   return {
-    playheadSecs: s.playhead,
+    playheadUs: s.playhead,
     pxPerSec: s.pxPerSec,
     scrollX: s.scrollX,
-    snapGuideSecs: s.snapGuideSecs,
+    snapGuideUs: s.snapGuideUs,
     hasProject: (selectActiveView(s)?.tracks.length ?? 0) > 0,
   };
 }
@@ -54,7 +62,7 @@ export function TimelineCanvas() {
   const toolMode = useEditorStore((s) => s.toolMode);
   const dragGhost = useEditorStore((s) => s.dragGhost);
   const transitionDropTarget = useEditorStore((s) => s.transitionDropTarget);
-  const snapGuideSecs = useEditorStore((s) => s.snapGuideSecs);
+  const snapGuideUs = useEditorStore((s) => s.snapGuideUs);
   const mediaAssets = useEditorStore((s) => s.mediaAssets);
   const themeEpoch = useEditorStore((s) => s.themeEpoch);
   const snapEnabled = useEditorStore((s) => s.snapEnabled);
@@ -63,6 +71,7 @@ export function TimelineCanvas() {
   const dispatch = useEditorStore((s) => s.dispatch);
   const dropMediaOnTimeline = useEditorStore((s) => s.dropMediaOnTimeline);
   const openContextMenu = useEditorStore((s) => s.openContextMenu);
+  const openMarkerMenu = useEditorStore((s) => s.openMarkerMenu);
   const openSequence = useEditorStore((s) => s.openSequence);
   // Clips the agent just touched, drawn with a short-lived outline (agentChatStore).
   const highlightClipIds = useAgentChatStore((s) => s.highlightClipIds);
@@ -70,7 +79,7 @@ export function TimelineCanvas() {
   useTimelineInteractions(canvasRef);
 
   // Structural repaint: clips, thumbnails, waveforms, drag ghost, track lanes. Deliberately
-  // excludes `playhead`/`snapGuideSecs` — those move ~30x/sec during playback/scrub and
+  // excludes `playhead`/`snapGuideUs` — those move ~30x/sec during playback/scrub and
   // live on the separate overlay canvas below instead, so they don't force this (much
   // more expensive) redraw on every tick (B1: this used to be one canvas/one effect).
   useEffect(() => {
@@ -78,7 +87,7 @@ export function TimelineCanvas() {
     if (!canvas) return;
     renderTimeline(canvas, {
       project,
-      playheadSecs: playhead,
+      playheadUs: playhead,
       selection,
       selections,
       pxPerSec,
@@ -86,7 +95,7 @@ export function TimelineCanvas() {
       scrollY,
       dragGhost,
       transitionDropTarget,
-      snapGuideSecs,
+      snapGuideUs,
       mediaAssets,
       highlightClipIds,
     });
@@ -97,13 +106,13 @@ export function TimelineCanvas() {
     const canvas = overlayRef.current;
     if (!canvas) return;
     renderTimelineOverlay(canvas, {
-      playheadSecs: playhead,
+      playheadUs: playhead,
       pxPerSec,
       scrollX,
-      snapGuideSecs,
+      snapGuideUs,
       hasProject: !!project && project.tracks.length > 0,
     });
-  }, [playhead, snapGuideSecs, pxPerSec, scrollX, project, themeEpoch]);
+  }, [playhead, snapGuideUs, pxPerSec, scrollX, project, themeEpoch]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -161,8 +170,8 @@ export function TimelineCanvas() {
           const rect = e.currentTarget.getBoundingClientRect();
           const x = e.clientX - rect.left;
           const y = e.clientY - rect.top;
-          const rawSecs = secsFromCanvasX(x, pxPerSec, scrollX);
-          const positionSecs = snapTime(rawSecs, project, playhead, pxPerSec, snapEnabled);
+          const rawUs = usFromCanvasX(x, pxPerSec, scrollX);
+          const startUs = snapTime(rawUs, project, playhead, pxPerSec, snapEnabled);
           const target = dropTargetAtY(project, rect.height, y, scrollY);
           const targetTrack = target.trackIndex != null ? project.tracks[target.trackIndex] : undefined;
           // Locked tracks are GUI-honored only (core deliberately still accepts the
@@ -176,8 +185,8 @@ export function TimelineCanvas() {
           setDragGhost({
             mediaId: payload.mediaId,
             kind: payload.kind,
-            durationSecs: payload.durationSecs,
-            positionSecs,
+            durationUs: payload.durationUs,
+            startUs,
             trackIndex: target.trackIndex,
             row: target.row,
             valid,
@@ -208,7 +217,9 @@ export function TimelineCanvas() {
             const track = project.tracks.find((t) => t.id === hit.trackId);
             if (!track || track.kind !== "video" || track.locked) return;
             void dispatch(
-              setClipTransition(hit.trackId, hit.clipId, transitionFromPayload(transitionPayload)),
+              setClipTransition(hit.trackId, hit.clipId, transitionPayload.ref, {
+                durationUs: transitionPayload.duration_us,
+              }),
             );
             return;
           }
@@ -244,16 +255,28 @@ export function TimelineCanvas() {
           const rect = e.currentTarget.getBoundingClientRect();
           const x = e.clientX - rect.left;
           const y = e.clientY - rect.top;
+          // A marker flag in the ruler has its own menu (rename / colour / delete).
+          if (y < RULER_H) {
+            const marker = nearestMarker(
+              project.markers,
+              usFromCanvasX(x, pxPerSec, scrollX),
+              (7 / pxPerSec) * 1_000_000,
+            );
+            if (marker && Math.abs(clipLeft(marker.time_us, pxPerSec, scrollX) - x) <= 7) {
+              openMarkerMenu(e.clientX, e.clientY, marker.id);
+            }
+            return;
+          }
           const hit = hitTestClip(project, x, y, rect.height, pxPerSec, scrollX, scrollY);
           if (!hit) return;
-          const atSecs = snapTime(
-            secsFromCanvasX(x, pxPerSec, scrollX),
+          const atUs = snapTime(
+            usFromCanvasX(x, pxPerSec, scrollX),
             project,
             playhead,
             pxPerSec,
             snapEnabled,
           );
-          openContextMenu(e.clientX, e.clientY, hit.trackId, hit.clip.id, atSecs);
+          openContextMenu(e.clientX, e.clientY, hit.trackId, hit.clip.id, atUs);
         }}
       />
       <canvas ref={overlayRef} id="timeline-overlay" />

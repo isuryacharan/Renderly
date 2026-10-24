@@ -19,9 +19,9 @@
 //! the native export reads from disk reaches the compositor through the host (the webview,
 //! which gets the bytes from the Tauri backend):
 //! - `required_assets()` lists, as JSON, the file-backed mattes (`Raster` / `Generated`
-//!   masks and baked background-removal mattes) and pack-LUT `(pack_id, lut_id)` pairs the
-//!   current project references. All path / key derivation is core Rust
-//!   (`mask::project_matte_requests`, `packs::referenced_pack_luts`), not JS.
+//!   masks and baked background-removal mattes) and the `pack:` item refs (effects, filters,
+//!   transitions, LUTs) the current project references. All path / key derivation is core Rust
+//!   (`mask::project_matte_requests`, `packs::referenced_pack_items`), not JS.
 //! - `set_matte(key, w, h, rgba)` registers a browser-decoded matte; core converts RGBA to
 //!   luma8 exactly like `image`'s `to_luma8` and `Compositor::preview_layer_mask` then
 //!   resolves the layer's mask to it. Mattes survive a compositor rebuild (resolution
@@ -30,9 +30,13 @@
 //!   visible layer needs at `t` (core: `mask::frame_matte_requests_at`); the host registers it with
 //!   `set_matte` under the same key, replacing the previous frame's (docs/preview-webview.md,
 //!   "Per-frame background-removal mattes").
-//! - `set_pack_lut(pack, lut, cube_text)` parses `.cube` text with core's parser and builds
-//!   the `LoadedPack`s handed to `compose_to_texture`, so `pack:<id>:lut:<lut>` effects run
-//!   the same `pack_lut.wgsl` pass as export.
+//! - `set_pack_item(item_json, textures)` registers one pack item the host fetched
+//!   (`read_preview_pack_items`): a LUT's `.cube` text, or an effect / filter / transition's
+//!   `effect.json`, WGSL files and decoded textures. Core compiles them (`LoadedItem::from_sources`,
+//!   `parse_cube_text`) and builds the `LoadedPack`s handed to `compose_to_texture`, so
+//!   `pack:<pack>/<item>@<v>` refs run the same items, through the same runtime, as export.
+//!   Builtins are compiled into core and need nothing from the host. `set_pack_lut` is the
+//!   older LUT-only entry point and registers a version-1 LUT.
 //!
 //! Still deferred: background removal *without* a baked matte cache (export derives a live
 //! heuristic matte from decoded CPU pixels; the preview has none and shows the clip's own
@@ -65,12 +69,15 @@ use std::sync::Arc;
 
 use std::collections::BTreeMap;
 
+use renderly_core::compose::runtime::DecodedImage;
 use renderly_core::compose::{
     build_scene, eval, upload_layer_pixels, ComposeLayer, Compositor, LayerSource,
     PreviewOverrideEntry, PreviewOverrides, SceneError, SceneHost, SceneStep,
 };
 use renderly_core::mask::{luma_from_rgba, project_matte_requests};
-use renderly_core::packs::{parse_cube_text, referenced_pack_luts, CubeLut, LoadedPack};
+use renderly_core::packs::{
+    lut_key, parse_cube_text, referenced_pack_items, CubeLut, LoadedItem, LoadedPack,
+};
 use renderly_core::project::{ClipMask, Id, Project};
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, HtmlImageElement, HtmlVideoElement};
@@ -136,7 +143,11 @@ fn resolve_layer_source(layer: &eval::ActiveLayer, sources: &js_sys::Object) -> 
         return (key, element);
     }
     let media_id_key = media_id.to_string();
-    let is_incoming = layer.transition.map(|t| t.is_incoming).unwrap_or(false);
+    let is_incoming = layer
+        .transition
+        .as_ref()
+        .map(|t| t.is_incoming)
+        .unwrap_or(false);
     if is_incoming {
         let incoming_key = format!("{media_id_key}#incoming");
         let incoming_el = js_sys::Reflect::get(sources, &JsValue::from_str(&incoming_key))
@@ -209,6 +220,9 @@ struct WasmHost<'a> {
     compositor: &'a Compositor,
     media_textures: &'a mut HashMap<String, MediaTexture>,
     sources: &'a js_sys::Object,
+    /// Rasterized caption / text-clip textures (shared with the caption layers) and the output
+    /// size they are drawn at.
+    caption_textures: &'a mut HashMap<(String, String), MediaTexture>,
 }
 
 impl SceneHost for WasmHost<'_> {
@@ -292,6 +306,37 @@ impl SceneHost for WasmHost<'_> {
         )))
     }
 
+    fn text_layer(
+        &mut self,
+        layer: &eval::ActiveLayer,
+        size: (u32, u32),
+    ) -> Result<Option<ComposeLayer>, JsValue> {
+        let Some(text) = layer.text() else {
+            return Ok(None);
+        };
+        let (width, height) = size;
+        let texture = ensure_caption_texture(
+            self.device,
+            self.queue,
+            self.caption_textures,
+            &text.text,
+            &text.style_id,
+            &text.overrides,
+            width,
+            height,
+        )?;
+        let mask = self.compositor.preview_layer_mask(layer);
+        Ok(Some(ComposeLayer::from_active(
+            layer,
+            LayerSource::Texture {
+                texture,
+                width,
+                height,
+            },
+            mask,
+        )))
+    }
+
     fn sequence_mask(&mut self, layer: &eval::ActiveLayer) -> Option<ClipMask> {
         self.compositor.preview_layer_mask(layer)
     }
@@ -324,9 +369,11 @@ pub struct WasmCompositor {
     /// matte cache key -> (width, height, luma8) registered by the host; re-uploaded into a
     /// rebuilt `Compositor` (its matte cache starts empty).
     mattes: HashMap<String, (u32, u32, Vec<u8>)>,
-    /// pack id -> lut id -> parsed `.cube`, as supplied by the host.
+    /// pack id -> lut key (`packs::lut_key`) -> parsed `.cube`, as supplied by the host.
     pack_luts: BTreeMap<String, BTreeMap<String, CubeLut>>,
-    /// `pack_luts` as the `LoadedPack` slice `compose_to_texture` takes.
+    /// pack id -> compiled effect / filter / transition items, as supplied by the host.
+    pack_effects: BTreeMap<String, Vec<LoadedItem>>,
+    /// The two above as the `LoadedPack` slice `compose_to_texture` takes.
     packs: Vec<LoadedPack>,
     /// media-id → pooled GPU texture receiving `copy_external_image_to_texture` copies.
     /// Recreated only when the source's pixel size changes.
@@ -471,6 +518,7 @@ impl WasmCompositor {
             project: None,
             mattes: HashMap::new(),
             pack_luts: BTreeMap::new(),
+            pack_effects: BTreeMap::new(),
             packs: Vec::new(),
             media_textures: HashMap::new(),
             caption_textures: HashMap::new(),
@@ -531,12 +579,15 @@ impl WasmCompositor {
         self.refresh_view()
     }
 
-    /// JSON `{ "mattes": [{"key", "path"}], "pack_luts": [{"pack_id", "lut_id"}] }`: the
-    /// host-supplied data the current project needs (see the module doc). Empty arrays when
-    /// there is no project or it references nothing file-backed.
+    /// JSON `{ "mattes": [{"key", "path"}], "pack_items": [{"ref", "hash"}] }`: the
+    /// host-supplied data the current project needs (see the module doc). `pack_items` are the
+    /// `pack:` refs of effects, filters, transitions and LUTs, each with the hash stored where
+    /// it was applied (`null` if none); the host fetches each (`read_preview_pack_items`) and
+    /// registers it with `set_pack_item`. Empty arrays when there is no project or it
+    /// references nothing file-backed.
     pub fn required_assets(&self) -> String {
         let Some(project) = self.project.as_ref() else {
-            return r#"{"mattes":[],"pack_luts":[],"frame_mattes":false}"#.to_string();
+            return r#"{"mattes":[],"pack_items":[],"frame_mattes":false}"#.to_string();
         };
         let mattes: Vec<serde_json::Value> = project_matte_requests(project)
             .into_iter()
@@ -547,13 +598,13 @@ impl WasmCompositor {
                 })
             })
             .collect();
-        let pack_luts: Vec<serde_json::Value> = referenced_pack_luts(project)
+        let pack_items: Vec<serde_json::Value> = referenced_pack_items(project)
             .into_iter()
-            .map(|(pack_id, lut_id)| serde_json::json!({ "pack_id": pack_id, "lut_id": lut_id }))
+            .map(|u| serde_json::json!({ "ref": u.item_ref, "hash": u.hash }))
             .collect();
         serde_json::json!({
             "mattes": mattes,
-            "pack_luts": pack_luts,
+            "pack_items": pack_items,
             // True when some clip has a per-frame background-removal matte: the host should then
             // call `required_frame_mattes(t)` as the playhead moves.
             "frame_mattes": renderly_core::mask::project_has_frame_mattes(project),
@@ -562,15 +613,16 @@ impl WasmCompositor {
     }
 
     /// JSON `[{"key", "path", "index", "stamp"}]`: the per-frame background-removal matte each
-    /// visible layer needs at timeline time `time_secs` (the nearest matte frame to the layer's
+    /// visible layer needs at timeline time `time_us` (the nearest matte frame to the layer's
     /// *source* time - the same mapping export uses). The host decodes `path` and registers it
     /// with `set_matte(key, ..)`, replacing the previous frame's matte under that key.
-    pub fn required_frame_mattes(&self, time_secs: f64) -> String {
+    pub fn required_frame_mattes(&self, time_us: f64) -> String {
+        let time_us = time_us.round() as i64;
         let Some(project) = self.project.as_ref() else {
             return "[]".to_string();
         };
         let requests: Vec<serde_json::Value> =
-            renderly_core::mask::frame_matte_requests_at(project, time_secs)
+            renderly_core::mask::frame_matte_requests_at(project, time_us)
                 .into_iter()
                 .map(|r| {
                     serde_json::json!({
@@ -617,7 +669,8 @@ impl WasmCompositor {
         }
     }
 
-    /// Register (replace) one pack LUT from the text of its `.cube` file.
+    /// Register (replace) one version-1 pack LUT from the text of its `.cube` file. Older,
+    /// LUT-only entry point; `set_pack_item` covers every item kind and version.
     pub fn set_pack_lut(
         &mut self,
         pack_id: &str,
@@ -629,24 +682,107 @@ impl WasmCompositor {
         self.pack_luts
             .entry(pack_id.to_string())
             .or_default()
-            .insert(lut_id.to_string(), cube);
+            .insert(lut_key(lut_id, 1), cube);
         self.rebuild_packs();
         Ok(())
     }
 
-    /// Drop every host-supplied pack LUT (pack unloaded / project closed).
-    pub fn clear_pack_luts(&mut self) {
+    /// Register (replace) one pack item the host fetched. `item_json` is
+    /// `{"pack_id", "item_id", "version", "kind": "lut" | "effect" | "filter" | "transition",
+    /// "hash"?, "cube"?, "manifest"?, "shaders"?: {path: wgsl}}` (what the backend returns for
+    /// a `required_assets().pack_items` ref); `textures` is a JS array of
+    /// `{path, width, height, rgba: Uint8Array}` for the effect's file textures (decoded by the
+    /// webview), or `undefined`. Core compiles the item; an item that fails to compile is kept
+    /// as an error item, which renders pass-through, and its message is returned.
+    pub fn set_pack_item(&mut self, item_json: &str, textures: &JsValue) -> Result<(), JsValue> {
+        let v: serde_json::Value =
+            serde_json::from_str(item_json).map_err(|e| js_err("set_pack_item json", e))?;
+        let pack_id = v["pack_id"]
+            .as_str()
+            .ok_or_else(|| js_err("set_pack_item", "pack_id is missing"))?
+            .to_string();
+        let item_id = v["item_id"].as_str().unwrap_or_default().to_string();
+        let version = v["version"].as_u64().unwrap_or(1) as u32;
+        if v["kind"].as_str() == Some("lut") {
+            let cube_text = v["cube"]
+                .as_str()
+                .ok_or_else(|| js_err("set_pack_item", "a lut needs `cube` text"))?;
+            let cube = parse_cube_text(cube_text)
+                .map_err(|e| js_err(&format!("pack lut {pack_id}/{item_id}"), e))?;
+            self.pack_luts
+                .entry(pack_id)
+                .or_default()
+                .insert(lut_key(&item_id, version), cube);
+        } else {
+            let manifest = v["manifest"]
+                .as_str()
+                .ok_or_else(|| js_err("set_pack_item", "an effect needs `manifest` text"))?;
+            let shaders: BTreeMap<String, String> = v["shaders"]
+                .as_object()
+                .map(|o| {
+                    o.iter()
+                        .filter_map(|(k, t)| t.as_str().map(|t| (k.clone(), t.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut decoded: BTreeMap<String, DecodedImage> = BTreeMap::new();
+            if textures.is_object() {
+                let list = js_sys::Array::from(textures);
+                for entry in list.iter() {
+                    let get = |k: &str| js_sys::Reflect::get(&entry, &JsValue::from_str(k));
+                    let path = get("path")
+                        .ok()
+                        .and_then(|p| p.as_string())
+                        .ok_or_else(|| js_err("set_pack_item", "texture without a path"))?;
+                    let width = get("width").ok().and_then(|w| w.as_f64()).unwrap_or(0.0) as u32;
+                    let height = get("height").ok().and_then(|h| h.as_f64()).unwrap_or(0.0) as u32;
+                    let rgba = get("rgba")
+                        .map(|a| js_sys::Uint8Array::new(&a).to_vec())
+                        .map_err(|_| js_err("set_pack_item", "texture without pixels"))?;
+                    decoded.insert(
+                        path,
+                        DecodedImage {
+                            width,
+                            height,
+                            rgba,
+                        },
+                    );
+                }
+            }
+            let item = LoadedItem::from_sources(
+                manifest,
+                &shaders,
+                &decoded,
+                v["hash"].as_str().map(str::to_string),
+            );
+            let items = self.pack_effects.entry(pack_id).or_default();
+            items.retain(|i| !(i.id == item.id && i.version == item.version));
+            items.push(item);
+        }
+        self.rebuild_packs();
+        Ok(())
+    }
+
+    /// Drop every host-supplied pack LUT and effect (library changed / project closed).
+    pub fn clear_pack_items(&mut self) {
         self.pack_luts.clear();
+        self.pack_effects.clear();
         self.rebuild_packs();
     }
 
-    /// Composite the frame at `time_secs` and present it to the canvas.
+    /// Older name of `clear_pack_items`.
+    pub fn clear_pack_luts(&mut self) {
+        self.clear_pack_items();
+    }
+
+    /// Composite the frame at `time_us` and present it to the canvas.
     ///
     /// `sources` is a plain JS object mapping media-id strings to the `HTMLVideoElement` /
     /// `HTMLImageElement` that currently holds that media's pixels (the P1 engine's element
     /// pool). Layers whose element is missing or not yet decodable are skipped for this
     /// frame — same policy as the P1 Canvas2D path.
-    pub fn render(&mut self, time_secs: f64, sources: &js_sys::Object) -> Result<(), JsValue> {
+    pub fn render(&mut self, time_us: f64, sources: &js_sys::Object) -> Result<(), JsValue> {
+        let time_us = time_us.round() as i64;
         let Some(project) = self.project.as_ref() else {
             return Ok(());
         };
@@ -654,13 +790,12 @@ impl WasmCompositor {
             return Ok(());
         };
 
-        let steps =
-            eval::active_steps(project, time_secs).map_err(|e| js_err("active_steps", e))?;
+        let steps = eval::active_steps(project, time_us).map_err(|e| js_err("active_steps", e))?;
         // Copied out (not borrowed) before the caption loop below takes `&mut self`: `project`
         // is a borrow of `self.project` and can't stay alive across the mutable
         // `ensure_caption_texture` call that follows.
         let (out_w, out_h) = (project.settings.width, project.settings.height);
-        let captions = eval::active_captions(project, time_secs);
+        let captions = eval::active_captions(project, time_us);
 
         let mut host = WasmHost {
             device: &self.device,
@@ -668,6 +803,7 @@ impl WasmCompositor {
             compositor,
             media_textures: &mut self.media_textures,
             sources,
+            caption_textures: &mut self.caption_textures,
         };
         let mut scene = build_scene(project, steps, &mut host).map_err(|e| match e {
             SceneError::Eval(e) => js_err("build_scene", e),
@@ -675,7 +811,16 @@ impl WasmCompositor {
         })?;
 
         for cap in &captions {
-            let texture = self.ensure_caption_texture(&cap.text, &cap.style_id, out_w, out_h)?;
+            let texture = ensure_caption_texture(
+                &self.device,
+                &self.queue,
+                &mut self.caption_textures,
+                &cap.text,
+                &cap.style_id,
+                &cap.overrides,
+                out_w,
+                out_h,
+            )?;
             // Caption bitmaps are already rendered at output resolution (same as export,
             // see `export::mod.rs`'s FrameRenderer::render_inner) — `ComposeLayer::caption`
             // is the shared identity-transform wiring.
@@ -696,35 +841,40 @@ impl WasmCompositor {
         self.present()
     }
 
-    /// JSON array describing every media element the frame at `time_secs` needs, including
+    /// JSON array describing every media element the frame at `time_us` needs, including
     /// layers inside nested sequences: `[{ "key", "media_id", "source_time", "rate",
     /// "nested", "incoming" }]`.
     ///
     /// - `key` is the entry the host must put in `render`'s `sources` object for that layer:
     ///   the instance key for nested layers, the media id (or `<media id>#incoming`) for
     ///   layers on the root timeline.
-    /// - `source_time` is the media time to show; `rate` the media seconds per timeline
-    ///   second (clip speed x enclosing sequence-clip speeds, keyframed speed included),
+    /// - `source_time` is the media time to show, in integer µs (the key keeps its name);
+    ///   `rate` the media time per timeline time (dimensionless) (clip speed x enclosing sequence-clip speeds, keyframed speed included),
     ///   measured by evaluating the same Rust timeline a hair later, so the host never
     ///   re-derives speed/trim logic.
     ///
-    /// Empty when there is no project. The engine calls it with `time_secs` for the live set
+    /// Empty when there is no project. The engine calls it with `time_us` for the live set
     /// and with a time slightly ahead to pre-seek elements before a cut.
-    pub fn active_media_layers(&self, time_secs: f64) -> String {
+    pub fn active_media_layers(&self, time_us: f64) -> String {
+        let time_us = time_us.round() as i64;
         let Some(project) = self.project.as_ref() else {
             return "[]".to_string();
         };
-        const DT: f64 = 1.0 / 120.0;
-        let now = match eval::leaf_media_layers(project, time_secs) {
+        const DT_US: i64 = 8_333;
+        let now = match eval::leaf_media_layers(project, time_us) {
             Ok(l) => l,
             Err(_) => return "[]".to_string(),
         };
-        let later = eval::leaf_media_layers(project, time_secs + DT).unwrap_or_default();
+        let later = eval::leaf_media_layers(project, time_us + DT_US).unwrap_or_default();
         let out: Vec<serde_json::Value> = now
             .iter()
             .filter_map(|layer| {
                 let (media_id, _, source_time) = layer.media()?;
-                let incoming = layer.transition.map(|t| t.is_incoming).unwrap_or(false);
+                let incoming = layer
+                    .transition
+                    .as_ref()
+                    .map(|t| t.is_incoming)
+                    .unwrap_or(false);
                 let nested = layer.instance.is_nested();
                 let key = if nested {
                     layer.instance.to_string()
@@ -737,7 +887,7 @@ impl WasmCompositor {
                     .iter()
                     .find(|l| l.instance == layer.instance)
                     .and_then(|l| l.media())
-                    .map(|(_, _, t2)| (t2 - source_time) / DT)
+                    .map(|(_, _, t2)| (t2 - source_time) as f64 / DT_US as f64)
                     .filter(|r| r.is_finite() && *r > 0.0)
                     .unwrap_or(1.0);
                 Some(serde_json::json!({
@@ -753,13 +903,14 @@ impl WasmCompositor {
         serde_json::Value::Array(out).to_string()
     }
 
-    /// Debug/QA introspection (harness only): what does the eval see at `time_secs`, and
+    /// Debug/QA introspection (harness only): what does the eval see at `time_us`, and
     /// which sources resolve? Returns a JSON-ish summary string.
-    pub fn debug_layers(&self, time_secs: f64, sources: &js_sys::Object) -> String {
+    pub fn debug_layers(&self, time_us: f64, sources: &js_sys::Object) -> String {
+        let time_us = time_us.round() as i64;
         let Some(project) = self.project.as_ref() else {
             return "no project".into();
         };
-        match eval::leaf_media_layers(project, time_secs) {
+        match eval::leaf_media_layers(project, time_us) {
             Err(e) => format!("eval error: {e}"),
             Ok(layers) => {
                 let mut out = String::new();
@@ -780,7 +931,8 @@ impl WasmCompositor {
                         key,
                         layer
                             .transition
-                            .map(|t| (t.kind.as_str(), t.progress, t.is_incoming)),
+                            .as_ref()
+                            .map(|t| (t.item_ref.as_str(), t.progress, t.is_incoming)),
                         layer.transform.opacity,
                     ));
                 }
@@ -913,59 +1065,84 @@ impl WasmCompositor {
     }
 
     fn rebuild_packs(&mut self) {
-        self.packs = self
+        let mut ids: Vec<&String> = self
             .pack_luts
-            .iter()
-            .map(|(pack_id, luts)| LoadedPack::from_luts(pack_id, luts.clone()))
+            .keys()
+            .chain(self.pack_effects.keys())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        self.packs = ids
+            .into_iter()
+            .map(|pack_id| {
+                LoadedPack::from_parts(
+                    pack_id,
+                    self.pack_luts.get(pack_id).cloned().unwrap_or_default(),
+                    self.pack_effects.get(pack_id).cloned().unwrap_or_default(),
+                )
+            })
             .collect();
         if let Some(compositor) = self.compositor.as_mut() {
             compositor.clear_pack_lut_cache();
         }
     }
+}
 
-    /// Rasterize (if not already cached at this text/style/resolution) and return the GPU
-    /// texture for one active caption. Cache key is `(text, style_id)`; a resolution change
-    /// (project settings edited) invalidates via the width/height stored on the cached entry,
-    /// same pattern as `ensure_media_texture`'s size-staleness check.
-    fn ensure_caption_texture(
-        &mut self,
-        text: &str,
-        style_id: &str,
-        width: u32,
-        height: u32,
-    ) -> Result<wgpu::Texture, JsValue> {
-        let key = (text.to_string(), style_id.to_string());
-        let stale = self
-            .caption_textures
-            .get(&key)
-            .is_none_or(|t| t.width != width || t.height != height);
-        if stale {
-            let frame = renderly_core::captions::render_caption(text, style_id, width, height)
-                .map_err(|e| js_err("render_caption", e))?;
-            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("preview-caption"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            upload_layer_pixels(&self.queue, &texture, width, height, &frame.pixels);
-            self.caption_textures.insert(
-                key.clone(),
-                MediaTexture {
-                    texture,
-                    width,
-                    height,
-                },
-            );
-        }
-        Ok(self.caption_textures[&key].texture.clone())
+/// Rasterize (if not already cached at this text/style/resolution) and return the GPU texture
+/// for one caption or text clip. The cache key is the text plus the style id and its overrides;
+/// a resolution change (project settings edited) invalidates via the width/height stored on the
+/// cached entry, same pattern as `ensure_media_texture`'s size-staleness check.
+#[allow(clippy::too_many_arguments)]
+fn ensure_caption_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    cache: &mut HashMap<(String, String), MediaTexture>,
+    text: &str,
+    style_id: &str,
+    overrides: &renderly_core::captions::StyleOverrides,
+    width: u32,
+    height: u32,
+) -> Result<wgpu::Texture, JsValue> {
+    let style_key = if overrides.is_empty() {
+        style_id.to_string()
+    } else {
+        format!(
+            "{style_id}|{}",
+            serde_json::to_string(overrides).unwrap_or_default()
+        )
+    };
+    let key = (text.to_string(), style_key);
+    let stale = cache
+        .get(&key)
+        .is_none_or(|t| t.width != width || t.height != height);
+    if stale {
+        let frame = renderly_core::captions::render_caption_styled(
+            text, style_id, overrides, width, height,
+        )
+        .map_err(|e| js_err("render_caption", e))?;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("preview-caption"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        upload_layer_pixels(queue, &texture, width, height, &frame.pixels);
+        cache.insert(
+            key.clone(),
+            MediaTexture {
+                texture,
+                width,
+                height,
+            },
+        );
     }
+    Ok(cache[&key].texture.clone())
 }

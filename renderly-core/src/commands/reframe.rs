@@ -99,16 +99,16 @@ fn pick_subject(
 /// Run subject selection over per-sample face lists, holding the last subject through gaps.
 fn select_subjects(
     per_sample: &[Vec<Face>],
-    times: &[f64],
+    times: &[i64],
     frame_w: f64,
     frame_h: f64,
 ) -> Detections {
     let mut subjects = Vec::with_capacity(per_sample.len());
-    let mut prev: Option<(Subject, f64)> = None; // subject + time last seen
+    let mut prev: Option<(Subject, i64)> = None; // subject + time last seen
     let mut hits = 0;
     for (faces, &t) in per_sample.iter().zip(times) {
         if let Some((_, seen)) = prev {
-            if t - seen > HOLD_SECS {
+            if crate::time::us_to_seconds(t - seen) > HOLD_SECS {
                 prev = None;
             }
         }
@@ -126,7 +126,7 @@ fn select_subjects(
 
 /// Fill gaps: leading/trailing gaps take the nearest detection, interior gaps interpolate
 /// linearly between the surrounding ones. Returns `None` when there is nothing to fill from.
-fn fill_gaps(subjects: &[Option<Subject>], times: &[f64]) -> Option<Vec<Subject>> {
+fn fill_gaps(subjects: &[Option<Subject>], times: &[i64]) -> Option<Vec<Subject>> {
     let known: Vec<usize> = (0..subjects.len())
         .filter(|&i| subjects[i].is_some())
         .collect();
@@ -141,8 +141,8 @@ fn fill_gaps(subjects: &[Option<Subject>], times: &[f64]) -> Option<Vec<Subject>
                 let hi = known.partition_point(|&k| k < i);
                 let (a, b) = (known[hi - 1], known[hi]);
                 let (sa, sb) = (subjects[a]?, subjects[b]?);
-                let span = (times[b] - times[a]).max(1e-9);
-                let f = ((times[i] - times[a]) / span).clamp(0.0, 1.0);
+                let span = (times[b] - times[a]).max(1) as f64;
+                let f = (((times[i] - times[a]) as f64) / span).clamp(0.0, 1.0);
                 let lerp = |x: f64, y: f64| x + (y - x) * f;
                 Subject {
                     cx: lerp(sa.cx, sb.cx),
@@ -263,7 +263,8 @@ pub(super) fn auto_reframe_clip(
     let cover = cover_fractions(a.frame_w, a.frame_h, out_w, out_h);
     let base = base_scale(target_aspect, out_w, out_h);
     let dt = if a.times.len() > 1 {
-        (a.times[a.times.len() - 1] - a.times[0]) / (a.times.len() - 1) as f64
+        crate::time::us_to_seconds(a.times[a.times.len() - 1] - a.times[0])
+            / (a.times.len() - 1) as f64
     } else {
         0.0
     };
@@ -273,13 +274,15 @@ pub(super) fn auto_reframe_clip(
     // The framing owns position, zoom and window fit; older pos/zoom keys are replaced.
     clip.keyframes.retain(|t| {
         !matches!(
-            t.property,
-            AnimProperty::PosX
-                | AnimProperty::PosY
-                | AnimProperty::ScaleX
-                | AnimProperty::ScaleY
-                | AnimProperty::FitX
-                | AnimProperty::FitY
+            t.property.anim(),
+            Some(
+                AnimProperty::PosX
+                    | AnimProperty::PosY
+                    | AnimProperty::ScaleX
+                    | AnimProperty::ScaleY
+                    | AnimProperty::FitX
+                    | AnimProperty::FitY
+            )
         )
     });
     clip.transform.x = 0.0;
@@ -309,7 +312,7 @@ pub(super) fn auto_reframe_clip(
                     key(a.times[a.times.len() - 1], values[0]),
                 ];
             }
-            clip.keyframes.push(KeyframeTrack { property, keys });
+            clip.keyframes.push(KeyframeTrack::new(property, keys));
         }
     }
     Ok(CommandOutcome::Applied)
@@ -319,7 +322,7 @@ struct Analysis {
     frame_w: f64,
     frame_h: f64,
     /// Clip-local timeline seconds of each sample.
-    times: Vec<f64>,
+    times: Vec<i64>,
     /// Filled-in subject path, one per sample.
     path: Vec<Subject>,
 }
@@ -350,7 +353,7 @@ fn analyse_still(
     Ok(pick_subject(&faces, None, w, h).map(|s| Analysis {
         frame_w: w,
         frame_h: h,
-        times: vec![0.0],
+        times: vec![0],
         path: vec![s],
     }))
 }
@@ -359,10 +362,10 @@ fn analyse_video(
     vc: &VideoClip,
     detector: &FaceDetector,
 ) -> Result<Option<Analysis>, CommandError> {
-    let dur = vc.clip.timeline_duration_secs();
-    let requested = (dur * SAMPLE_FPS).ceil() as usize + 1;
+    let dur = vc.clip.timeline_duration_us();
+    let requested = (crate::time::us_to_seconds(dur) * SAMPLE_FPS).ceil() as usize + 1;
     let plan: SamplePlan = plan_samples(vc, Some(requested))?;
-    let Ok(mut feeder) = FrameFeeder::open(&vc.path, vc.clip.source_in_secs, plan.fps) else {
+    let Ok(mut feeder) = FrameFeeder::open(&vc.path, vc.clip.source_in_us, plan.fps) else {
         return Ok(None);
     };
     let mut per_sample: Vec<Vec<Face>> = Vec::with_capacity(plan.idx.len());
@@ -413,6 +416,7 @@ fn analyse_video(
 mod tests {
     use super::*;
     use crate::proc::SerialSpawn;
+    use crate::time::Time;
 
     fn face(cx: f32, cy: f32, w: f32, h: f32, score: f32) -> Face {
         Face {
@@ -461,7 +465,9 @@ mod tests {
 
     #[test]
     fn subject_is_held_through_short_gaps_and_dropped_after_long_ones() {
-        let times: Vec<f64> = (0..20).map(|i| i as f64 * 0.5).collect();
+        let times: Vec<i64> = (0..20)
+            .map(|i| (i as f64 * 0.5 * 1e6).round() as i64)
+            .collect();
         let a = vec![face(100.0, 100.0, 40.0, 40.0, 0.9)];
         let b = vec![face(300.0, 100.0, 60.0, 60.0, 0.9)];
         let mut samples: Vec<Vec<Face>> = vec![Vec::new(); 20];
@@ -482,7 +488,7 @@ mod tests {
 
     #[test]
     fn fill_gaps_needs_a_detection() {
-        assert!(fill_gaps(&[None, None], &[0.0, 1.0]).is_none());
+        assert!(fill_gaps(&[None, None], &[0, 1000000]).is_none());
     }
 
     #[test]
@@ -686,7 +692,7 @@ mod tests {
             id: media_id,
             path: path.to_path_buf(),
             kind,
-            duration_secs: Some(secs),
+            duration_us: Some((secs * 1e6).round() as i64),
             width: Some(dims.0),
             height: Some(dims.1),
             fps: (kind == MediaKind::Video).then_some(FPS),
@@ -699,6 +705,7 @@ mod tests {
                 name: "V".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .expect("track")
@@ -711,9 +718,9 @@ mod tests {
             Command::AddClip {
                 track_id,
                 media_id,
-                position_secs: 1.0,
-                source_in_secs: 0.0,
-                source_out_secs: secs,
+                start: Time::Us(1000000),
+                source_in: Time::Us(0),
+                source_out: Time::Us((secs * 1e6).round() as i64),
             },
         )
         .expect("clip")
@@ -765,10 +772,10 @@ mod tests {
             .keyframes
             .iter()
             .any(|k| k.property == AnimProperty::FitX));
-        assert!(clip
-            .keyframes
-            .iter()
-            .all(|k| !matches!(k.property, AnimProperty::PosX | AnimProperty::PosY)));
+        assert!(clip.keyframes.iter().all(|k| !matches!(
+            k.property.anim(),
+            Some(AnimProperty::PosX | AnimProperty::PosY)
+        )));
         // 640x360 source is wider than 9:16 only: no vertical slack, so no FitY keys.
         assert!(clip
             .keyframes
@@ -785,7 +792,7 @@ mod tests {
         let mut samples = 0;
         for j in 0..=64 {
             let local = SECS * f64::from(j) / 64.0;
-            let tf = evaluate_transform(clip, clip.position_secs + local);
+            let tf = evaluate_transform(clip, clip.start_us + (local * 1e6).round() as i64);
             let (window_scale, window_offset) = crate::project::cover_window(
                 f64::from(SRC.0),
                 f64::from(SRC.1),

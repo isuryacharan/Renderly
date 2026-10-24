@@ -72,17 +72,17 @@ enum ReaderBackend {
 }
 
 impl VideoReader {
-    pub fn open(path: &Path, start_secs: f64) -> Result<Self, FfmpegCliError> {
-        Self::open_with(path, start_secs, &ReaderOptions::default())
+    pub fn open(path: &Path, start_s: f64) -> Result<Self, FfmpegCliError> {
+        Self::open_with(path, start_s, &ReaderOptions::default())
     }
 
     pub fn open_with(
         path: &Path,
-        start_secs: f64,
+        start_s: f64,
         opts: &ReaderOptions,
     ) -> Result<Self, FfmpegCliError> {
         Ok(Self {
-            reader: ReaderBackend::Cli(CliReader::open_with(path, start_secs, opts)?),
+            reader: ReaderBackend::Cli(CliReader::open_with(path, start_s, opts)?),
         })
     }
 

@@ -74,12 +74,12 @@ or
 | `set_preview_override` | `target`, `override` (`{ transform?, opacity?, effects? }`) | `{ ok }`. Temporary render-only override; never saved or in undo |
 | `clear_preview_override` | `target` | `{ ok }` |
 | `undo` / `redo` | _(token only)_ | `{ can_undo, can_redo, revision, patch }` |
-| `play` | optional `time_secs` | `{ ok }` |
-| `pause` | | `{ time_secs }` |
-| `seek` | `time_secs` | `{ ok }` |
-| `set_playhead` | `time_secs` | `{ ok, time_secs }` — seeks/previews like `seek`, then emits Tauri event `bridge:playhead` `{ time_secs }` so the GUI store syncs |
+| `play` | optional `time` (Time) | `{ ok }` |
+| `pause` | | `{ time_us }` |
+| `seek` | `time` (Time) | `{ ok }` |
+| `set_playhead` | `time` (Time) | `{ ok, time_us }` — seeks/previews like `seek`, then emits Tauri event `bridge:playhead` `{ time_us }` so the GUI store syncs |
 | `export` | `output_path`, `preset` | `{ ok, output_path }` |
-| `render_frame` | `time_secs`, `preset` | `{ time_secs, png_base64, byte_len }` |
+| `render_frame` | `time` (Time), `preset` | `{ time_us, png_base64, byte_len }` |
 | `get_editor_status` | | `{ live, project_path, project_name, playhead, playing, selection, revision, project_revision }` (`project_revision` equals `revision`; both are kept for older clients) |
 | `agent_permission` | `tool_name`, `input`, `tool_use_id?` | `{ behavior: "allow", updatedInput }` or `{ behavior: "deny", message }`. Sent by `renderly-mcp`'s `permission_prompt` tool for the desktop agent chat. Waits for the user's answer in the app; denies when no agent session is running. Not for other clients |
 

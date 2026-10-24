@@ -88,7 +88,7 @@ pub struct ChatContext {
 /// selection, open sequence) generated from the project, then the user's message.
 pub fn compose_turn(
     project: &Project,
-    playhead_secs: f64,
+    playhead_us: i64,
     sequence: Option<Id>,
     text: &str,
     ctx: Option<&ChatContext>,
@@ -96,7 +96,7 @@ pub fn compose_turn(
     let selected: &[String] = ctx.map(|c| c.selected_clip_ids.as_slice()).unwrap_or(&[]);
     format!(
         "{}{text}",
-        outline::context_block(project, playhead_secs, selected, sequence)
+        outline::context_block(project, playhead_us, selected, sequence)
     )
 }
 
@@ -356,7 +356,7 @@ pub async fn agent_send(
     let project = state.with_session(|s| Ok(Arc::clone(&s.project)))?;
     let prompt = compose_turn(
         &project,
-        state.playhead_secs(),
+        state.playhead_us(),
         *state.active_sequence.lock(),
         text,
         context.as_ref(),
@@ -453,7 +453,7 @@ mod tests {
         let ctx = ChatContext {
             selected_clip_ids: vec!["c1".into(), "c2".into()],
         };
-        let out = compose_turn(&p, 3.5, None, "trim the first clip", Some(&ctx));
+        let out = compose_turn(&p, 3_500_000, None, "trim the first clip", Some(&ctx));
         assert!(out.starts_with("[Renderly context: live project state"));
         assert!(out.contains("playhead 0:03.5"));
         assert!(out.contains("selected clips: c1, c2"));
@@ -464,7 +464,7 @@ mod tests {
     #[test]
     fn turn_without_selection_has_no_selection_line() {
         let p = project_with_one_track();
-        let out = compose_turn(&p, 0.0, None, "hi", None);
+        let out = compose_turn(&p, 0, None, "hi", None);
         assert!(!out.contains("selected clips"));
         assert!(out.ends_with("hi"));
     }

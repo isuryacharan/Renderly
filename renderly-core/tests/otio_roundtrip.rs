@@ -88,7 +88,7 @@ fn project_without_any_clips_roundtrips() {
 #[test]
 fn fractional_rates_roundtrip() {
     let mut p = rich_project();
-    p.settings.fps = 30000.0 / 1001.0;
+    p.settings.fps = renderly_core::time::Fps::new(30000, 1001);
     let (back, _, otio) = roundtrip(&p);
     assert_same(&p, &back);
     let v: Value = serde_json::from_str(&otio).unwrap();
@@ -126,6 +126,7 @@ const KNOWN: &[&str] = &[
     "LinearTimeWarp.1",
     "ExternalReference.1",
     "GeneratorReference.1",
+    "Marker.2",
     "RationalTime.1",
     "TimeRange.1",
 ];
@@ -181,7 +182,8 @@ fn exported_json_satisfies_otio_structural_invariants() {
     }
     // 2 timeline-level Stacks (root + one per placed Intro: video and audio copies) = 3.
     assert_eq!(counts["Stack.1"], 3);
-    assert_eq!(counts["Transition.1"], 2);
+    // Two media transitions plus the one between the two titles.
+    assert_eq!(counts["Transition.1"], 3);
 
     // Each track's children tile the timeline: clip ranges sit inside the media they use,
     // and gaps are never zero-length.
@@ -267,11 +269,12 @@ fn clips_gaps_transitions_and_warps_map_to_the_documented_otio() {
     assert_eq!(kids[3]["transition_type"], "SMPTE_Dissolve");
     assert_eq!(rt(&kids[3]["in_offset"]).0, 15.0);
     assert_eq!(rt(&kids[3]["out_offset"]).0, 0.0);
-    // Wipe: Custom_Transition carrying the Renderly kind.
+    // Wipe: Custom_Transition named by, and carrying, the Renderly ref.
     assert_eq!(kids[5]["transition_type"], "Custom_Transition");
+    assert_eq!(kids[5]["name"], "builtin:wipe_left@1");
     assert_eq!(
-        kids[5]["metadata"]["renderly"]["transition"]["kind"],
-        "wipe_left"
+        kids[5]["metadata"]["renderly"]["transition"]["ref"],
+        "builtin:wipe_left@1"
     );
     assert_eq!(rt(&kids[5]["in_offset"]).0, 12.0);
     // Effects are visible natively as Effect.1.
@@ -281,7 +284,16 @@ fn clips_gaps_transitions_and_warps_map_to_the_documented_otio() {
         .iter()
         .map(|e| e["effect_name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["builtin:blur", "builtin:color_adjust"]);
+    // In render order: the key slot first, then the effects list.
+    assert_eq!(
+        names,
+        [
+            "builtin:chroma_key@1",
+            "builtin:blur@1",
+            "builtin:color_adjust@1"
+        ]
+    );
+    assert_eq!(kids[4]["effects"][0]["metadata"]["renderly"]["slot"], "key");
     // External reference: absolute URL, percent-encoded, available range of 10 s.
     let r = &kids[0]["media_references"]["DEFAULT_MEDIA"];
     assert_eq!(r["target_url"], "file:///D:/media/a%20clip.mp4");
@@ -330,8 +342,8 @@ fn captions_adjustments_sequences_and_tracks_map_as_documented() {
         "renderly.caption"
     );
     assert_eq!(
-        c0["media_references"]["DEFAULT_MEDIA"]["parameters"]["style_id"],
-        "tiktok-bold-yellow"
+        c0["media_references"]["DEFAULT_MEDIA"]["parameters"]["style_ref"],
+        "builtin:tiktok-bold-yellow@1"
     );
     // 0.5 s lead-in gap.
     assert_eq!(caps["children"][0]["OTIO_SCHEMA"], "Gap.1");
@@ -339,7 +351,11 @@ fn captions_adjustments_sequences_and_tracks_map_as_documented() {
     // Adjustment layer: a Gap with the effect list natively and the whole layer in metadata.
     let v2 = tracks[1]["children"].as_array().unwrap();
     assert_eq!(v2[1]["OTIO_SCHEMA"], "Gap.1");
-    assert_eq!(v2[1]["effects"][0]["effect_name"], "builtin:color_adjust");
+    assert_eq!(v2[1]["effects"][0]["effect_name"], "builtin:color_adjust@1");
+    assert_eq!(
+        v2[1]["effects"][0]["metadata"]["renderly"]["slot"],
+        "effects"
+    );
     assert_eq!(v2[1]["metadata"]["renderly"]["adjustment"]["opacity"], 0.6);
     // Nested sequence: a Stack in place, with its tracks inside.
     let nested = &v2[3];
@@ -394,7 +410,7 @@ fn an_edit_made_in_another_tool_wins_over_stored_times() {
     let now = &back.tracks[0].clips;
     // Shorter first clip: 1s..3s now.
     let c0 = now[0].as_media().unwrap();
-    assert_eq!((c0.source_in_secs, c0.source_out_secs), (1.0, 3.0));
+    assert_eq!((c0.source_in_us, c0.source_out_us), (1000000, 3000000));
     // The transition was removed natively, so it is gone although the stored clip had it.
     let c1 = now[1].as_media().unwrap();
     assert!(c1.outgoing_transition.is_none());
@@ -433,7 +449,7 @@ fn stripping_renderly_metadata_still_gives_a_sane_project() {
     });
     let (back, w) = import_otio(&stripped, &ImportOptions::default()).unwrap();
     back.validate().unwrap();
-    assert_eq!(back.settings.fps, 30.0);
+    assert_eq!(back.settings.fps.as_f64(), 30.0);
     assert_eq!(back.tracks.len(), p.tracks.len());
     // Native structure survives: same clip counts per track, speed from the time warp,
     // captions recognised from their generator, the crossfade from SMPTE_Dissolve.
@@ -453,20 +469,29 @@ fn stripping_renderly_metadata_still_gives_a_sane_project() {
     }
     let sped = back.tracks[0].clips[1].as_media().unwrap();
     assert_eq!(sped.speed, 2.0);
-    assert_eq!((sped.position_secs, sped.source_in_secs), (4.5, 1.0));
-    assert!((sped.source_out_secs - 5.0).abs() < 1e-9);
+    assert_eq!((sped.start_us, sped.source_in_us), (4500000, 1000000));
+    assert!((sped.source_out_us - 5000000).abs() < 1);
     assert_eq!(
         sped.outgoing_transition
             .as_ref()
-            .map(|t| (t.kind, t.duration_secs)),
-        Some((TransitionKind::Crossfade, 0.5))
+            .map(|t| (t.item_ref.as_str(), t.duration_us)),
+        Some(("builtin:crossfade@1", 500000))
     );
-    // The wipe is a Custom_Transition without Renderly metadata: approximated with a warning.
-    assert!(w.iter().any(|x| x.kind == WarningKind::Transition));
+    // The wipe is a Custom_Transition without Renderly metadata, but its name is the ref, so it
+    // is recovered without approximation.
+    assert!(!w.iter().any(|x| x.kind == WarningKind::Transition));
+    let loaded = back.tracks[0].clips[2].as_media().unwrap();
+    assert_eq!(
+        loaded
+            .outgoing_transition
+            .as_ref()
+            .map(|t| t.item_ref.as_str()),
+        Some("builtin:wipe_left@1")
+    );
     match &back.tracks[3].clips[0] {
         Clip::Caption(c) => {
-            assert_eq!(c.text, "Hello, \"world\" \u{2014} caf\u{e9}");
-            assert_eq!((c.position_secs, c.duration_secs), (0.5, 1.5));
+            assert_eq!(c.body.text, "Hello, \"world\" \u{2014} caf\u{e9}");
+            assert_eq!((c.start_us, c.duration_us), (500000, 1500000));
         }
         other => panic!("expected a caption, got {other:?}"),
     }
@@ -477,9 +502,110 @@ fn stripping_renderly_metadata_still_gives_a_sane_project() {
 #[test]
 fn export_errors_are_reported_not_panicked() {
     let mut p = rich_project();
-    p.settings.fps = 0.0;
+    p.settings.fps = renderly_core::time::Fps::new(0, 1);
     assert!(export_otio(&p).is_err());
     let mut p = rich_project();
     p.media.retain(|m| m.kind != MediaKind::Audio);
     assert!(export_otio(&p).is_err(), "dangling media reference");
+}
+
+#[test]
+fn text_clips_markers_and_transcripts_map_as_documented() {
+    let p = rich_project();
+    let (back, warnings, otio) = roundtrip(&p);
+    assert!(
+        warnings
+            .iter()
+            .all(|w| w.kind != WarningKind::MarkersIgnored),
+        "{warnings:?}"
+    );
+    let v: Value = serde_json::from_str(&otio).unwrap();
+
+    // Markers: Marker.2 on the root stack, zero-length at the marker's frame.
+    let markers = v["tracks"]["markers"].as_array().unwrap();
+    assert_eq!(markers.len(), 2);
+    assert_eq!(markers[0]["OTIO_SCHEMA"], "Marker.2");
+    assert_eq!(markers[0]["name"], "intro");
+    assert_eq!(markers[0]["color"], "RED");
+    assert_eq!(markers[0]["marked_range"]["duration"]["value"], 0);
+    assert_eq!(markers[0]["marked_range"]["start_time"]["value"], 30);
+    // The beat marker has no colour of its own: the kind's default.
+    assert_eq!(markers[1]["color"], "CYAN");
+    // ...and its time off the frame grid comes back exactly.
+    assert_eq!(back.markers, p.markers);
+    assert_eq!(back.transcripts, p.transcripts);
+
+    // Text clips: a generator clip with the slot effects, a native transition, the exact clip
+    // in metadata; the track keeps its magnetic flag.
+    let titles = v["tracks"]["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "Titles")
+        .unwrap();
+    assert_eq!(titles["metadata"]["renderly"]["track"]["magnetic"], true);
+    let kids = titles["children"].as_array().unwrap();
+    let first = &kids[0];
+    assert_eq!(first["name"], "EPISODE 12");
+    let generator = &first["media_references"]["DEFAULT_MEDIA"];
+    assert_eq!(generator["generator_kind"], "renderly.text");
+    assert_eq!(generator["parameters"]["style_ref"], "builtin:tiktok-box@1");
+    assert_eq!(first["effects"][0]["effect_name"], "builtin:blur@1");
+    assert_eq!(kids[1]["OTIO_SCHEMA"], "Transition.1");
+    assert_eq!(kids[2]["enabled"], false);
+    assert!(first["metadata"]["renderly"]["text"].is_object());
+    // The caption's words and style are in its snapshot and its track carries the default style.
+    let caps = v["tracks"]["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "Captions")
+        .unwrap();
+    assert_eq!(
+        caps["metadata"]["renderly"]["track"]["caption_style"]["ref"],
+        "builtin:tiktok-box@1"
+    );
+    let caption = &caps["children"][1]["metadata"]["renderly"]["caption"];
+    assert_eq!(caption["body"]["words"][0]["text"], "Hello,");
+    assert_eq!(caption["animations"]["in"]["ref"], "builtin:fade-up@1");
+}
+
+#[test]
+fn foreign_markers_and_bare_text_generators_import() {
+    let otio = r#"{
+        "OTIO_SCHEMA": "Timeline.1", "name": "t",
+        "global_start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24, "value": 0 },
+        "tracks": { "OTIO_SCHEMA": "Stack.1", "name": "tracks",
+          "markers": [
+            { "OTIO_SCHEMA": "Marker.2", "name": "cut here", "color": "GREEN",
+              "marked_range": { "OTIO_SCHEMA": "TimeRange.1",
+                "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24, "value": 48 },
+                "duration": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24, "value": 0 } } }
+          ],
+          "children": [
+            { "OTIO_SCHEMA": "Track.1", "kind": "Video", "name": "T", "children": [
+              { "OTIO_SCHEMA": "Clip.2", "name": "Hi",
+                "source_range": { "OTIO_SCHEMA": "TimeRange.1",
+                  "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24, "value": 0 },
+                  "duration": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24, "value": 48 } },
+                "media_references": { "DEFAULT_MEDIA": {
+                  "OTIO_SCHEMA": "GeneratorReference.1", "name": "text",
+                  "generator_kind": "renderly.text",
+                  "parameters": { "text": "Hi", "style_ref": "builtin:tiktok-box@1" } } },
+                "active_media_reference_key": "DEFAULT_MEDIA" }
+            ] }
+          ] } }"#;
+    let (p, warnings) = import_otio(otio, &ImportOptions::default()).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(p.markers.len(), 1);
+    assert_eq!(p.markers[0].time_us, 2_000_000);
+    assert_eq!(p.markers[0].label, "cut here");
+    assert_eq!(p.markers[0].color, "#43A047");
+    assert_eq!(p.markers[0].kind, MarkerKind::User);
+    let Clip::Text(t) = &p.tracks[0].clips[0] else {
+        panic!("{:?}", p.tracks[0].clips)
+    };
+    assert_eq!(t.body.text, "Hi");
+    assert_eq!(t.style.item_ref, "builtin:tiktok-box@1");
+    assert_eq!(t.duration_us, 2_000_000);
 }

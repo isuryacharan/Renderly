@@ -71,7 +71,7 @@ fn new_project_defaults() {
     assert_eq!(v["name"], "untitled");
     assert_eq!(v["settings"]["width"], 1080);
     assert_eq!(v["settings"]["height"], 1920);
-    assert_eq!(v["settings"]["fps"], 60.0);
+    assert_eq!(v["settings"]["fps"], json!({"num": 60, "den": 1}));
     assert_eq!(v["settings"]["sample_rate"], 48000);
     assert_eq!(
         v["schema_version"],
@@ -104,7 +104,7 @@ fn new_project_explicit_options() {
     assert_eq!(v["name"], "my edit");
     assert_eq!(v["settings"]["width"], 640);
     assert_eq!(v["settings"]["height"], 360);
-    assert_eq!(v["settings"]["fps"], 24.0);
+    assert_eq!(v["settings"]["fps"], json!({"num": 24, "den": 1}));
     assert_eq!(v["settings"]["sample_rate"], 44100);
 }
 
@@ -160,9 +160,9 @@ fn apply_core_failure_fails_unchanged() {
         "command": "AddClip",
         "track_id": missing,
         "media_id": uuid::Uuid::new_v4().to_string(),
-        "position_secs": 0.0,
-        "source_in_secs": 0.0,
-        "source_out_secs": 1.0,
+        "start": 0,
+        "source_in": 0,
+        "source_out": "1s",
     })
     .to_string();
     let out = apply(&p, &cmd);
@@ -209,9 +209,9 @@ fn apply_script_failure_midway_leaves_file_unchanged() {
         "command": "AddClip",
         "track_id": uuid::Uuid::new_v4().to_string(),
         "media_id": uuid::Uuid::new_v4().to_string(),
-        "position_secs": 0.0,
-        "source_in_secs": 0.0,
-        "source_out_secs": 1.0,
+        "start": 0,
+        "source_in": 0,
+        "source_out": "1s",
     });
     let cmds = json!([
         {"command":"AddTrack","kind":"video","name":"V1"},
@@ -367,9 +367,9 @@ fn export_real_video() {
             "command": "AddClip",
             "track_id": track_id,
             "media_id": media_id,
-            "position_secs": 0.0,
-            "source_in_secs": 0.0,
-            "source_out_secs": 0.5,
+            "start": 0,
+            "source_in": 0,
+            "source_out": "0.5s",
         })
         .to_string(),
     );
@@ -449,7 +449,7 @@ fn nest_clips_adjustment_layer_and_export() {
             &p,
             &json!({
                 "command": "AddClip", "track_id": track, "media_id": media_id,
-                "position_secs": pos, "source_in_secs": 0.0, "source_out_secs": 0.5,
+                "start": format!("{pos}s"), "source_in": 0, "source_out": "0.5s",
             })
             .to_string(),
         );
@@ -498,7 +498,7 @@ fn nest_clips_adjustment_layer_and_export() {
     // An adjustment layer over the whole thing, desaturating it.
     let out = apply(
         &p,
-        &json!({"command":"AddAdjustmentLayer","track_id":t3,"position_secs":0.0,"duration_secs":0.7})
+        &json!({"command":"AddAdjustmentLayer","track_id":t3,"start":0,"duration":"0.7s"})
             .to_string(),
     );
     assert!(out.status.success(), "{}", stderr(&out));
@@ -516,8 +516,7 @@ fn nest_clips_adjustment_layer_and_export() {
         &json!({
             "command": "SetClipEffects", "track_id": t3, "clip_id": adj_id,
             "effects": [{
-                "id": uuid::Uuid::new_v4().to_string(),
-                "effect_id": "builtin:color_adjust",
+                "ref": "builtin:color_adjust@1",
                 "params": {"saturation": 0.0}
             }],
         })
@@ -554,10 +553,13 @@ fn project_with_clip(dir: &TempDir) -> PathBuf {
     let media_id = uuid::Uuid::new_v4().to_string();
     v["media"] = json!([{
         "id": media_id, "path": "clips/a clip.mp4", "kind": "video",
-        "duration_secs": 10.0, "width": 1280, "height": 720, "fps": 30.0
+        "duration_us": 10_000_000, "width": 1280, "height": 720, "fps": 30.0
     }]);
     std::fs::write(&p, serde_json::to_string_pretty(&v).unwrap()).unwrap();
-    let out = apply(&p, r#"{"command":"AddTrack","kind":"video","name":"V1"}"#);
+    let out = apply(
+        &p,
+        r#"{"command":"AddTrack","kind":"video","name":"V1","magnetic":false}"#,
+    );
     assert!(out.status.success(), "{}", stderr(&out));
     let track = read_json(&p)["tracks"][0]["id"]
         .as_str()
@@ -565,7 +567,7 @@ fn project_with_clip(dir: &TempDir) -> PathBuf {
         .to_string();
     for (pos, a, b) in [(0.0, 1.0, 3.0), (4.0, 0.0, 2.5)] {
         let cmd = json!({"command": "AddClip", "track_id": track, "media_id": media_id,
-            "position_secs": pos, "source_in_secs": a, "source_out_secs": b});
+            "start": format!("{pos}s"), "source_in": format!("{a}s"), "source_out": format!("{b}s")});
         let out = apply(&p, &cmd.to_string());
         assert!(out.status.success(), "{}", stderr(&out));
     }
@@ -635,7 +637,7 @@ fn import_otio_reads_a_foreign_sample_and_reports_warnings() {
     let v = read_json(&out_path);
     assert_eq!(v["settings"]["width"], 1080);
     assert_eq!(v["settings"]["height"], 1920);
-    assert_eq!(v["settings"]["fps"], 24.0);
+    assert_eq!(v["settings"]["fps"], json!({"num": 24, "den": 1}));
     assert_eq!(v["sequences"].as_array().unwrap().len(), 3);
     assert_eq!(
         v["schema_version"],
@@ -772,4 +774,167 @@ fn apply_rejects_a_malformed_deletion_id() {
     ]);
     assert!(!out.status.success());
     assert!(stderr(&out).contains("not a full id"), "{}", stderr(&out));
+}
+
+// ---- schema v8: a v7 project's packs are installed into the library on open -----------------
+
+#[test]
+fn opening_a_v7_project_installs_its_pack_folders_and_saves_v8() {
+    let dir = TempDir::new();
+    let library = dir.path("library");
+    let starter = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/packs/starter");
+    let starter = std::fs::canonicalize(starter).unwrap();
+    let starter_str = starter
+        .to_string_lossy()
+        .trim_start_matches(r"\?\")
+        .to_string();
+    let media = uuid::Uuid::new_v4().to_string();
+    let (track, clip) = (
+        uuid::Uuid::new_v4().to_string(),
+        uuid::Uuid::new_v4().to_string(),
+    );
+    let v7 = json!({
+        "schema_version": 7,
+        "id": uuid::Uuid::new_v4().to_string(),
+        "name": "old",
+        "settings": { "fps": 30.0, "width": 1280, "height": 720, "sample_rate": 48000 },
+        "media": [{ "id": media, "path": "a.mp4", "kind": "video", "duration_secs": 10.0,
+                    "width": 1280, "height": 720, "fps": 30.0 }],
+        "tracks": [{ "id": track, "kind": "video", "name": "V1", "clips": [{
+            "type": "video", "id": clip, "media_id": media,
+            "position_secs": 0.0, "source_in_secs": 0.0, "source_out_secs": 2.0,
+            "gain_db": 0.0, "enabled": true,
+            "effects": [
+                { "id": uuid::Uuid::new_v4().to_string(), "effect_id": "pack:starter:lut:punch",
+                  "enabled": true, "params": { "intensity": 0.5 } },
+                { "id": uuid::Uuid::new_v4().to_string(), "effect_id": "builtin:blur",
+                  "enabled": true, "params": { "radius": 3.0 } }
+            ],
+            "outgoing_transition": { "kind": "crossfade", "duration_secs": 0.5 }
+        }] }],
+        "asset_pack_paths": [starter_str],
+    });
+    let p = dir.path("old.renderly.json");
+    std::fs::write(&p, serde_json::to_string_pretty(&v7).unwrap()).unwrap();
+
+    let out = std::process::Command::new(BIN)
+        .env("RENDERLY_LIBRARY_DIR", &library)
+        .args([
+            "apply".as_ref(),
+            p.as_os_str(),
+            r#"{"command":"AddTrack","kind":"audio","name":"A1"}"#.as_ref(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("installed 1 pack folder"),
+        "{}",
+        stderr(&out)
+    );
+
+    let v = read_json(&p);
+    assert_eq!(v["schema_version"], 8);
+    // The refs the migration wrote resolve against what the host installed.
+    let clip = &v["tracks"][0]["clips"][0];
+    assert_eq!(clip["filter"]["ref"], "pack:local.starter/punch@1");
+    assert_eq!(clip["effects"][0]["ref"], "builtin:blur@1");
+    assert_eq!(clip["outgoing_transition"]["ref"], "builtin:crossfade@1");
+    assert!(v.get("asset_pack_paths").is_none());
+    assert!(
+        v.get("legacy_pack_paths").is_none(),
+        "the list is cleared once installed"
+    );
+    let lib = std::fs::read_to_string(library.join("library.json")).unwrap();
+    assert!(lib.contains("local.starter"), "{lib}");
+    // The original is kept.
+    assert!(dir.path("old.v7.renderly.json").exists());
+
+    // The deprecated command shape still works, with a warning in the result.
+    let out = std::process::Command::new(BIN)
+        .env("RENDERLY_LIBRARY_DIR", &library)
+        .args([
+            "apply".as_ref(),
+            p.as_os_str(),
+            json!({
+                "command": "SetClipEffects", "track_id": track, "clip_id": clip["id"],
+                "effects": [{ "effect_id": "builtin:blur", "params": { "radius": 5.0 } }],
+            })
+            .to_string()
+            .as_ref(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("effect_id") && stdout(&out).contains("deprecated"),
+        "{}",
+        stdout(&out)
+    );
+    let v = read_json(&p);
+    assert_eq!(
+        v["tracks"][0]["clips"][0]["effects"][0]["ref"],
+        "builtin:blur@1"
+    );
+    assert!(
+        v["tracks"][0]["clips"][0].get("filter").is_none(),
+        "the legacy form replaced the whole stack"
+    );
+}
+
+#[test]
+fn captions_and_text_commands_work_from_the_cli_and_old_caption_params_warn() {
+    let dir = TempDir::new();
+    let p = new_project(&dir, &[]);
+    for cmd in [
+        r#"{"command":"AddTrack","kind":"caption","name":"Subs"}"#,
+        r#"{"command":"AddTrack","kind":"video","name":"V1"}"#,
+    ] {
+        let out = apply(&p, cmd);
+        assert!(out.status.success(), "{}", stderr(&out));
+    }
+    let v = read_json(&p);
+    let captions = v["tracks"][0]["id"].as_str().unwrap().to_string();
+    let video = v["tracks"][1]["id"].as_str().unwrap().to_string();
+    // The first video track of a new project is magnetic.
+    assert_eq!(v["tracks"][1]["magnetic"], true);
+
+    // The v7 parameter names still work, with a warning in the result.
+    let out = apply(
+        &p,
+        &json!({"command": "AddCaption", "track_id": captions, "text": "Hello", "start": "1s",
+                "duration": "2s", "style_id": "tiktok-box"})
+        .to_string(),
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("`text` is deprecated") && text.contains("`style_id` is deprecated"),
+        "{text}"
+    );
+    let v = read_json(&p);
+    let clip = &v["tracks"][0]["clips"][0];
+    assert_eq!(clip["body"]["text"], "Hello");
+    assert_eq!(clip["style"]["ref"], "builtin:tiktok-box@1");
+
+    // The new commands.
+    for cmd in [
+        json!({"command": "AddText", "track_id": video, "body": {"text": "EP 1"},
+               "start": "0s", "duration": "2s"}),
+        json!({"command": "SetTrackCaptionStyle", "track_id": captions,
+               "style": {"ref": "builtin:youtube-lower-thirds@1"}, "reset_clips": true}),
+        json!({"command": "AddMarkers", "markers": [{"time": "1.5s", "label": "beat 1", "kind": "beat"}]}),
+    ] {
+        let out = apply(&p, &cmd.to_string());
+        assert!(out.status.success(), "{cmd}: {}", stderr(&out));
+    }
+    let v = read_json(&p);
+    assert_eq!(v["tracks"][1]["clips"][0]["type"], "text");
+    assert_eq!(
+        v["tracks"][0]["caption_style"]["ref"],
+        "builtin:youtube-lower-thirds@1"
+    );
+    assert!(v["tracks"][0]["clips"][0]["style"].is_null());
+    assert_eq!(v["markers"][0]["time_us"], 1_500_000);
+    assert_eq!(v["markers"][0]["kind"], "beat");
 }

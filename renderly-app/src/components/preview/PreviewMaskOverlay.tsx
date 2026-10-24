@@ -16,8 +16,8 @@ import {
   type MaskBoundsUv,
   type MaskHandleKind,
 } from "../../lib/maskMath";
-import type { AdjustmentClip, ClipMask, MediaClip } from "../../lib/types";
-import { clipDurationSecs } from "../../lib/types";
+import type { ClipMask, EffectClip } from "../../lib/types";
+import { clipDurationUs } from "../../lib/types";
 import { resolveTransform } from "../../lib/previewMath";
 import {
   activeContainerSize,
@@ -52,7 +52,7 @@ function contentBoundsInHost(host: HTMLElement, aspect: number): ContentBounds |
 
 function activeVideoSelection(
   playhead: number,
-): { trackId: string; clip: MediaClip | AdjustmentClip; locked: boolean } | null {
+): { trackId: string; clip: EffectClip; locked: boolean } | null {
   const { project, selection, activeSequenceId } = useEditorStore.getState();
   if (!project || !selection) return null;
   const track = activeTracks(project, activeSequenceId).find((t) => t.id === selection.trackId);
@@ -60,8 +60,8 @@ function activeVideoSelection(
   const clip = track.clips.find((c) => c.id === selection.clipId);
   // Adjustment layers take masks too (their UVs are output-frame: no cover-fit or transform).
   if (!clip || (clip.type !== "video" && clip.type !== "adjustment") || !clip.enabled) return null;
-  const end = clip.position_secs + clipDurationSecs(clip);
-  if (playhead < clip.position_secs || playhead >= end) return null;
+  const end = clip.start_us + clipDurationUs(clip);
+  if (playhead < clip.start_us || playhead >= end) return null;
   return { trackId: track.id, clip, locked: track.locked };
 }
 

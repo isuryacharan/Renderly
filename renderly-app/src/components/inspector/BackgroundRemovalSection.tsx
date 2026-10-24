@@ -78,7 +78,7 @@ export function BackgroundRemovalSection({ track, clip }: { track: Track; clip: 
     return () => {
       live = false;
     };
-  }, [enabled, track.id, clip.id, model, dir, stamp, clip.source_in_secs, clip.source_out_secs, running]);
+  }, [enabled, track.id, clip.id, model, dir, stamp, clip.source_in_us, clip.source_out_us, running]);
 
   const write = useCallback(
     (patch: Partial<BackgroundRemoval>) =>

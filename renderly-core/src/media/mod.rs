@@ -35,7 +35,7 @@ pub enum MediaError {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProbedMedia {
     pub kind: Option<MediaKind>,
-    pub duration_secs: Option<f64>,
+    pub duration_us: Option<i64>,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub fps: Option<f64>,
@@ -82,13 +82,13 @@ pub fn probe(path: &Path) -> Result<ProbedMedia, MediaError> {
 
     if kind == MediaKind::Audio && ext == "wav" {
         if let Some(duration) = probe_wav_duration(path)? {
-            probed.duration_secs = Some(duration);
+            probed.duration_us = Some(crate::time::seconds_to_us(duration));
         }
     }
 
     if kind == MediaKind::Video && ffmpeg_cli::is_available() {
         if let Ok(video) = probe_video(path) {
-            probed.duration_secs = Some(video.duration_secs);
+            probed.duration_us = Some(video.duration_us);
             probed.width = Some(video.width);
             probed.height = Some(video.height);
             probed.fps = Some(video.fps);

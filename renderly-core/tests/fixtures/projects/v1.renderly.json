@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "id": "11111111-1111-4111-8111-111111111111",
+  "name": "fixture v1",
+  "settings": {
+    "fps": 30.0,
+    "width": 1920,
+    "height": 1080,
+    "sample_rate": 48000,
+    "duck_db": -12.0
+  },
+  "media": [
+    {
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "path": "media/a.mp4",
+      "kind": "video",
+      "duration_secs": 10.0,
+      "width": 1920,
+      "height": 1080,
+      "fps": 30.0
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "path": "media/voice.wav",
+      "kind": "audio",
+      "duration_secs": 8.5,
+      "width": null,
+      "height": null,
+      "fps": null
+    }
+  ],
+  "tracks": [
+    {
+      "id": "b1000000-0000-4000-8000-000000000001",
+      "kind": "video",
+      "name": "V1",
+      "clips": [
+        {
+          "type": "video",
+          "id": "c1000000-0000-4000-8000-000000000001",
+          "media_id": "a1000000-0000-4000-8000-000000000001",
+          "position_secs": 1.5,
+          "source_in_secs": 0.5,
+          "source_out_secs": 2.5,
+          "gain_db": 0.0,
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "id": "b1000000-0000-4000-8000-000000000002",
+      "kind": "audio",
+      "name": "A1",
+      "clips": [
+        {
+          "type": "audio",
+          "id": "c1000000-0000-4000-8000-000000000002",
+          "media_id": "a1000000-0000-4000-8000-000000000002",
+          "position_secs": 0.0,
+          "source_in_secs": 0.0,
+          "source_out_secs": 4.0,
+          "gain_db": -3.0,
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "id": "b1000000-0000-4000-8000-000000000003",
+      "kind": "caption",
+      "name": "Captions",
+      "clips": [
+        {
+          "type": "caption",
+          "id": "c1000000-0000-4000-8000-000000000003",
+          "text": "Hello",
+          "position_secs": 0.25,
+          "duration_secs": 1.75,
+          "style_id": "tiktok-bold-yellow"
+        }
+      ]
+    }
+  ]
+}

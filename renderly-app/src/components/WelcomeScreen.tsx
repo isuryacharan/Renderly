@@ -172,7 +172,7 @@ export function WelcomeScreen() {
                   <div className="project-card-meta">
                     <div className="name">{p.name}</div>
                     <div className="sub">
-                      {formatDuration(p.durationSecs)} · {p.width}×{p.height}
+                      {formatDuration(p.durationUs / 1_000_000)} · {p.width}×{p.height}
                     </div>
                     <div className="sub">{formatModified(p.modifiedMs)}</div>
                   </div>

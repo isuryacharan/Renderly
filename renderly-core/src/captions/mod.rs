@@ -13,9 +13,16 @@
 
 use crate::frame::RgbaFrame;
 use ab_glyph::{point, Font, FontArc, Glyph, PxScale, ScaleFont};
+use serde_json::Value;
+use std::collections::BTreeMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 use thiserror::Error;
+
+/// A style's overrides, as stored on a clip (`style.overrides`). The renderer reads `fill`
+/// (`#RRGGBB[AA]`), `size` (fraction of the output height) and `anchor` (`top`, `center`,
+/// `bottom`); the other properties are stored until the text renderer lands (docs/text-format.md).
+pub type StyleOverrides = BTreeMap<String, Value>;
 
 #[derive(Debug, Error)]
 pub enum CaptionError {
@@ -158,21 +165,24 @@ fn style_from_pack(style: &crate::packs::PackCaptionStyle) -> StyleSpec {
 }
 
 /// Rasterize a caption, resolving `style_id` against builtins then loaded asset packs.
-/// Native-only: pack loading needs filesystem access (see `packs::load_project_packs`).
+/// Native-only: pack loading needs filesystem access (see `packs::load_installed_packs`).
 /// The wasm preview compositor calls [`render_caption`] directly (builtin styles only).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn render_caption_for_project(
-    project: &crate::project::Project,
+    _project: &crate::project::Project,
     text: &str,
     style_id: &str,
+    overrides: &StyleOverrides,
     width: u32,
     height: u32,
 ) -> Result<RgbaFrame, CaptionError> {
-    let packs = crate::packs::load_project_packs(project);
+    let packs = crate::packs::load_installed_packs();
     if let Some(pack_style) = crate::packs::find_caption_style(&packs, style_id) {
-        return render_caption_with_spec(text, &style_from_pack(pack_style), width, height);
+        let mut spec = style_from_pack(pack_style);
+        apply_overrides(&mut spec, overrides, height);
+        return render_caption_with_spec(text, &spec, width, height);
     }
-    render_caption(text, style_id, width, height)
+    render_caption_styled(text, style_id, overrides, width, height)
 }
 
 /// Rasterize a single caption line into an RGBA frame sized to the output resolution.
@@ -182,7 +192,44 @@ pub fn render_caption(
     width: u32,
     height: u32,
 ) -> Result<RgbaFrame, CaptionError> {
-    render_caption_with_spec(text, &style_spec(style_id), width, height)
+    render_caption_styled(text, style_id, &StyleOverrides::new(), width, height)
+}
+
+/// [`render_caption`] with the style's overrides applied.
+pub fn render_caption_styled(
+    text: &str,
+    style_id: &str,
+    overrides: &StyleOverrides,
+    width: u32,
+    height: u32,
+) -> Result<RgbaFrame, CaptionError> {
+    let mut spec = style_spec(style_id);
+    apply_overrides(&mut spec, overrides, height);
+    render_caption_with_spec(text, &spec, width, height)
+}
+
+/// Map the overrides the renderer understands onto the style. Anything else is ignored here.
+fn apply_overrides(spec: &mut StyleSpec, overrides: &StyleOverrides, height: u32) {
+    if let Some(rgba) = overrides
+        .get("fill")
+        .and_then(Value::as_str)
+        .and_then(crate::project::text::parse_hex_color)
+    {
+        spec.text_rgba = rgba;
+    }
+    if let Some(size) = overrides.get("size").and_then(Value::as_f64) {
+        if size.is_finite() && size > 0.0 {
+            spec.font_scale = (size as f32 * height as f32).clamp(8.0, 512.0);
+        }
+    }
+    match overrides.get("anchor").and_then(Value::as_str) {
+        Some("top") => spec.vertical_anchor = 0.18,
+        // The anchor is the baseline: centre the text block, not its baseline.
+        Some("center") => {
+            spec.vertical_anchor = 0.5 + 0.35 * spec.font_scale / height.max(1) as f32;
+        }
+        _ => {}
+    }
 }
 
 fn render_caption_with_spec(

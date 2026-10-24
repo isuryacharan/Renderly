@@ -12,7 +12,8 @@ import {
   openExistingProjectFlow,
 } from "./projectFlows";
 import { deleteSelected, splitSelectedAtPlayhead } from "../timeline/interactions";
-import { activeTracks, containerDurationSecs, isNestedClip } from "./container";
+import { normalizeFps, stepFrames } from "./time";
+import { activeTracks, containerDurationUs, isNestedClip } from "./container";
 import { cycleTheme } from "./theme";
 import { resetTimelineThemeCache } from "../timeline/theme";
 import { useAgentChatStore } from "../store/agentChatStore";
@@ -213,7 +214,7 @@ export const ACTIONS: Record<string, EditorAction> = {
     shortcut: "End",
     isEnabled: hasProject,
     run: (s) => {
-      if (s.project) void s.seekTo(Math.max(containerDurationSecs(s.project, s.activeSequenceId), 1));
+      if (s.project) void s.seekTo(Math.max(containerDurationUs(s.project, s.activeSequenceId), 1_000_000));
     },
     matchKey: (e, mod) => !mod && e.key === "End",
   },
@@ -223,8 +224,7 @@ export const ACTIONS: Record<string, EditorAction> = {
     shortcut: "←",
     isEnabled: hasProject,
     run: (s) => {
-      const fps = s.project?.settings.fps ?? 30;
-      void s.seekTo(s.playhead - 1 / fps);
+      void s.seekTo(stepFrames(normalizeFps(s.project?.settings.fps), s.playhead, -1));
     },
     matchKey: (e, mod) => !mod && e.key === "ArrowLeft" && !e.shiftKey,
   },
@@ -234,8 +234,7 @@ export const ACTIONS: Record<string, EditorAction> = {
     shortcut: "→",
     isEnabled: hasProject,
     run: (s) => {
-      const fps = s.project?.settings.fps ?? 30;
-      void s.seekTo(s.playhead + 1 / fps);
+      void s.seekTo(stepFrames(normalizeFps(s.project?.settings.fps), s.playhead, 1));
     },
     matchKey: (e, mod) => !mod && e.key === "ArrowRight" && !e.shiftKey,
   },
@@ -244,7 +243,7 @@ export const ACTIONS: Record<string, EditorAction> = {
     label: "Jump back 1s",
     shortcut: "Shift+←",
     isEnabled: hasProject,
-    run: (s) => void s.seekTo(s.playhead - 1),
+    run: (s) => void s.seekTo(s.playhead - 1_000_000),
     matchKey: (e, mod) => !mod && e.key === "ArrowLeft" && e.shiftKey,
   },
   "playback.jump-forward": {
@@ -252,7 +251,7 @@ export const ACTIONS: Record<string, EditorAction> = {
     label: "Jump forward 1s",
     shortcut: "Shift+→",
     isEnabled: hasProject,
-    run: (s) => void s.seekTo(s.playhead + 1),
+    run: (s) => void s.seekTo(s.playhead + 1_000_000),
     matchKey: (e, mod) => !mod && e.key === "ArrowRight" && e.shiftKey,
   },
   "tool.select": {
@@ -274,10 +273,31 @@ export const ACTIONS: Record<string, EditorAction> = {
   "tool.mask": {
     id: "tool.mask",
     label: "Mask tool",
-    shortcut: "M",
+    // Plain M is the marker shortcut (below), as in other editors.
+    shortcut: "Shift+M",
     isEnabled: () => true,
     run: (s) => s.setTool("mask"),
-    matchKey: (e, mod) => !mod && (e.key === "m" || e.key === "M"),
+    matchKey: (e, mod) => !mod && e.shiftKey && (e.key === "m" || e.key === "M"),
+  },
+  "timeline.add-marker": {
+    id: "timeline.add-marker",
+    label: "Add marker at playhead",
+    shortcut: "M",
+    isEnabled: (s) => !!s.project && s.activeSequenceId == null,
+    run: (s) => void s.addMarkerAtPlayhead(),
+    matchKey: (e, mod) => !mod && !e.shiftKey && !e.altKey && (e.key === "m" || e.key === "M"),
+  },
+  "timeline.toggle-magnet": {
+    id: "timeline.toggle-magnet",
+    label: "Magnetic track (clips close up on edits)",
+    isEnabled: hasProject,
+    run: (s) => void s.toggleMagnet(),
+  },
+  "timeline.add-title": {
+    id: "timeline.add-title",
+    label: "Add title at playhead",
+    isEnabled: hasProject,
+    run: (s) => void s.addTitleAtPlayhead(),
   },
   "timeline.zoom-in": {
     id: "timeline.zoom-in",

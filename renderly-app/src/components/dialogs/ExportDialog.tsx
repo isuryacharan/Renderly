@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import * as ipc from "../../lib/ipc";
 import type { ExportPhase, ExportPresetArg } from "../../lib/ipc";
 import { fileName } from "../../lib/format";
+import { formatFps, fpsToNumber } from "../../lib/time";
 import { useEditorStore } from "../../store/editorStore";
 
 type PresetId = "tiktok" | "youtube" | "project";
@@ -102,7 +103,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
     try {
       await ipc.exportProject(
         path,
-        presetArg(preset, project.settings.width, project.settings.height, project.settings.fps),
+        presetArg(preset, project.settings.width, project.settings.height, fpsToNumber(project.settings.fps)),
         { videoEncoder, crf, audioBitrateK },
       );
       setFraction(1);
@@ -173,7 +174,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
               <strong>Project size</strong>
               <span>
                 {project
-                  ? `${project.settings.width}×${project.settings.height} · ${project.settings.fps} fps`
+                  ? `${project.settings.width}×${project.settings.height} · ${formatFps(project.settings.fps)} fps`
                   : "No project"}
               </span>
             </button>

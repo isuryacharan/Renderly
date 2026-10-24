@@ -671,12 +671,12 @@ mod tests {
 
         let clip = |denoise: Option<AudioDenoise>| AudioMixClip {
             path: src.clone(),
-            position_secs: 0.0,
-            source_in_secs: 0.0,
-            source_out_secs: 4.0,
+            start_us: 0,
+            source_in_us: 0,
+            source_out_us: 4000000,
             gain_db: 0.0,
-            fade_in_secs: 0.0,
-            fade_out_secs: 0.0,
+            fade_in_us: 0,
+            fade_out_us: 0,
             role: None,
             speed: 1.0,
             effects: Vec::new(),
@@ -684,7 +684,7 @@ mod tests {
         };
         let floor = |denoise: Option<AudioDenoise>, name: &str| -> f64 {
             let out = dir.join(name);
-            mix_timeline_audio(&[clip(denoise)], 44_100, 4.0, &out, None).unwrap();
+            mix_timeline_audio(&[clip(denoise)], 44_100, 4000000, &out, None).unwrap();
             let pcm = decode_f32(&out);
             assert!(pcm.len() >= 44_100 * 4 - 100);
             rms(&pcm[44_100 * 3..44_100 * 4 - 2_000])

@@ -1,0 +1,194 @@
+{
+  "schema_version": 7,
+  "id": "77777777-7777-4777-8777-777777777777",
+  "name": "fixture v7",
+  "settings": {
+    "fps": 25.0,
+    "width": 1080,
+    "height": 1920,
+    "sample_rate": 48000,
+    "duck_db": -12.0
+  },
+  "media": [
+    {
+      "id": "a7000000-0000-4000-8000-000000000001",
+      "path": "media/a.mp4",
+      "kind": "video",
+      "duration_secs": 12.0,
+      "width": 1920,
+      "height": 1080,
+      "fps": 25.0
+    },
+    {
+      "id": "a7000000-0000-4000-8000-000000000002",
+      "path": "media/voice.wav",
+      "kind": "audio",
+      "duration_secs": 6.0,
+      "width": null,
+      "height": null,
+      "fps": null
+    },
+    {
+      "id": "a7000000-0000-4000-8000-000000000003",
+      "path": "",
+      "kind": "sequence",
+      "duration_secs": null,
+      "width": null,
+      "height": null,
+      "fps": null,
+      "sequence_id": "f7000000-0000-4000-8000-000000000001"
+    }
+  ],
+  "tracks": [
+    {
+      "id": "b7000000-0000-4000-8000-000000000001",
+      "kind": "video",
+      "name": "V1",
+      "clips": [
+        {
+          "type": "video",
+          "id": "c7000000-0000-4000-8000-000000000001",
+          "media_id": "a7000000-0000-4000-8000-000000000001",
+          "position_secs": 1.0004,
+          "source_in_secs": 0.0,
+          "source_out_secs": 2.0,
+          "gain_db": 0.0,
+          "enabled": true,
+          "outgoing_transition": { "kind": "crossfade", "duration_secs": 0.5 },
+          "keyframes": [
+            {
+              "property": "pos_x",
+              "keys": [
+                {
+                  "time_secs": 0.0,
+                  "value": 0.0,
+                  "easing": "bezier",
+                  "handle_left": [-0.1, 0.0],
+                  "handle_right": [0.2, 0.1]
+                },
+                { "time_secs": 1.0015, "value": 0.5, "easing": "linear" }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "video",
+          "id": "c7000000-0000-4000-8000-000000000002",
+          "media_id": "a7000000-0000-4000-8000-000000000001",
+          "position_secs": 2.9996,
+          "source_in_secs": 2.0,
+          "source_out_secs": 3.0,
+          "gain_db": 0.0,
+          "enabled": true
+        },
+        {
+          "type": "video",
+          "id": "c7000000-0000-4000-8000-000000000003",
+          "media_id": "a7000000-0000-4000-8000-000000000003",
+          "position_secs": 4.0,
+          "source_in_secs": 0.0,
+          "source_out_secs": 1.0,
+          "gain_db": 0.0,
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "id": "b7000000-0000-4000-8000-000000000002",
+      "kind": "video",
+      "name": "FX",
+      "clips": [
+        {
+          "type": "adjustment",
+          "id": "c7000000-0000-4000-8000-000000000004",
+          "position_secs": 0.5,
+          "duration_secs": 2.0,
+          "enabled": true,
+          "opacity": 0.5,
+          "effects": [
+            {
+              "id": "d7000000-0000-4000-8000-000000000001",
+              "effect_id": "builtin:color_adjust",
+              "enabled": true,
+              "params": { "saturation": 0.2 }
+            }
+          ],
+          "keyframes": [
+            {
+              "property": "opacity",
+              "keys": [
+                { "time_secs": 0.0, "value": 0.0, "easing": "linear" },
+                { "time_secs": 2.0, "value": 1.0, "easing": "linear" }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "b7000000-0000-4000-8000-000000000003",
+      "kind": "audio",
+      "name": "A1",
+      "clips": [
+        {
+          "type": "audio",
+          "id": "c7000000-0000-4000-8000-000000000005",
+          "media_id": "a7000000-0000-4000-8000-000000000002",
+          "position_secs": 0.0,
+          "source_in_secs": 0.0,
+          "source_out_secs": 4.0,
+          "gain_db": -3.0,
+          "enabled": true,
+          "fade_in_secs": 0.25,
+          "fade_out_secs": 0.5,
+          "speed": 1.0
+        }
+      ]
+    },
+    {
+      "id": "b7000000-0000-4000-8000-000000000004",
+      "kind": "caption",
+      "name": "Captions",
+      "clips": [
+        {
+          "type": "caption",
+          "id": "c7000000-0000-4000-8000-000000000006",
+          "text": "Hello",
+          "position_secs": 0.25,
+          "duration_secs": 1.75,
+          "style_id": "tiktok-bold-yellow"
+        }
+      ]
+    }
+  ],
+  "sequences": [
+    {
+      "id": "f7000000-0000-4000-8000-000000000001",
+      "name": "Inner",
+      "width": null,
+      "height": null,
+      "tracks": [
+        {
+          "id": "b7000000-0000-4000-8000-000000000011",
+          "kind": "video",
+          "name": "Inner V1",
+          "clips": [
+            {
+              "type": "video",
+              "id": "c7000000-0000-4000-8000-000000000011",
+              "media_id": "a7000000-0000-4000-8000-000000000001",
+              "position_secs": 0.0,
+              "source_in_secs": 3.0,
+              "source_out_secs": 4.5,
+              "gain_db": 0.0,
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "multicam_groups": [],
+  "asset_pack_paths": ["packs/starter"],
+  "wasm_plugin_paths": []
+}

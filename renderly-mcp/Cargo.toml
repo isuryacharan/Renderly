@@ -20,5 +20,5 @@ tokio-tungstenite = "0.26"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-renderly-core.workspace = true
+renderly-core = { workspace = true, features = ["schema"] }
 uuid.workspace = true

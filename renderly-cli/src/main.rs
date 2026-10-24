@@ -453,12 +453,35 @@ fn parent_dir(path: &std::path::Path) -> Option<PathBuf> {
 
 fn load_project(path: &PathBuf) -> Result<Project> {
     let data = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    Project::from_json(&data).with_context(|| format!("loading project {}", path.display()))
+    let mut project =
+        Project::from_json(&data).with_context(|| format!("loading project {}", path.display()))?;
+    // A v7 project listed pack folders in the file; v8 stores refs only. Install those folders
+    // into the user library on open (core's loader never touches the library).
+    let report = renderly_core::library::adopt_legacy_paths_default(
+        &mut project,
+        parent_dir(path).as_deref(),
+    );
+    if report.changed() {
+        eprintln!(
+            "note: installed {} pack folder(s) from this project into the user library ({})",
+            report.installed.len(),
+            report.installed.join(", ")
+        );
+    }
+    for (folder, why) in &report.kept {
+        eprintln!("note: {folder} stays in legacy_pack_paths: {why}");
+    }
+    Ok(project)
 }
 
-fn save_project(path: &PathBuf, project: &Project) -> Result<()> {
+fn save_project(path: &std::path::Path, project: &Project) -> Result<()> {
     let data = serde_json::to_string_pretty(project)?;
-    fs::write(path, data).with_context(|| format!("writing {}", path.display()))
+    renderly_core::project::backup::save_project_file(
+        path,
+        &data,
+        renderly_core::project::SCHEMA_VERSION,
+    )
+    .with_context(|| format!("writing {}", path.display()))
 }
 
 /// The edit-contract envelope flags, shared by `apply` and `apply-script`.
@@ -505,6 +528,7 @@ impl WriteFlags {
             dry_run: self.dry_run,
             request_id: self.request_id.clone(),
             allow_deletion,
+            deprecations: Vec::new(),
         })
     }
 }
@@ -546,8 +570,10 @@ fn run_write(
     path: &PathBuf,
     commands: Vec<Command>,
     flags: &WriteFlags,
+    deprecations: Vec<String>,
 ) -> Result<(WriteResult, Vec<String>)> {
-    let options = flags.options()?;
+    let mut options = flags.options()?;
+    options.deprecations = deprecations;
     let project = load_project(path)?;
     let mut state = load_state(path)?;
     // CLI calls are automation, so the deletion guard applies (`Caller::Agent`).
@@ -603,7 +629,7 @@ fn main() -> Result<()> {
             let project = Project::new(
                 name,
                 Settings {
-                    fps,
+                    fps: renderly_core::time::Fps::from_f64(fps),
                     width,
                     height,
                     sample_rate,
@@ -618,9 +644,11 @@ fn main() -> Result<()> {
             command_json,
             write,
         } => {
-            let cmd: Command =
+            let value: serde_json::Value =
                 serde_json::from_str(&command_json).context("parsing command JSON")?;
-            let (result, outcomes) = run_write(&path, vec![cmd], &write)?;
+            let (cmd, deprecations) = renderly_core::commands::parse_command_json(value)
+                .context("parsing command JSON")?;
+            let (result, outcomes) = run_write(&path, vec![cmd], &write, deprecations)?;
             print_write_result(&result, &outcomes)?;
         }
         CliCommand::ApplyScript {
@@ -630,11 +658,13 @@ fn main() -> Result<()> {
         } => {
             let script_data = fs::read_to_string(&script)
                 .with_context(|| format!("reading {}", script.display()))?;
-            let cmds: Vec<Command> =
+            let values: Vec<serde_json::Value> =
                 serde_json::from_str(&script_data).context("parsing script JSON")?;
+            let (cmds, deprecations) = renderly_core::commands::parse_commands_json(values)
+                .context("parsing script JSON")?;
             // The whole script is one batch: any failing command applies nothing, and the file
             // is only written when every command succeeded (docs/command-api.md).
-            let (result, outcomes) = run_write(&path, cmds, &write)?;
+            let (result, outcomes) = run_write(&path, cmds, &write, deprecations)?;
             print_write_result(&result, &outcomes)?;
         }
         CliCommand::Show { path } => {
@@ -775,7 +805,7 @@ mod tests {
         Project::new(
             "cli test",
             Settings {
-                fps: 30.0,
+                fps: renderly_core::time::Fps::new(30, 1),
                 width: 1920,
                 height: 1080,
                 sample_rate: 48000,
@@ -818,6 +848,7 @@ mod tests {
             &path,
             vec![cmd(r#"{"command":"AddTrack","kind":"video","name":"V1"}"#)],
             &WriteFlags::default(),
+            Vec::new(),
         )
         .unwrap();
         assert!(result.committed);
@@ -840,6 +871,7 @@ mod tests {
             &path,
             vec![cmd(r#"{"command":"AddTrack","kind":"video","name":"V1"}"#)],
             &flags,
+            Vec::new(),
         )
         .unwrap();
         assert!(!result.committed && result.dry_run);
@@ -853,20 +885,20 @@ mod tests {
     fn expected_revision_must_match_the_saved_revision() {
         let path = fresh_project("expected");
         let add = || cmd(r#"{"command":"AddTrack","kind":"video","name":"V1"}"#);
-        run_write(&path, vec![add()], &WriteFlags::default()).unwrap();
+        run_write(&path, vec![add()], &WriteFlags::default(), Vec::new()).unwrap();
         // Revision is now 1; a write that read revision 0 is stale.
         let stale = WriteFlags {
             expected_revision: Some(0),
             ..WriteFlags::default()
         };
-        let err = run_write(&path, vec![add()], &stale).unwrap_err();
+        let err = run_write(&path, vec![add()], &stale, Vec::new()).unwrap_err();
         assert!(err.to_string().contains("revision_conflict"), "{err}");
         assert_eq!(load_project(&path).unwrap().tracks.len(), 1);
         let fresh = WriteFlags {
             expected_revision: Some(1),
             ..WriteFlags::default()
         };
-        assert!(run_write(&path, vec![add()], &fresh).is_ok());
+        assert!(run_write(&path, vec![add()], &fresh, Vec::new()).is_ok());
         cleanup(&path);
     }
 
@@ -878,8 +910,8 @@ mod tests {
             ..WriteFlags::default()
         };
         let add = || cmd(r#"{"command":"AddTrack","kind":"video","name":"V1"}"#);
-        run_write(&path, vec![add()], &flags).unwrap();
-        let (replay, _) = run_write(&path, vec![add()], &flags).unwrap();
+        run_write(&path, vec![add()], &flags, Vec::new()).unwrap();
+        let (replay, _) = run_write(&path, vec![add()], &flags, Vec::new()).unwrap();
         assert!(replay.replayed);
         assert_eq!(load_project(&path).unwrap().tracks.len(), 1);
         cleanup(&path);
@@ -892,6 +924,7 @@ mod tests {
             &path,
             vec![cmd(r#"{"command":"CreateSequence","name":"Inner"}"#)],
             &WriteFlags::default(),
+            Vec::new(),
         )
         .unwrap();
         let project = load_project(&path).unwrap();
@@ -903,7 +936,7 @@ mod tests {
         };
 
         // No allow flags: refused, with the error naming the deletion rule.
-        let err = run_write(&path, vec![delete()], &WriteFlags::default()).unwrap_err();
+        let err = run_write(&path, vec![delete()], &WriteFlags::default(), Vec::new()).unwrap_err();
         assert!(err.to_string().contains("deletion_not_allowed"), "{err}");
 
         // The sequence's own id alone misses its media item: still refused.
@@ -912,7 +945,7 @@ mod tests {
             allow_deletion_ids: vec![sequence.clone()],
             ..WriteFlags::default()
         };
-        assert!(run_write(&path, vec![delete()], &partial).is_err());
+        assert!(run_write(&path, vec![delete()], &partial, Vec::new()).is_err());
 
         // The exact set (the sequence and its media item) is accepted.
         let media = project
@@ -926,7 +959,7 @@ mod tests {
             allow_deletion_ids: vec![sequence.clone(), media.to_string()],
             ..WriteFlags::default()
         };
-        let (result, _) = run_write(&path, vec![delete()], &exact).unwrap();
+        let (result, _) = run_write(&path, vec![delete()], &exact, Vec::new()).unwrap();
         assert!(result.committed);
         assert!(load_project(&path).unwrap().sequences.is_empty());
         cleanup(&path);

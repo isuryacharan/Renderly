@@ -1,12 +1,15 @@
 // Pure geometry helpers shared by renderer.ts (drawing) and interactions.ts (hit-testing) —
 // keeping both in agreement about where things are on the canvas.
 
+import { pxToUs, usToPx, US_PER_SEC } from "../lib/time";
 import {
-  clipDurationSecs,
+  clipDurationUs,
+  clipEndUs,
   type Clip,
   type ClipTransition,
   type MediaClip,
   type Project,
+  type TextClip,
   type Track,
 } from "../lib/types";
 
@@ -20,27 +23,30 @@ export const CONTENT_PAD_X = 8;
 export const CLIP_TOP_PAD = 6;
 export const CLIP_BOTTOM_PAD = 4;
 
-export function clipLeft(secs: number, pxPerSec: number, scrollX = 0): number {
-  return TRACK_LABEL_W + CONTENT_PAD_X + secs * pxPerSec - scrollX;
+/// Canvas x of timeline time `us` (µs). `pxPerSec` is the zoom (a UI scale, not stored time).
+export function clipLeft(us: number, pxPerSec: number, scrollX = 0): number {
+  return TRACK_LABEL_W + CONTENT_PAD_X + usToPx(us, pxPerSec) - scrollX;
 }
 
-export function secsFromCanvasX(x: number, pxPerSec: number, scrollX = 0): number {
-  return Math.max(0, (x - TRACK_LABEL_W - CONTENT_PAD_X + scrollX) / pxPerSec);
+/// Timeline time (integer µs, rounded) under canvas x, clamped at 0.
+export function usFromCanvasX(x: number, pxPerSec: number, scrollX = 0): number {
+  return Math.max(0, pxToUs(x - TRACK_LABEL_W - CONTENT_PAD_X + scrollX, pxPerSec));
 }
 
-export function timelineDuration(project: Project): number {
+/// End of the last clip in µs, at least one second so an empty timeline still has a ruler.
+export function timelineDurationUs(project: Project): number {
   let end = 0;
   for (const track of project.tracks) {
     for (const clip of track.clips) {
-      end = Math.max(end, clip.position_secs + clipDurationSecs(clip));
+      end = Math.max(end, clipEndUs(clip));
     }
   }
-  return Math.max(end, 1);
+  return Math.max(end, US_PER_SEC);
 }
 
 export function contentWidthPx(project: Project, pxPerSec: number): number {
   // Extra pad so the playhead / last clip aren't flush against the right edge.
-  return TRACK_LABEL_W + CONTENT_PAD_X + timelineDuration(project) * pxPerSec + 200;
+  return TRACK_LABEL_W + CONTENT_PAD_X + usToPx(timelineDurationUs(project), pxPerSec) + 200;
 }
 
 export function contentHeightPx(trackCount: number): number {
@@ -53,11 +59,6 @@ export function maxScrollX(project: Project, pxPerSec: number, viewportW: number
 
 export function maxScrollY(trackCount: number, viewportH: number): number {
   return Math.max(0, contentHeightPx(trackCount) - viewportH);
-}
-
-export function snapToFrame(secs: number, fps: number): number {
-  const f = Math.max(1, fps);
-  return Math.max(0, Math.round(secs * f) / f);
 }
 
 export function trackLayout(_viewportH: number, _trackCount: number, scrollY = 0) {
@@ -211,8 +212,8 @@ export function hitTestClip(
     const y0 = laneTop(row);
     if (y < y0 || y > y0 + trackH) continue;
     for (const clip of track.clips) {
-      const cx = clipLeft(clip.position_secs, pxPerSec, scrollX);
-      const cw = clipDurationSecs(clip) * pxPerSec;
+      const cx = clipLeft(clip.start_us, pxPerSec, scrollX);
+      const cw = usToPx(clipDurationUs(clip), pxPerSec);
       if (y < y0 + CLIP_TOP_PAD || x < cx || x > cx + cw) continue;
       if (x <= cx + TRIM_HANDLE_PX) {
         return { trackId: track.id, clip, trackIndex, edge: "left" };
@@ -226,14 +227,22 @@ export function hitTestClip(
   return null;
 }
 
-/// Next video clip on the same track at or after `clip`'s timeline end (C4 junction target).
-export function nextVideoClipOnTrack(track: Track, clip: MediaClip): MediaClip | null {
-  const end = clip.position_secs + clipDurationSecs(clip);
+/// A clip that can carry an outgoing transition: a video clip or a title.
+export type TransitionLayer = MediaClip | TextClip;
+
+export function isTransitionLayer(clip: Clip): clip is TransitionLayer {
+  return clip.type === "video" || clip.type === "text";
+}
+
+/// Next enabled video clip or title on the same track at or after `clip`'s timeline end (C4
+/// junction target; the same pairing core's `SetClipTransition` validates against).
+export function nextVideoClipOnTrack(track: Track, clip: TransitionLayer): TransitionLayer | null {
+  const end = clip.start_us + clipDurationUs(clip);
   return (
     [...track.clips]
-      .filter((c): c is MediaClip => c.type === "video")
-      .sort((a, b) => a.position_secs - b.position_secs)
-      .find((c) => c.id !== clip.id && c.position_secs >= end - 1e-6) ?? null
+      .filter((c): c is TransitionLayer => isTransitionLayer(c) && c.enabled)
+      .sort((a, b) => a.start_us - b.start_us)
+      .find((c) => c.id !== clip.id && c.start_us >= end - 1) ?? null
   );
 }
 
@@ -241,7 +250,7 @@ export interface TransitionJunction {
   trackId: string;
   trackIndex: number;
   outgoingClipId: string;
-  junctionSecs: number;
+  junctionUs: number;
   junctionX: number;
   laneY: number;
   laneH: number;
@@ -271,22 +280,20 @@ export function listTransitionJunctions(
     const bodyY = y + CLIP_TOP_PAD;
     const bodyH = trackH - CLIP_TOP_PAD - CLIP_BOTTOM_PAD;
 
-    const videos = [...track.clips]
-      .filter((c): c is MediaClip => c.type === "video")
-      .sort((a, b) => a.position_secs - b.position_secs);
+    const videos = [...track.clips].filter(isTransitionLayer).sort((a, b) => a.start_us - b.start_us);
 
     for (const clip of videos) {
       const next = nextVideoClipOnTrack(track, clip);
       if (!next) continue;
-      const junctionSecs = clip.position_secs + clipDurationSecs(clip);
-      const junctionX = clipLeft(junctionSecs, pxPerSec, scrollX);
+      const junctionUs = clip.start_us + clipDurationUs(clip);
+      const junctionX = clipLeft(junctionUs, pxPerSec, scrollX);
       const transition = clip.outgoing_transition ?? null;
-      const overlapPx = transition ? Math.max(4, transition.duration_secs * pxPerSec) : 0;
+      const overlapPx = transition ? Math.max(4, usToPx(transition.duration_us, pxPerSec)) : 0;
       out.push({
         trackId: track.id,
         trackIndex,
         outgoingClipId: clip.id,
-        junctionSecs,
+        junctionUs,
         junctionX,
         laneY: y,
         laneH: trackH,

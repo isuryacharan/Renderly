@@ -32,7 +32,7 @@ use tauri::{AppHandle, Emitter};
 /// Emitted ~30 Hz while playing, and once on seek/pause/EOF.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PlaybackTick {
-    pub time_secs: f64,
+    pub time_us: i64,
     pub playing: bool,
 }
 
@@ -40,7 +40,7 @@ pub struct PlaybackTick {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PlaybackStateEvent {
     pub playing: bool,
-    pub time_secs: f64,
+    pub time_us: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -52,8 +52,8 @@ const TICK_INTERVAL: Duration = Duration::from_millis(33);
 
 struct PlaySession {
     stop: Arc<AtomicUsize>, // 0 = running, 1 = stop requested
-    seek: Arc<Mutex<Option<f64>>>,
-    current_time: Arc<Mutex<f64>>,
+    seek: Arc<Mutex<Option<i64>>>,
+    current_time: Arc<Mutex<i64>>,
     /// Shared with the playback thread; `update_live_project` swaps its contents so an
     /// edit made while playing shows up in the audio premix without stopping the sink or
     /// reopening decoders — see `update_live_project`'s doc comment.
@@ -67,7 +67,7 @@ struct PlaySession {
 /// worker wakeups.
 struct ScrubRequest {
     project: Arc<Project>,
-    time_secs: f64,
+    time_us: i64,
     /// `play_epoch` at submission time — lets the scrub worker detect a `play()` call that
     /// started after this request was queued and skip playing a now-stale blip.
     epoch: u64,
@@ -113,7 +113,7 @@ impl PlaybackEngine {
     }
 
     /// Stop playback and return the time to resume from.
-    pub fn pause(&self) -> f64 {
+    pub fn pause(&self) -> i64 {
         // See the identical note in `stop()` above — this early `let` is load-bearing,
         // not stylistic.
         let session = self.session.lock().take();
@@ -123,7 +123,7 @@ impl PlaybackEngine {
             let _ = session.thread.join();
             t
         } else {
-            0.0
+            0
         }
     }
 
@@ -137,10 +137,10 @@ impl PlaybackEngine {
     /// arriving before the loop observes an older one simply replaces it). Returns `false`
     /// if nothing is playing (paused-state seeks are handled entirely by the webview
     /// canvas's own scrub redraw).
-    pub fn seek_while_playing(&self, time_secs: f64) -> bool {
+    pub fn seek_while_playing(&self, time_us: i64) -> bool {
         let guard = self.session.lock();
         if let Some(session) = guard.as_ref() {
-            *session.seek.lock() = Some(time_secs);
+            *session.seek.lock() = Some(time_us);
             true
         } else {
             false
@@ -167,30 +167,30 @@ impl PlaybackEngine {
         }
     }
 
-    pub fn play(&self, app: AppHandle, project: Arc<Project>, start_secs: f64) {
+    pub fn play(&self, app: AppHandle, project: Arc<Project>, start_us: i64) {
         self.stop();
         // Claims this playback generation — see `ScrubRequest`'s `epoch` doc comment.
         self.play_epoch.fetch_add(1, Ordering::SeqCst);
 
         let duration = timeline_duration(&project);
-        let fps = project.settings.fps.max(1.0);
+        let fps = project.settings.fps.as_f64().max(1.0);
 
         let stop = Arc::new(AtomicUsize::new(0));
-        let seek = Arc::new(Mutex::new(None::<f64>));
-        let current_time = Arc::new(Mutex::new(start_secs.min(duration.max(0.0))));
+        let seek = Arc::new(Mutex::new(None::<i64>));
+        let current_time = Arc::new(Mutex::new(start_us.min(duration.max(0))));
         let project = Arc::new(Mutex::new(project));
 
         let stop_clone = Arc::clone(&stop);
         let seek_clone = Arc::clone(&seek);
         let current_time_clone = Arc::clone(&current_time);
         let project_clone = Arc::clone(&project);
-        let start_secs = start_secs.max(0.0);
+        let start_us = start_us.max(0);
 
         let thread = thread::spawn(move || {
             run_playback_loop(
                 app,
                 project_clone,
-                start_secs,
+                start_us,
                 duration,
                 fps,
                 stop_clone,
@@ -208,12 +208,12 @@ impl PlaybackEngine {
         });
     }
 
-    /// Play a short audio blip at `time_secs` (paused-state scrub feedback); coalesced
+    /// Play a short audio blip at `time_us` (paused-state scrub feedback); coalesced
     /// with any other pending request.
-    pub fn request_scrub_audio(&self, project: Arc<Project>, time_secs: f64) {
+    pub fn request_scrub_audio(&self, project: Arc<Project>, time_us: i64) {
         *self.scrub_pending.lock() = Some(ScrubRequest {
             project,
-            time_secs,
+            time_us,
             epoch: self.play_epoch.load(Ordering::SeqCst),
         });
     }
@@ -234,21 +234,21 @@ impl Drop for TempDirGuard {
 fn run_playback_loop(
     app: AppHandle,
     project: Arc<Mutex<Arc<Project>>>,
-    mut start_secs: f64,
-    duration: f64,
+    mut start_us: i64,
+    duration: i64,
     fps: f64,
     stop: Arc<AtomicUsize>,
-    seek: Arc<Mutex<Option<f64>>>,
-    current_time: Arc<Mutex<f64>>,
+    seek: Arc<Mutex<Option<i64>>>,
+    current_time: Arc<Mutex<i64>>,
 ) {
     // The webview decodes/presents video itself (see this module's doc comment) — this
     // loop's only job is audio pacing (premix + rodio sink) and `playback:tick` emission.
-    let finish = |t: f64| {
+    let finish = |t: i64| {
         *current_time.lock() = t;
         let _ = app.emit(
             "playback:tick",
             PlaybackTick {
-                time_secs: t,
+                time_us: t,
                 playing: false,
             },
         );
@@ -256,18 +256,18 @@ fn run_playback_loop(
             "playback:state",
             PlaybackStateEvent {
                 playing: false,
-                time_secs: t,
+                time_us: t,
             },
         );
     };
 
     'restart: loop {
         if stop.load(Ordering::SeqCst) != 0 {
-            finish(start_secs);
+            finish(start_us);
             return;
         }
-        if start_secs >= duration {
-            finish(duration.max(0.0));
+        if start_us >= duration {
+            finish(duration.max(0));
             return;
         }
 
@@ -275,7 +275,7 @@ fn run_playback_loop(
         // (~100–300 ms) instead of waiting on the entire remaining timeline. Chunk 0 is
         // mixed on this thread; later chunks are mixed on a background worker and
         // appended to the same rodio Sink (still the master clock via get_pos()).
-        const AUDIO_CHUNK_SECS: f64 = 5.0;
+        const AUDIO_CHUNK_US: i64 = 5_000_000;
         let audio_dir =
             std::env::temp_dir().join(format!("renderly-playback-{}", uuid::Uuid::new_v4()));
         let _ = std::fs::create_dir_all(&audio_dir);
@@ -284,13 +284,13 @@ fn run_playback_loop(
         // sites could.
         let _audio_dir_guard = TempDirGuard(audio_dir.clone());
 
-        let remaining = (duration - start_secs).max(0.0);
-        let first_chunk = remaining.min(AUDIO_CHUNK_SECS);
+        let remaining = (duration - start_us).max(0);
+        let first_chunk = remaining.min(AUDIO_CHUNK_US);
         let first_wav = audio_dir.join("audio_0.wav");
         let project_snap = project.lock().clone();
         let has_audio = match mix_timeline_audio_range_to_file(
             &project_snap,
-            start_secs,
+            start_us,
             first_chunk,
             &first_wav,
         ) {
@@ -326,13 +326,13 @@ fn run_playback_loop(
             let dir = audio_dir.clone();
             let stop_flag = Arc::clone(&stop);
             Some(thread::spawn(move || {
-                let mut chunk_start = start_secs + first_chunk;
+                let mut chunk_start = start_us + first_chunk;
                 let mut idx = 1u32;
-                while chunk_start < duration - 1e-6 {
+                while chunk_start < duration - 1 {
                     if stop_flag.load(Ordering::SeqCst) != 0 {
                         break;
                     }
-                    let chunk_len = (duration - chunk_start).min(AUDIO_CHUNK_SECS);
+                    let chunk_len = (duration - chunk_start).min(AUDIO_CHUNK_US);
                     let path = dir.join(format!("audio_{idx}.wav"));
                     match mix_timeline_audio_range_to_file(
                         &project_snap,
@@ -403,11 +403,11 @@ fn run_playback_loop(
                 if let Some(h) = audio_worker {
                     let _ = h.join();
                 }
-                start_secs = new_time.clamp(0.0, duration.max(0.0));
+                start_us = new_time.clamp(0, duration.max(0));
                 let _ = app.emit(
                     "playback:tick",
                     PlaybackTick {
-                        time_secs: start_secs,
+                        time_us: start_us,
                         playing: true,
                     },
                 );
@@ -421,7 +421,7 @@ fn run_playback_loop(
             } else {
                 wall_clock_start.elapsed().as_secs_f64()
             };
-            let t = start_secs + elapsed;
+            let t = start_us + (elapsed * 1_000_000.0).round() as i64;
 
             if t >= duration {
                 if let Some(sink) = &sink {
@@ -431,7 +431,7 @@ fn run_playback_loop(
                 if let Some(h) = audio_worker {
                     let _ = h.join();
                 }
-                finish(duration.max(0.0));
+                finish(duration.max(0));
                 return;
             }
 
@@ -441,7 +441,7 @@ fn run_playback_loop(
                 let _ = app.emit(
                     "playback:tick",
                     PlaybackTick {
-                        time_secs: t,
+                        time_us: t,
                         playing: true,
                     },
                 );
@@ -467,7 +467,7 @@ fn run_scrub_worker(pending: Arc<Mutex<Option<ScrubRequest>>>, play_epoch: Arc<A
             continue;
         }
 
-        if let Ok(wav) = mix_timeline_audio_segment(&req.project, req.time_secs, 0.08) {
+        if let Ok(wav) = mix_timeline_audio_segment(&req.project, req.time_us, 80_000) {
             if !wav.is_empty() {
                 // Detached: plays out on its own thread so the scrub worker is free to
                 // pick up the next coalesced request immediately.

@@ -6,6 +6,8 @@ import {
   clipIdsTouchedByEdit,
   describeEdit,
   humanizeCommand,
+  isEditTool,
+  isPerceptionTool,
   lastSuccessfulEditId,
   reduceAgentEvent,
   reducePermissionAnswered,
@@ -221,6 +223,16 @@ describe("edit results as action lines", () => {
     );
     expect(activityLabel(running.items)).toBe("Looking at the frame…");
     expect(activityLabel([])).toBeNull();
+  });
+
+  it("treats the transcript tool as a read-only perception tool", () => {
+    expect(isPerceptionTool("mcp__renderly__transcript")).toBe(true);
+    expect(isEditTool("mcp__renderly__transcript")).toBe(false);
+    const running = reduceAgentEvent(
+      { ...EMPTY_AGENT_CHAT, sessionId: SID, status: "running" },
+      { session_id: SID, type: "tool_started", id: "p3", name: "mcp__renderly__transcript", input: {} },
+    );
+    expect(activityLabel(running.items)).toBe("Reading the transcript…");
   });
 
   it("finds the clips an edit touched from short ids in its inputs", () => {

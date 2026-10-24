@@ -18,10 +18,10 @@ Use the `renderly` MCP tools: `get_project`, `detect_silence`, `detect_scenes`, 
 
 ## Procedure
 
-1. **Measure.** `get_project`: the timeline's length is the largest `position_secs + duration` of
-   the clips on the root tracks (clip duration = `source_out_secs - source_in_secs` divided by
-   `speed`). Note the target `N` and the gap `G = length - N`. If `G <= 0`, say so and stop.
-2. **Gather candidates.** For each media clip, call `detect_silence` (`min_duration_secs` 0.8, so
+1. **Measure.** `get_project`: the timeline's length is the largest `start_us + duration` of
+   the clips on the root tracks (clip duration = `source_out_us - source_in_us` divided by
+   `speed`; all times are integer microseconds). Note the target `N` and the gap `G = length - N`. If `G <= 0`, say so and stop.
+2. **Gather candidates.** For each media clip, call `detect_silence` (`min_duration` `"0.8s"`, so
    only real pauses are candidates). Optionally call `detect_scenes` on the same media: a cut at a
    scene change is a good place to join. Use `get_transcript` when content matters (cut silences
    between sentences, not inside them).

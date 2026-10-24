@@ -10,16 +10,16 @@ use crate::project::{AdjustmentClip, Clip, Id, Project, TrackKind};
 pub(super) fn add_adjustment_layer(
     project: &mut Project,
     track_id: Id,
-    position_secs: f64,
-    duration_secs: f64,
+    start_us: i64,
+    duration_us: i64,
 ) -> Result<CommandOutcome, CommandError> {
-    if !position_secs.is_finite() || position_secs < 0.0 {
+    if start_us < 0 {
         return Err(CommandError::InvalidAdjustment(
-            "position_secs must be a finite number >= 0".into(),
+            "start_us must be a finite number >= 0".into(),
         ));
     }
-    if !duration_secs.is_finite() || duration_secs <= 0.0 {
-        return Err(CommandError::InvalidDuration(duration_secs));
+    if duration_us <= 0 {
+        return Err(CommandError::InvalidDuration(duration_us));
     }
     let track = project
         .find_track_mut(track_id)
@@ -31,9 +31,9 @@ pub(super) fn add_adjustment_layer(
             TrackKind::Video,
         ));
     }
-    check_no_overlap(track, position_secs, duration_secs, None)?;
+    check_no_overlap(track, start_us, duration_us, None)?;
 
-    let clip = AdjustmentClip::new(position_secs, duration_secs);
+    let clip = AdjustmentClip::new(start_us, duration_us);
     let clip_id = clip.id;
     track.clips.push(Clip::Adjustment(clip));
     Ok(CommandOutcome::ClipAdded { clip_id })
@@ -43,22 +43,22 @@ pub(super) fn set_adjustment_layer(
     project: &mut Project,
     track_id: Id,
     clip_id: Id,
-    position_secs: Option<f64>,
-    duration_secs: Option<f64>,
+    start_us: Option<i64>,
+    duration_us: Option<i64>,
     opacity: Option<f64>,
 ) -> Result<CommandOutcome, CommandError> {
-    if position_secs.is_none() && duration_secs.is_none() && opacity.is_none() {
+    if start_us.is_none() && duration_us.is_none() && opacity.is_none() {
         return Err(CommandError::SetAdjustmentLayerRequiresChange);
     }
-    if let Some(p) = position_secs {
-        if !p.is_finite() || p < 0.0 {
+    if let Some(p) = start_us {
+        if p < 0 {
             return Err(CommandError::InvalidAdjustment(
-                "position_secs must be a finite number >= 0".into(),
+                "start_us must be a finite number >= 0".into(),
             ));
         }
     }
-    if let Some(d) = duration_secs {
-        if !d.is_finite() || d <= 0.0 {
+    if let Some(d) = duration_us {
+        if d <= 0 {
             return Err(CommandError::InvalidDuration(d));
         }
     }
@@ -78,8 +78,8 @@ pub(super) fn set_adjustment_layer(
         .ok_or(CommandError::ClipNotFound(clip_id, track_id))?
         .as_adjustment()
         .ok_or(CommandError::NotAdjustmentClip(clip_id))?;
-    let new_position = position_secs.unwrap_or(existing.position_secs);
-    let new_duration = duration_secs.unwrap_or(existing.duration_secs);
+    let new_position = start_us.unwrap_or(existing.start_us);
+    let new_duration = duration_us.unwrap_or(existing.duration_us);
     check_no_overlap(track, new_position, new_duration, Some(clip_id))?;
 
     let track = project
@@ -91,8 +91,8 @@ pub(super) fn set_adjustment_layer(
         .find(|c| c.id() == clip_id)
         .and_then(Clip::as_adjustment_mut)
         .ok_or(CommandError::NotAdjustmentClip(clip_id))?;
-    adj.position_secs = new_position;
-    adj.duration_secs = new_duration;
+    adj.start_us = new_position;
+    adj.duration_us = new_duration;
     if let Some(o) = opacity {
         adj.opacity = o;
     }
@@ -101,12 +101,13 @@ pub(super) fn set_adjustment_layer(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{apply_command, Command, CommandError, CommandOutcome};
+    use super::super::{apply_command, Command, CommandError, CommandOutcome, EffectSpec};
     use super::*;
     use crate::project::{
-        AnimProperty, ClipMask, ClipMaskKind, EffectInstance, Keyframe, KeyframeTrack, MediaItem,
-        MediaKind, Settings, Track,
+        AnimProperty, ClipMask, ClipMaskKind, Keyframe, KeyframeTrack, MediaItem, MediaKind,
+        Settings, Track,
     };
+    use crate::time::Time;
 
     fn project_with_video_track() -> (Project, Id) {
         let mut p = Project::new("adj-tests", Settings::default());
@@ -121,8 +122,8 @@ mod tests {
             p,
             Command::AddAdjustmentLayer {
                 track_id,
-                position_secs: pos,
-                duration_secs: dur,
+                start: Time::Us((pos * 1e6).round() as i64),
+                duration: Time::Us((dur * 1e6).round() as i64),
             },
         )
         .unwrap()
@@ -132,13 +133,8 @@ mod tests {
         }
     }
 
-    fn effect(effect_id: &str) -> EffectInstance {
-        EffectInstance {
-            id: Id::new_v4(),
-            effect_id: effect_id.into(),
-            enabled: true,
-            params: Default::default(),
-        }
+    fn effect(item_ref: &str) -> EffectSpec {
+        EffectSpec::new(item_ref)
     }
 
     fn adjustment(p: &Project, track: Id, clip: Id) -> &AdjustmentClip {
@@ -155,11 +151,11 @@ mod tests {
         let (mut p, t) = project_with_video_track();
         let c = add(&mut p, t, 4.0, 6.0);
         let a = adjustment(&p, t, c);
-        assert_eq!((a.position_secs, a.duration_secs), (4.0, 6.0));
+        assert_eq!((a.start_us, a.duration_us), (4000000, 6000000));
         assert!(a.enabled);
         assert_eq!(a.opacity, 1.0);
         assert!(a.effects.is_empty() && a.mask.is_none() && a.keyframes.is_empty());
-        assert_eq!(p.find_track(t).unwrap().clips[0].end_secs(), 10.0);
+        assert_eq!(p.find_track(t).unwrap().clips[0].end_us(), 10000000);
     }
 
     #[test]
@@ -172,8 +168,8 @@ mod tests {
                 &mut p,
                 Command::AddAdjustmentLayer {
                     track_id: t,
-                    position_secs: 4.0,
-                    duration_secs: 2.0
+                    start: Time::Us(4000000),
+                    duration: Time::Us(2000000),
                 }
             ),
             Err(CommandError::Overlap(..))
@@ -187,8 +183,8 @@ mod tests {
                 &mut p,
                 Command::AddAdjustmentLayer {
                     track_id: aid,
-                    position_secs: 0.0,
-                    duration_secs: 1.0
+                    start: Time::Us(0),
+                    duration: Time::Us(1000000),
                 }
             ),
             Err(CommandError::TrackKindMismatch(..))
@@ -199,8 +195,8 @@ mod tests {
                 &mut p,
                 Command::AddAdjustmentLayer {
                     track_id: Id::new_v4(),
-                    position_secs: 0.0,
-                    duration_secs: 1.0
+                    start: Time::Us(0),
+                    duration: Time::Us(1000000),
                 }
             ),
             Err(CommandError::TrackNotFound(_))
@@ -210,8 +206,8 @@ mod tests {
                 &mut p,
                 Command::AddAdjustmentLayer {
                     track_id: t,
-                    position_secs: 10.0,
-                    duration_secs: 0.0
+                    start: Time::Us(10000000),
+                    duration: Time::Us(0),
                 }
             ),
             Err(CommandError::InvalidDuration(_))
@@ -221,8 +217,8 @@ mod tests {
                 &mut p,
                 Command::AddAdjustmentLayer {
                     track_id: t,
-                    position_secs: -1.0,
-                    duration_secs: 1.0
+                    start: Time::Us(-1_000_000),
+                    duration: Time::Us(1000000),
                 }
             ),
             Err(CommandError::InvalidAdjustment(_))
@@ -239,24 +235,26 @@ mod tests {
             Command::SetAdjustmentLayer {
                 track_id: t,
                 clip_id: c,
-                position_secs: Some(1.0),
-                duration_secs: Some(3.0),
+                start: Some(Time::Us(1000000)),
+                duration: Some(Time::Us(3000000)),
                 opacity: Some(0.25),
             },
         )
         .unwrap();
         let a = adjustment(&p, t, c);
         assert_eq!(
-            (a.position_secs, a.duration_secs, a.opacity),
-            (1.0, 3.0, 0.25)
+            (a.start_us, a.duration_us, a.opacity),
+            (1000000, 3000000, 0.25)
         );
 
-        let set = |position_secs, duration_secs, opacity| Command::SetAdjustmentLayer {
-            track_id: t,
-            clip_id: c,
-            position_secs,
-            duration_secs,
-            opacity,
+        let set = |start_us: Option<i64>, duration_us: Option<i64>, opacity: Option<f64>| {
+            Command::SetAdjustmentLayer {
+                track_id: t,
+                clip_id: c,
+                start: start_us.map(Time::Us),
+                duration: duration_us.map(Time::Us),
+                opacity,
+            }
         };
         // At least one field.
         assert!(matches!(
@@ -270,7 +268,7 @@ mod tests {
         ));
         // Growing into the neighbour.
         assert!(matches!(
-            apply_command(&mut p, set(None, Some(10.0), None)),
+            apply_command(&mut p, set(None, Some(10000000), None)),
             Err(CommandError::Overlap(..))
         ));
         // Unknown clip.
@@ -280,9 +278,9 @@ mod tests {
                 Command::SetAdjustmentLayer {
                     track_id: t,
                     clip_id: Id::new_v4(),
-                    position_secs: None,
-                    duration_secs: None,
-                    opacity: Some(0.5)
+                    start: None,
+                    duration: None,
+                    opacity: Some(0.5),
                 }
             ),
             Err(CommandError::ClipNotFound(..))
@@ -297,7 +295,7 @@ mod tests {
             id: media,
             path: "a.mp4".into(),
             kind: MediaKind::Video,
-            duration_secs: Some(10.0),
+            duration_us: Some(10000000),
             width: Some(10),
             height: Some(10),
             fps: Some(30.0),
@@ -308,9 +306,9 @@ mod tests {
             Command::AddClip {
                 track_id: t,
                 media_id: media,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 1.0,
+                start: Time::Us(0),
+                source_in: Time::Us(0),
+                source_out: Time::Us(1000000),
             },
         )
         .unwrap() else {
@@ -322,9 +320,9 @@ mod tests {
                 Command::SetAdjustmentLayer {
                     track_id: t,
                     clip_id,
-                    position_secs: None,
-                    duration_secs: None,
-                    opacity: Some(0.5)
+                    start: None,
+                    duration: None,
+                    opacity: Some(0.5),
                 }
             ),
             Err(CommandError::NotAdjustmentClip(id)) if id == clip_id
@@ -339,22 +337,14 @@ mod tests {
         // Effects: builtin ok, validated like media clips.
         apply_command(
             &mut p,
-            Command::SetClipEffects {
-                track_id: t,
-                clip_id: c,
-                effects: vec![effect("builtin:blur")],
-            },
+            Command::set_effects(t, c, vec![effect("builtin:blur@1")]),
         )
         .unwrap();
         assert_eq!(adjustment(&p, t, c).effects.len(), 1);
         assert!(matches!(
             apply_command(
                 &mut p,
-                Command::SetClipEffects {
-                    track_id: t,
-                    clip_id: c,
-                    effects: vec![effect("builtin:nope")]
-                }
+                Command::set_effects(t, c, vec![effect("builtin:nope@1")])
             ),
             Err(CommandError::InvalidEffects(_))
         ));
@@ -383,15 +373,9 @@ mod tests {
         assert_eq!(adjustment(&p, t, c).mask, Some(mask));
 
         // Keyframes: opacity only.
-        let kf = |property| KeyframeTrack {
-            property,
-            keys: vec![Keyframe {
-                time_secs: 0.0,
-                value: 0.5,
-                easing: Default::default(),
-                handle_left: None,
-                handle_right: None,
-            }],
+        let kf = |property: AnimProperty| KeyframeTrack {
+            property: property.into(),
+            keys: vec![Keyframe::new(0, 0.5).with_easing(Default::default())],
         };
         apply_command(
             &mut p,
@@ -403,7 +387,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(adjustment(&p, t, c).keyframes.len(), 1);
-        assert!((adjustment(&p, t, c).opacity_at(1.0) - 0.5).abs() < 1e-9);
+        assert!((adjustment(&p, t, c).opacity_at(1000000) - 0.5).abs() < 1e-9);
         assert!(matches!(
             apply_command(
                 &mut p,
@@ -442,15 +426,11 @@ mod tests {
             r#"{"id":"invert","name":"Invert","wasm":"invert.wasm"}"#,
         )
         .unwrap();
-        p.wasm_plugin_paths.push(dir.clone());
+        p.legacy_pack_paths.push(dir.clone());
 
         let res = apply_command(
             &mut p,
-            Command::SetClipEffects {
-                track_id: t,
-                clip_id: c,
-                effects: vec![effect("wasm:invert")],
-            },
+            Command::set_effects(t, c, vec![effect("wasm:invert")]),
         );
         std::fs::remove_dir_all(&dir).ok();
         match res {
@@ -472,8 +452,8 @@ mod tests {
                 Command::TrimClip {
                     track_id: t,
                     clip_id: c,
-                    new_source_in_secs: Some(1.0),
-                    new_source_out_secs: None
+                    source_in: Some(Time::Us(1000000)),
+                    source_out: None,
                 }
             ),
             Err(CommandError::TrimAdjustment(id)) if id == c
@@ -489,11 +469,7 @@ mod tests {
         let c = add(&mut p, t, 0.0, 4.0);
         apply_command(
             &mut p,
-            Command::SetClipEffects {
-                track_id: t,
-                clip_id: c,
-                effects: vec![effect("builtin:blur")],
-            },
+            Command::set_effects(t, c, vec![effect("builtin:blur@1")]),
         )
         .unwrap();
 
@@ -503,17 +479,17 @@ mod tests {
             Command::SplitClip {
                 track_id: t,
                 clip_id: c,
-                at_secs: 1.5,
+                at: Time::Us(1500000),
             },
         )
         .unwrap() else {
             panic!()
         };
         let (l, r) = (adjustment(&p, t, left_id), adjustment(&p, t, right_id));
-        assert_eq!((l.position_secs, l.duration_secs), (0.0, 1.5));
-        assert_eq!((r.position_secs, r.duration_secs), (1.5, 2.5));
+        assert_eq!((l.start_us, l.duration_us), (0, 1500000));
+        assert_eq!((r.start_us, r.duration_us), (1500000, 2500000));
         assert_ne!(l.effects[0].id, r.effects[0].id);
-        assert_eq!(l.effects[0].effect_id, r.effects[0].effect_id);
+        assert_eq!(l.effects[0].item_ref, r.effects[0].item_ref);
 
         // Move to another video track at a new time.
         apply_command(
@@ -521,12 +497,12 @@ mod tests {
             Command::MoveClip {
                 track_id: t,
                 clip_id: right_id,
-                new_position_secs: 6.0,
+                start: Time::Us(6000000),
                 new_track_id: Some(t2_id),
             },
         )
         .unwrap();
-        assert_eq!(adjustment(&p, t2_id, right_id).position_secs, 6.0);
+        assert_eq!(adjustment(&p, t2_id, right_id).start_us, 6000000);
         // ...but not onto an audio track.
         let a = Track::new(TrackKind::Audio, "A");
         let aid = a.id;
@@ -537,8 +513,8 @@ mod tests {
                 Command::MoveClip {
                     track_id: t,
                     clip_id: left_id,
-                    new_position_secs: 0.0,
-                    new_track_id: Some(aid)
+                    start: Time::Us(0),
+                    new_track_id: Some(aid),
                 }
             ),
             Err(CommandError::TrackKindMismatch(..))
@@ -555,7 +531,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(adjustment(&p, t, later).position_secs, 1.5);
+        assert_eq!(adjustment(&p, t, later).start_us, 1500000);
     }
 
     #[test]
@@ -564,7 +540,7 @@ mod tests {
         let c = add(&mut p, t, 1.0, 2.0);
         let json = serde_json::to_value(p.find_track(t).unwrap().find_clip(c).unwrap()).unwrap();
         assert_eq!(json["type"], "adjustment");
-        assert_eq!(json["position_secs"], 1.0);
+        assert_eq!(json["start_us"], 1_000_000);
         assert_eq!(json["opacity"], 1.0);
         assert!(json.get("mask").is_none(), "unset mask is omitted");
         let back: Clip = serde_json::from_value(json).unwrap();
@@ -598,7 +574,7 @@ mod tests {
             id: v,
             path: "a.mp4".into(),
             kind: MediaKind::Video,
-            duration_secs: Some(5.0),
+            duration_us: Some(5000000),
             width: Some(10),
             height: Some(10),
             fps: Some(30.0),
@@ -609,9 +585,9 @@ mod tests {
             Command::AddClip {
                 track_id: inner_id,
                 media_id: v,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 2.0,
+                start: Time::Us(0),
+                source_in: Time::Us(0),
+                source_out: Time::Us(2000000),
             },
         )
         .unwrap();
@@ -623,9 +599,9 @@ mod tests {
             Command::AddClip {
                 track_id: vtrack,
                 media_id: seq_media,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 2.0,
+                start: Time::Us(0),
+                source_in: Time::Us(0),
+                source_out: Time::Us(2000000),
             },
         )
         .unwrap() else {
@@ -673,8 +649,8 @@ mod tests {
                 Command::GenerateCaptions {
                     media_id: seq_media,
                     track_id: cap_id,
-                    style_id: "default".into(),
-                    timeline_offset_secs: 0.0
+                    style: Some(crate::project::TextStyleRef::builtin("default")),
+                    timeline_offset: Time::Us(0),
                 }
             ),
             Err(CommandError::UnsupportedForSequence(_))

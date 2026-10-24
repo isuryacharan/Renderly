@@ -6,7 +6,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import type { ClipTransform, EffectInstance, Project } from "./types";
+import type { ClipTransform, ClipTransition, EffectParams, Project } from "./types";
 import type {
   AgentEnvelope,
   AgentId,
@@ -30,14 +30,15 @@ export interface ProjectChangedPayload {
   mutation_id?: string | null;
 }
 
+/// Playback and bridge times are integer microseconds (schema v8).
 export interface PlaybackTickPayload {
-  time_secs: number;
+  time_us: number;
   playing: boolean;
 }
 
 export interface PlaybackStatePayload {
   playing: boolean;
-  time_secs: number;
+  time_us: number;
 }
 
 export interface PlaybackErrorPayload {
@@ -64,13 +65,13 @@ export interface ThumbnailsReadyPayload {
   rows: number;
   tile_width: number;
   tile_height: number;
-  interval_secs: number;
+  interval_us: number;
 }
 
 export interface WaveformReadyPayload {
   media_id: string;
   peaks: number[];
-  bucket_secs: number;
+  bucket_us: number;
 }
 
 export type ExportPhase = "video" | "audio" | "mux";
@@ -96,7 +97,7 @@ export interface MediaAssetsPayload {
 export interface PackStickerInfo {
   id: string;
   label: string;
-  default_duration_secs: number;
+  default_duration_us: number;
 }
 
 export interface PackSfxInfo {
@@ -107,13 +108,17 @@ export interface PackSfxInfo {
 export interface PackLutInfo {
   id: string;
   label: string;
+  /** The ref to apply it with: `pack:<pack>/<lut>@<version>`. */
+  ref: string;
 }
 
 export interface PackTransitionInfo {
   id: string;
   label: string;
   kind: string;
-  default_duration_secs: number;
+  default_duration_us: number;
+  /** The ref to apply it with: `pack:<pack>/<item>@<version>`. */
+  ref: string;
 }
 
 export interface PackTemplateInfo {
@@ -140,9 +145,49 @@ export interface LoadedPluginInfo {
   has_audio: boolean;
 }
 
+/** One control of an effect, filter or transition (the engine's `describe` output). */
+export interface CatalogueParam {
+  key: string;
+  type: "float" | "int" | "bool" | "color" | "vec2" | "choice" | "lut";
+  min?: number;
+  max?: number;
+  /** The value when the param is absent from a stored instance. */
+  default: number | boolean | number[] | string;
+  /** The value written when the effect is added. */
+  initial: number | boolean | number[] | string;
+  /** Choice ids, in index order. */
+  options?: string[];
+  /** Can be keyframed (`effect:<id>/<key>`): numeric, colour or vec2 and not marked off. */
+  animatable?: boolean;
+}
+
+/** One effect, filter, transition or LUT that can be applied by ref (builtins, then packs). */
+export interface CatalogueEntry {
+  ref: string;
+  kind: "effect" | "filter" | "transition" | "lut" | string;
+  label: string;
+  /** `builtin`, or the pack's canonical id. */
+  source: string;
+  state: "ok" | "disabled" | "error" | "skipped" | string;
+  reason?: string;
+  /** Where `SetClipEffects` puts it by default (`transition` goes to `SetClipTransition`). */
+  slot: "filter" | "key" | "adjust" | "effects" | "transition";
+  params: CatalogueParam[];
+}
+
 export interface ExtensionCatalog {
   packs: LoadedPackInfo[];
   plugins: LoadedPluginInfo[];
+  effects: CatalogueEntry[];
+}
+
+/** An effect instance or transition that is not `ok` against the installed library. */
+export interface EffectStatusEntry {
+  clip_id: string;
+  /** Absent for a transition. */
+  instance_id?: string;
+  ref: string;
+  status: "changed" | "missing" | "disabled";
 }
 
 export interface RegistryEntry {
@@ -209,7 +254,7 @@ export function getProject(): Promise<ProjectSnapshot> {
 export interface ProjectSummary {
   path: string;
   name: string;
-  durationSecs: number;
+  durationUs: number;
   modifiedMs: number;
   width: number;
   height: number;
@@ -354,7 +399,18 @@ export function endGesture(): Promise<HistoryFlags> {
 export interface PreviewOverride {
   transform?: ClipTransform;
   opacity?: number;
-  effects?: EffectInstance[];
+  /** The WHOLE stack in render order (filter, key, adjust, effects[]); replaces every slot. */
+  effects?: PreviewEffect[];
+  /** Replaces the clip's outgoing transition (hover preview of a transition). */
+  transition?: ClipTransition;
+}
+
+/** One entry of a preview override's effect stack. */
+export interface PreviewEffect {
+  id: string;
+  ref: string;
+  enabled?: boolean;
+  params: EffectParams;
 }
 
 export function setPreviewOverride(target: string, over: PreviewOverride): Promise<void> {
@@ -396,6 +452,22 @@ export function assetUrl(path: string): string {
   return convertFileSrc(path);
 }
 
+/// The files of one pack item, shaped for `WasmCompositor.set_pack_item(item_json, textures)`:
+/// everything except `textures` is its `item_json`.
+export interface PreviewPackItem {
+  ref: string;
+  pack_id: string;
+  item_id: string;
+  version: number;
+  kind: "lut" | "effect" | "filter" | "transition" | string;
+  hash?: string | null;
+  cube?: string;
+  manifest?: string;
+  shaders: Record<string, string>;
+  /** Encoded image files; the webview decodes them to RGBA. */
+  textures: { path: string; bytes_base64: string }[];
+}
+
 // ---- Preview compositor host assets (raster/generated mattes, pack .cube LUTs) ----
 
 /// Backend for `preview/previewAssets.ts`. The commands only serve files the open project
@@ -407,17 +479,23 @@ export const previewAssetBackend = {
   matteStamps(paths: string[]): Promise<number[]> {
     return invoke<number[]>("preview_matte_stamps", { paths });
   },
-  readPackLuts(
-    wanted: { pack_id: string; lut_id: string }[],
-  ): Promise<{ pack_id: string; lut_id: string; cube: string }[]> {
-    return invoke("read_preview_pack_luts", { wanted });
+  /// Files of pack items by ref. `includeInstalled` also serves installed items the project
+  /// does not use yet (hover preview); otherwise only what the project references.
+  readPackItems(
+    wanted: { ref: string; hash?: string | null }[],
+    includeInstalled = false,
+  ): Promise<PreviewPackItem[]> {
+    return invoke<PreviewPackItem[]>("read_preview_pack_items", {
+      wanted,
+      includeInstalled,
+    });
   },
 };
 
 // ---- Preview / playback ----
 
-export function play(timeSecs: number): Promise<void> {
-  return invoke("play", { timeSecs });
+export function play(timeUs: number): Promise<void> {
+  return invoke("play", { timeUs: Math.round(timeUs) });
 }
 
 export function pause(): Promise<number> {
@@ -443,23 +521,23 @@ export function setEditorSelection(
   return invoke("set_editor_selection", { selection });
 }
 
-export function seek(timeSecs: number): Promise<void> {
-  return invoke("seek", { timeSecs });
+export function seek(timeUs: number): Promise<void> {
+  return invoke("seek", { timeUs: Math.round(timeUs) });
 }
 
 /// Refresh playback after an edit (apply_command/apply_commands/undo/redo) without the
 /// disruption of a real seek. While playing, this live-swaps the project into the running
 /// play session (no pause, no audio restart) so the next audio chunk reflects the edit;
 /// the preview canvas repaints itself from the same store patch regardless of play state
-/// — see the Rust `refresh_frame` command's doc comment. `timeSecs` is accepted for call-
+/// — see the Rust `refresh_frame` command's doc comment. `timeUs` is accepted for call-
 /// site symmetry with `seek` but isn't forwarded (the backend command no longer needs it).
-export function refreshFrame(timeSecs: number): Promise<void> {
-  void timeSecs;
+export function refreshFrame(timeUs: number): Promise<void> {
+  void timeUs;
   return invoke("refresh_frame");
 }
 
-export function scrubAudio(timeSecs: number): Promise<void> {
-  return invoke("scrub_audio", { timeSecs });
+export function scrubAudio(timeUs: number): Promise<void> {
+  return invoke("scrub_audio", { timeUs: Math.round(timeUs) });
 }
 
 // ---- Events ----
@@ -485,8 +563,8 @@ export function onPlaybackPerf(cb: (payload: PlaybackPerfPayload) => void): () =
 }
 
 /** E3: agent `set_playhead` over the live bridge — sync GUI playhead. */
-export function onBridgePlayhead(cb: (payload: { time_secs: number }) => void): () => void {
-  const unlisten = listen<{ time_secs: number }>("bridge:playhead", (e) => cb(e.payload));
+export function onBridgePlayhead(cb: (payload: { time_us: number }) => void): () => void {
+  const unlisten = listen<{ time_us: number }>("bridge:playhead", (e) => cb(e.payload));
   return () => void unlisten.then((f) => f());
 }
 
@@ -736,6 +814,11 @@ export async function pickExtensionFolder(title: string): Promise<string | null>
 
 export function listExtensions(): Promise<ExtensionCatalog> {
   return invoke<ExtensionCatalog>("list_extensions");
+}
+
+/** Changed / missing / disabled effects and transitions of the open project (empty when healthy). */
+export function getEffectStatus(): Promise<EffectStatusEntry[]> {
+  return invoke<EffectStatusEntry[]>("get_effect_status");
 }
 
 export function listRegistry(): Promise<RegistryEntry[]> {

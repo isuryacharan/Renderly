@@ -17,6 +17,7 @@ import {
 } from "../../lib/commands";
 import type { ClipTransform, MediaClip, Track, TrackAudioRole } from "../../lib/types";
 import { IDENTITY_TRANSFORM } from "../../lib/types";
+import { normalizeFps, secsToUs, snapToFrameUs, usToSecs } from "../../lib/time";
 import { activeContainerSize, activeTracks } from "../../lib/container";
 import { motionTargetChoices, motionTargetRef } from "../../lib/motionTarget";
 import { MenuSelect } from "../ui/MenuSelect";
@@ -26,6 +27,8 @@ import { EffectStackSection } from "./EffectStackSection";
 import { MaskSection } from "./MaskSection";
 import { MulticamSection } from "./MulticamSection";
 import { BackgroundRemovalSection } from "./BackgroundRemovalSection";
+import { BlendModeControl } from "./BlendModeControl";
+import { TransitionSection } from "./TransitionSection";
 
 const AUDIO_ROLES: { value: TrackAudioRole | ""; label: string }[] = [
   { value: "", label: "None" },
@@ -39,7 +42,7 @@ function clipTransform(clip: MediaClip): ClipTransform {
   return clip.transform ?? IDENTITY_TRANSFORM;
 }
 
-function NumCell({
+export function NumCell({
   label,
   value,
   step,
@@ -106,10 +109,13 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
       : motionTargets.defaultValue;
 
   const [gain, setGain] = useState(clip.gain_db);
-  const [sourceIn, setSourceIn] = useState(clip.source_in_secs);
-  const [sourceOut, setSourceOut] = useState(clip.source_out_secs);
-  const [fadeIn, setFadeIn] = useState(clip.fade_in_secs);
-  const [fadeOut, setFadeOut] = useState(clip.fade_out_secs);
+  // Trim and fade fields are edited in seconds; commands get frame-snapped integer µs.
+  const fps = normalizeFps(project?.settings.fps);
+  const frameUs = (secs: number) => snapToFrameUs(fps, secsToUs(secs));
+  const [sourceIn, setSourceIn] = useState(usToSecs(clip.source_in_us));
+  const [sourceOut, setSourceOut] = useState(usToSecs(clip.source_out_us));
+  const [fadeIn, setFadeIn] = useState(usToSecs(clip.fade_in_us));
+  const [fadeOut, setFadeOut] = useState(usToSecs(clip.fade_out_us));
   const [transform, setTransform] = useState<ClipTransform>(() => clipTransform(clip));
   const [speed, setSpeed] = useState(clip.speed ?? 1);
   const [linkScale, setLinkScale] = useState(true);
@@ -132,20 +138,20 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
 
   useEffect(() => {
     setGain(clip.gain_db);
-    setSourceIn(clip.source_in_secs);
-    setSourceOut(clip.source_out_secs);
-    setFadeIn(clip.fade_in_secs);
-    setFadeOut(clip.fade_out_secs);
+    setSourceIn(usToSecs(clip.source_in_us));
+    setSourceOut(usToSecs(clip.source_out_us));
+    setFadeIn(usToSecs(clip.fade_in_us));
+    setFadeOut(usToSecs(clip.fade_out_us));
     setTransform(clipTransform(clip));
     setSpeed(clip.speed ?? 1);
     setDenoiseStrength(clip.audio_denoise?.strength ?? 0.5);
   }, [
     clip.id,
     clip.gain_db,
-    clip.source_in_secs,
-    clip.source_out_secs,
-    clip.fade_in_secs,
-    clip.fade_out_secs,
+    clip.source_in_us,
+    clip.source_out_us,
+    clip.fade_in_us,
+    clip.fade_out_us,
     clip.transform,
     clip.speed,
     clip.audio_denoise?.strength,
@@ -194,7 +200,7 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
               <p className="insp-meta muted">
                 {media.width}×{media.height}
                 {media.fps ? ` · ${media.fps.toFixed(0)} fps` : ""}
-                {media.duration_secs != null ? ` · ${media.duration_secs.toFixed(1)}s` : ""}
+                {media.duration_us != null ? ` · ${usToSecs(media.duration_us).toFixed(1)}s` : ""}
               </p>
             ) : null}
           </div>
@@ -239,7 +245,7 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
             onChange={setSourceIn}
             onCommit={(v) => {
               setSourceIn(v);
-              void dispatch(trimClip(track.id, clip.id, v, sourceOut));
+              void dispatch(trimClip(track.id, clip.id, frameUs(v), frameUs(sourceOut)));
             }}
           />
           <NumCell
@@ -251,7 +257,7 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
             onChange={setSourceOut}
             onCommit={(v) => {
               setSourceOut(v);
-              void dispatch(trimClip(track.id, clip.id, sourceIn, v));
+              void dispatch(trimClip(track.id, clip.id, frameUs(sourceIn), frameUs(v)));
             }}
           />
         </div>
@@ -358,6 +364,7 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
               />
             </label>
           </div>
+          {clip.type === "video" && <BlendModeControl track={track} clip={clip} />}
           <div className="insp-grid-2">
             {(["fit_x", "fit_y"] as const).map((axis) => {
               const withFit = (v: number): ClipTransform =>
@@ -428,6 +435,15 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
       </details>
 
       <EffectStackSection track={track} clip={clip} />
+
+      {clip.type === "video" && track.kind === "video" && (
+        <details className="insp-disclosure" open={!!clip.outgoing_transition}>
+          <summary>Transition{clip.outgoing_transition ? " · on" : ""}</summary>
+          <div className="inspector-section insp-disclosure-body">
+            <TransitionSection track={track} clip={clip} />
+          </div>
+        </details>
+      )}
 
       {showTransform && <MaskSection track={track} clip={clip} />}
 
@@ -582,7 +598,7 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
               onChange={setFadeIn}
               onCommit={(v) => {
                 setFadeIn(v);
-                void dispatch(setAudioFade(track.id, clip.id, v, fadeOut));
+                void dispatch(setAudioFade(track.id, clip.id, frameUs(v), frameUs(fadeOut)));
               }}
             />
             <NumCell
@@ -594,7 +610,7 @@ export function MediaClipInspector({ track, clip }: { track: Track; clip: MediaC
               onChange={setFadeOut}
               onCommit={(v) => {
                 setFadeOut(v);
-                void dispatch(setAudioFade(track.id, clip.id, fadeIn, v));
+                void dispatch(setAudioFade(track.id, clip.id, frameUs(fadeIn), frameUs(v)));
               }}
             />
           </div>

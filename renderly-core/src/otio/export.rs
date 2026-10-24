@@ -3,13 +3,14 @@
 use super::time::{frames, frames_ceil, rational_time, time_range};
 use super::url::{self, is_absolute_path, path_to_file_url};
 use super::{
-    ExportOptions, OtioError, CAPTION_GENERATOR_KIND, RENDERLY_METADATA_FORMAT,
-    RENDERLY_METADATA_KEY,
+    otio_marker_color, ExportOptions, OtioError, CAPTION_GENERATOR_KIND, RENDERLY_METADATA_FORMAT,
+    RENDERLY_METADATA_KEY, TEXT_GENERATOR_KIND,
 };
 use crate::project::{
     AnimProperty, CaptionClip, Clip, ClipTransition, EffectInstance, Id, MediaClip, MediaItem,
-    MediaKind, Project, Track, TrackKind, TransitionKind, MAX_SEQUENCE_DEPTH, SCHEMA_VERSION,
+    MediaKind, Project, TextClip, Track, TrackKind, MAX_SEQUENCE_DEPTH, SCHEMA_VERSION,
 };
+use crate::time::Fps;
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use std::path::Path;
@@ -27,8 +28,8 @@ pub fn export_otio_with_options(
     options: &ExportOptions,
 ) -> Result<String, OtioError> {
     let fps = project.settings.fps;
-    if !(fps.is_finite() && fps > 0.0 && fps <= 1000.0) {
-        return Err(OtioError::BadRate(fps));
+    if !(fps.as_f64() > 0.0 && fps.as_f64() <= 1000.0) {
+        return Err(OtioError::BadRate(fps.as_f64()));
     }
     let mut ex = Exporter {
         project,
@@ -38,17 +39,18 @@ pub fn export_otio_with_options(
     };
     let tracks = ex.tracks(&project.tracks, 0)?;
     let meta = ex.timeline_metadata()?;
+    let markers = ex.markers()?;
     let timeline = json!({
         "OTIO_SCHEMA": "Timeline.1",
         "name": project.name,
-        "global_start_time": rational_time(0, fps),
+        "global_start_time": rational_time(0, fps.as_f64()),
         "metadata": { RENDERLY_METADATA_KEY: meta },
         "tracks": {
             "OTIO_SCHEMA": "Stack.1",
             "name": "tracks",
             "children": tracks,
             "effects": [],
-            "markers": [],
+            "markers": markers,
             "enabled": true,
             "source_range": null,
             "metadata": {},
@@ -59,7 +61,7 @@ pub fn export_otio_with_options(
 
 struct Exporter<'a> {
     project: &'a Project,
-    fps: f64,
+    fps: Fps,
     base_dir: Option<&'a Path>,
     /// Sequences written as a nested stack (the rest go to `unplaced_sequences`).
     placed: HashSet<Id>,
@@ -81,8 +83,8 @@ impl Exporter<'_> {
     fn track(&mut self, t: &Track, depth: usize) -> Result<Value, OtioError> {
         let mut order: Vec<&Clip> = t.clips.iter().collect();
         order.sort_by(|a, b| {
-            a.position_secs()
-                .partial_cmp(&b.position_secs())
+            a.start_us()
+                .partial_cmp(&b.start_us())
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
@@ -92,8 +94,8 @@ impl Exporter<'_> {
         let mut cursor = 0_i64;
         let mut layout: Vec<(i64, i64)> = Vec::with_capacity(order.len());
         for c in &order {
-            let mut start = frames(c.position_secs(), self.fps);
-            let end = frames(c.end_secs(), self.fps);
+            let mut start = frames(c.start_us(), self.fps);
+            let end = frames(c.end_us(), self.fps);
             if start < cursor {
                 start = cursor;
             }
@@ -112,7 +114,13 @@ impl Exporter<'_> {
             children.push(self.item(clip, start, dur, depth)?);
             cursor = start + dur;
             if t.kind == TrackKind::Video {
-                if let Some(tr) = clip.as_media().and_then(|m| m.outgoing_transition.as_ref()) {
+                let outgoing = match clip {
+                    Clip::Text(x) => x.outgoing_transition.as_ref(),
+                    other => other
+                        .as_media()
+                        .and_then(|m| m.outgoing_transition.as_ref()),
+                };
+                if let Some(tr) = outgoing {
                     // A native Transition only exists between two touching items.
                     if layout.get(i + 1).is_some_and(|&(next, _)| next == cursor) {
                         children.push(self.transition(tr, dur)?);
@@ -146,6 +154,8 @@ impl Exporter<'_> {
                     "muted": t.muted,
                     "locked": t.locked,
                     "hidden": t.hidden,
+                    "magnetic": t.magnetic,
+                    "caption_style": t.caption_style,
                 }
             })),
         }))
@@ -155,12 +165,56 @@ impl Exporter<'_> {
         json!({
             "OTIO_SCHEMA": "Gap.1",
             "name": "",
-            "source_range": time_range(0, dur, self.fps),
+            "source_range": time_range(0, dur, self.fps.as_f64()),
             "effects": [],
             "markers": [],
             "enabled": true,
             "metadata": {},
         })
+    }
+
+    /// A text clip is a title: like a caption, a clip on a `Video` track whose media is a
+    /// `GeneratorReference` (kind `renderly.text`) with the text and style as parameters. The
+    /// effect slots are written as OTIO effects; the exact clip is under `metadata`.
+    fn text_item(&self, t: &TextClip, dur: i64) -> Result<Value, OtioError> {
+        Ok(json!({
+            "OTIO_SCHEMA": "Clip.2",
+            "name": t.body.text,
+            "source_range": time_range(0, dur, self.fps.as_f64()),
+            "media_references": { DEFAULT_MEDIA_KEY: {
+                "OTIO_SCHEMA": "GeneratorReference.1",
+                "name": "text",
+                "generator_kind": TEXT_GENERATOR_KIND,
+                "parameters": { "text": t.body.text, "style_ref": t.style.item_ref },
+                "available_range": time_range(0, dur, self.fps.as_f64()),
+                "available_image_bounds": null,
+                "metadata": {},
+            }},
+            "active_media_reference_key": DEFAULT_MEDIA_KEY,
+            "effects": self.effects(&t.slot_entries()),
+            "markers": [],
+            "enabled": t.enabled,
+            "metadata": renderly_meta(json!({ "text": to_json(t)? })),
+        }))
+    }
+
+    /// Project markers as OTIO markers on the root stack (zero-length ranges at the marker's
+    /// frame). The exact marker is under `metadata`.
+    fn markers(&self) -> Result<Vec<Value>, OtioError> {
+        self.project
+            .markers
+            .iter()
+            .map(|m| {
+                Ok(json!({
+                    "OTIO_SCHEMA": "Marker.2",
+                    "name": m.label,
+                    "color": otio_marker_color(&m.color, m.kind),
+                    "marked_range": time_range(frames(m.time_us, self.fps), 0, self.fps.as_f64()),
+                    "comment": "",
+                    "metadata": renderly_meta(json!({ "marker": to_json(m)? })),
+                }))
+            })
+            .collect()
     }
 
     fn item(
@@ -173,11 +227,12 @@ impl Exporter<'_> {
         match clip {
             Clip::Video(m) | Clip::Audio(m) => self.media_item(m, start, dur, depth),
             Clip::Caption(c) => self.caption_item(c, dur),
+            Clip::Text(t) => self.text_item(t, dur),
             Clip::Adjustment(a) => Ok(json!({
                 "OTIO_SCHEMA": "Gap.1",
                 "name": "Adjustment layer",
-                "source_range": time_range(0, dur, self.fps),
-                "effects": self.effects(&a.effects),
+                "source_range": time_range(0, dur, self.fps.as_f64()),
+                "effects": self.effects(&a.slot_entries()),
                 "markers": [],
                 "enabled": true,
                 "metadata": renderly_meta(json!({ "adjustment": to_json(a)? })),
@@ -185,16 +240,25 @@ impl Exporter<'_> {
         }
     }
 
-    fn effects(&self, effects: &[EffectInstance]) -> Vec<Value> {
+    /// One `Effect.1` per instance in render order. The ref is the effect's name; the slot,
+    /// id, hash and params are in `metadata["renderly"]` (the clip snapshot restores them
+    /// exactly; these entries serve readers that only see the effect list).
+    fn effects(&self, effects: &[(&'static str, &EffectInstance)]) -> Vec<Value> {
         effects
             .iter()
-            .map(|e| {
+            .map(|(slot, e)| {
                 json!({
                     "OTIO_SCHEMA": "Effect.1",
-                    "name": e.effect_id,
-                    "effect_name": e.effect_id,
+                    "name": e.item_ref,
+                    "effect_name": e.item_ref,
                     "enabled": e.enabled,
-                    "metadata": renderly_meta(json!({ "id": e.id, "params": e.params })),
+                    "metadata": renderly_meta(json!({
+                        "id": e.id,
+                        "ref": e.item_ref,
+                        "hash": e.hash,
+                        "slot": slot,
+                        "params": e.params,
+                    })),
                 })
             })
             .collect()
@@ -208,8 +272,8 @@ impl Exporter<'_> {
             .iter()
             .any(|k| k.property == AnimProperty::Speed && !k.keys.is_empty());
         let scalar = if keyed {
-            let tl = m.timeline_duration_secs();
-            (tl > 0.0).then(|| (m.source_out_secs - m.source_in_secs) / tl)?
+            let tl = m.timeline_duration_us();
+            (tl > 0).then(|| (m.source_out_us - m.source_in_us) as f64 / tl as f64)?
         } else {
             m.speed_factor()
         };
@@ -240,8 +304,8 @@ impl Exporter<'_> {
         })?;
         let _ = start;
         let mut effects: Vec<Value> = self.time_warp(m).into_iter().collect();
-        effects.extend(self.effects(&m.effects));
-        let source_range = time_range(frames(m.source_in_secs, self.fps), dur, self.fps);
+        effects.extend(self.effects(&m.slot_entries()));
+        let source_range = time_range(frames(m.source_in_us, self.fps), dur, self.fps.as_f64());
         let metadata = renderly_meta(json!({ "clip": to_json(m)? }));
 
         if media.kind == MediaKind::Sequence {
@@ -295,9 +359,9 @@ impl Exporter<'_> {
             _ => path.clone(),
         };
         let available = media
-            .duration_secs
-            .filter(|d| d.is_finite() && *d > 0.0)
-            .map(|d| time_range(0, frames_ceil(d, self.fps).max(1), self.fps));
+            .duration_us
+            .filter(|d| *d > 0)
+            .map(|d| time_range(0, frames_ceil(d, self.fps).max(1), self.fps.as_f64()));
         json!({
             "OTIO_SCHEMA": "ExternalReference.1",
             "name": file_name(&path),
@@ -315,14 +379,14 @@ impl Exporter<'_> {
     fn caption_item(&self, c: &CaptionClip, dur: i64) -> Result<Value, OtioError> {
         Ok(json!({
             "OTIO_SCHEMA": "Clip.2",
-            "name": c.text,
-            "source_range": time_range(0, dur, self.fps),
+            "name": c.body.text,
+            "source_range": time_range(0, dur, self.fps.as_f64()),
             "media_references": { DEFAULT_MEDIA_KEY: {
                 "OTIO_SCHEMA": "GeneratorReference.1",
                 "name": "caption",
                 "generator_kind": CAPTION_GENERATOR_KIND,
-                "parameters": { "text": c.text, "style_id": c.style_id },
-                "available_range": time_range(0, dur, self.fps),
+                "parameters": { "text": c.body.text, "style_ref": c.style.as_ref().map(|s| s.item_ref.clone()) },
+                "available_range": time_range(0, dur, self.fps.as_f64()),
                 "available_image_bounds": null,
                 "metadata": {},
             }},
@@ -334,22 +398,22 @@ impl Exporter<'_> {
         }))
     }
 
-    /// `crossfade` is OTIO's `SMPTE_Dissolve`; every other kind is `Custom_Transition` with
-    /// the Renderly kind in metadata. Renderly's window ends at the cut, so the whole length
+    /// `builtin:crossfade@1` is OTIO's `SMPTE_Dissolve`; every other transition is
+    /// `Custom_Transition` with the Renderly ref (and params, easing) in metadata. Renderly's window ends at the cut, so the whole length
     /// is `in_offset` (the part of the outgoing clip it overlaps) and `out_offset` is 0.
     fn transition(&self, tr: &ClipTransition, prev_dur: i64) -> Result<Value, OtioError> {
-        let in_offset = frames(tr.duration_secs, self.fps).clamp(1, prev_dur.max(1));
-        let transition_type = if tr.kind == TransitionKind::Crossfade {
+        let in_offset = frames(tr.duration_us, self.fps).clamp(1, prev_dur.max(1));
+        let transition_type = if tr.item_ref == "builtin:crossfade@1" {
             "SMPTE_Dissolve"
         } else {
             "Custom_Transition"
         };
         Ok(json!({
             "OTIO_SCHEMA": "Transition.1",
-            "name": tr.kind.as_str(),
+            "name": tr.item_ref,
             "transition_type": transition_type,
-            "in_offset": rational_time(in_offset, self.fps),
-            "out_offset": rational_time(0, self.fps),
+            "in_offset": rational_time(in_offset, self.fps.as_f64()),
+            "out_offset": rational_time(0, self.fps.as_f64()),
             "metadata": renderly_meta(json!({ "transition": to_json(tr)? })),
         }))
     }
@@ -367,14 +431,14 @@ impl Exporter<'_> {
         meta.insert("project_id".into(), to_json(&p.id)?);
         meta.insert("settings".into(), to_json(&p.settings)?);
         meta.insert("media".into(), to_json(&p.media)?);
-        meta.insert("asset_pack_paths".into(), to_json(&p.asset_pack_paths)?);
-        meta.insert("wasm_plugin_paths".into(), to_json(&p.wasm_plugin_paths)?);
+        meta.insert("legacy_pack_paths".into(), to_json(&p.legacy_pack_paths)?);
         meta.insert("multicam_groups".into(), to_json(&p.multicam_groups)?);
         meta.insert(
             "segmentation_model_path".into(),
             to_json(&p.segmentation_model_path)?,
         );
         meta.insert("unplaced_sequences".into(), to_json(&unplaced)?);
+        meta.insert("transcripts".into(), to_json(&p.transcripts)?);
         Ok(Value::Object(meta))
     }
 }

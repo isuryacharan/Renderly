@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { Play, Pause, SkipBack, SkipForward, Maximize2, Minimize2 } from "lucide-react";
 import { useEditorStore } from "../../store/editorStore";
 import { formatTimecode, parseTimecode } from "../../lib/format";
-import { containerDurationSecs, selectActiveTracks } from "../../lib/container";
+import { containerDurationUs, selectActiveTracks } from "../../lib/container";
+import { normalizeFps, snapToFrameUs, stepFrames } from "../../lib/time";
 import { IconButton } from "../ui/IconButton";
 import { Tooltip } from "../ui/Tooltip";
 import { RatioMenu } from "./RatioMenu";
@@ -33,13 +34,12 @@ export function TransportBar({
   const hasClips = tracks.some((t) => t.clips.length > 0);
   // The open container's own duration (a sequence's, while one is open).
   const duration =
-    project && hasClips ? formatTimecode(Math.max(containerDurationSecs(project, activeSequenceId), 1)) : "—";
-  const fps = project?.settings.fps || 60;
-  const frameStep = 1 / fps;
+    project && hasClips ? formatTimecode(Math.max(containerDurationUs(project, activeSequenceId), 1_000_000)) : "—";
+  const fps = normalizeFps(project?.settings.fps);
 
   function commitTimecode() {
-    const secs = parseTimecode(draft);
-    if (secs !== null) void seekTo(secs);
+    const us = parseTimecode(draft);
+    if (us !== null) void seekTo(snapToFrameUs(fps, us));
     else setDraft(formatTimecode(playhead));
     setEditing(false);
   }
@@ -52,7 +52,7 @@ export function TransportBar({
         className="transport-step"
         tooltip="Previous frame (←)"
         disabled={!project}
-        onClick={() => void seekTo(Math.max(0, playhead - frameStep))}
+        onClick={() => void seekTo(stepFrames(fps, playhead, -1))}
       />
       <Tooltip content="Play / Pause (Space)">
         <button
@@ -74,7 +74,7 @@ export function TransportBar({
         className="transport-step"
         tooltip="Next frame (→)"
         disabled={!project}
-        onClick={() => void seekTo(playhead + frameStep)}
+        onClick={() => void seekTo(stepFrames(fps, playhead, 1))}
       />
       <Tooltip content="Edit timecode (Enter to seek)">
         <input

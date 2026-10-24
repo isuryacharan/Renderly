@@ -1,0 +1,73 @@
+{
+  "schema_version": 2,
+  "id": "22222222-2222-4222-8222-222222222222",
+  "name": "fixture v2",
+  "settings": {
+    "fps": 30.0,
+    "width": 1920,
+    "height": 1080,
+    "sample_rate": 48000,
+    "duck_db": -12.0
+  },
+  "media": [
+    {
+      "id": "a2000000-0000-4000-8000-000000000001",
+      "path": "media/a.mp4",
+      "kind": "video",
+      "duration_secs": 10.0,
+      "width": 1920,
+      "height": 1080,
+      "fps": 30.0
+    }
+  ],
+  "tracks": [
+    {
+      "id": "b2000000-0000-4000-8000-000000000001",
+      "kind": "video",
+      "name": "V1",
+      "clips": [
+        {
+          "type": "video",
+          "id": "c2000000-0000-4000-8000-000000000001",
+          "media_id": "a2000000-0000-4000-8000-000000000001",
+          "position_secs": 0.0,
+          "source_in_secs": 0.0,
+          "source_out_secs": 3.0,
+          "gain_db": 0.0,
+          "enabled": true,
+          "transform": {
+            "x": 0.1,
+            "y": 0.0,
+            "scale_x": 1.0,
+            "scale_y": 1.0,
+            "rotation_deg": 0.0,
+            "opacity": 1.0
+          },
+          "keyframes": [
+            {
+              "property": "opacity",
+              "keys": [
+                { "time_secs": 0.0, "value": 0.0, "easing": "linear" },
+                {
+                  "time_secs": 1.0,
+                  "value": 1.0,
+                  "easing": "bezier",
+                  "handle_left": [-0.33, 0.0],
+                  "handle_right": [0.33, 0.0]
+                }
+              ]
+            }
+          ],
+          "effects": [
+            {
+              "id": "d2000000-0000-4000-8000-000000000001",
+              "effect_id": "builtin:blur",
+              "enabled": true,
+              "params": { "radius": 0.3 }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

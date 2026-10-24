@@ -85,7 +85,7 @@ pub struct ProbedVideo {
     pub width: u32,
     pub height: u32,
     pub fps: f64,
-    pub duration_secs: f64,
+    pub duration_us: i64,
 }
 
 pub fn probe_video(path: &Path) -> Result<ProbedVideo, FfmpegCliError> {
@@ -140,7 +140,7 @@ pub fn probe_video(path: &Path) -> Result<ProbedVideo, FfmpegCliError> {
         .transpose()?
         .unwrap_or(30.0);
 
-    let duration_secs = stream
+    let duration_s = stream
         .get("duration")
         .and_then(|v| v.as_str())
         .and_then(|s| s.parse::<f64>().ok())
@@ -156,7 +156,7 @@ pub fn probe_video(path: &Path) -> Result<ProbedVideo, FfmpegCliError> {
         width,
         height,
         fps,
-        duration_secs,
+        duration_us: crate::time::seconds_to_us(duration_s),
     })
 }
 
@@ -272,7 +272,7 @@ pub struct ThumbnailStrip {
     pub tile_width: u32,
     pub tile_height: u32,
     pub tile_count: u32,
-    pub interval_secs: f64,
+    pub interval_us: i64,
 }
 
 /// Generate a tiled thumbnail-strip PNG for `path`, sampling roughly one frame every 2
@@ -289,11 +289,11 @@ pub fn generate_thumbnail_strip(
     tile_height: u32,
 ) -> Result<ThumbnailStrip, FfmpegCliError> {
     let probed = probe_video(path)?;
-    let duration = probed.duration_secs.max(0.1);
+    let duration_us = probed.duration_us.max(100_000);
 
-    let ideal = (duration / 2.0).ceil() as u32;
+    let ideal = (duration_us as f64 / 2_000_000.0).ceil() as u32;
     let tile_count = ideal.clamp(1, max_tiles.max(1));
-    let interval_secs = duration / tile_count as f64;
+    let interval_us = (duration_us as f64 / tile_count as f64).round() as i64;
 
     let cols = (tile_count as f64).sqrt().ceil().max(1.0) as u32;
     let rows = tile_count.div_ceil(cols);
@@ -314,8 +314,8 @@ pub fn generate_thumbnail_strip(
             let handles: Vec<_> = (chunk_start..chunk_end)
                 .map(|i| {
                     let frame_path = tmp.join(format!("f{i:03}.png"));
-                    let t = ((i as f64 + 0.5) * interval_secs)
-                        .min((duration - 0.05).max(0.0))
+                    let t = (((i as f64 + 0.5) * interval_us as f64) / 1_000_000.0)
+                        .min(((duration_us - 50_000).max(0)) as f64 / 1_000_000.0)
                         .max(0.0);
                     let ffmpeg = &ffmpeg;
                     s.spawn(move || {
@@ -417,7 +417,7 @@ pub fn generate_thumbnail_strip(
         tile_width: width,
         tile_height: height,
         tile_count,
-        interval_secs,
+        interval_us,
     })
 }
 
@@ -489,7 +489,7 @@ pub(super) struct CliReader {
 /// The arguments of a hardware-decode spawn, kept so it can be redone in software.
 struct HwRetry {
     path: std::path::PathBuf,
-    start_secs: f64,
+    start_s: f64,
     opts: ReaderOptions,
 }
 
@@ -513,17 +513,17 @@ impl CliReader {
     /// GPU. We never pass `-hwaccel auto` (see [`preferred_hwaccel`]).
     pub fn open_with(
         path: &Path,
-        start_secs: f64,
+        start_s: f64,
         opts: &ReaderOptions,
     ) -> Result<Self, FfmpegCliError> {
         match HWACCEL_WORKS.get().copied() {
             // Already confirmed working earlier this process — use it directly, no
             // per-open warm-up/verification cost.
             Some(true) => {
-                return Self::spawn(path, start_secs, opts, preferred_hwaccel());
+                return Self::spawn(path, start_s, opts, preferred_hwaccel());
             }
             // Already confirmed broken earlier this process — don't pay to re-try it.
-            Some(false) => return Self::spawn(path, start_secs, opts, None),
+            Some(false) => return Self::spawn(path, start_s, opts, None),
             // First open this process: probe it once, verified by an actual decode.
             None => {}
         }
@@ -531,10 +531,10 @@ impl CliReader {
         let Some(accel) = preferred_hwaccel() else {
             // No named backend compiled in — stay on software; do not try `-hwaccel auto`.
             let _ = HWACCEL_WORKS.set(false);
-            return Self::spawn(path, start_secs, opts, None);
+            return Self::spawn(path, start_s, opts, None);
         };
 
-        match Self::spawn(path, start_secs, opts, Some(accel)) {
+        match Self::spawn(path, start_s, opts, Some(accel)) {
             Ok(mut reader) => match reader.read_frame_from_pipe() {
                 Ok(Some(frame)) => {
                     let _ = HWACCEL_WORKS.set(true);
@@ -550,12 +550,12 @@ impl CliReader {
                 let _ = HWACCEL_WORKS.set(false);
             }
         }
-        Self::spawn(path, start_secs, opts, None)
+        Self::spawn(path, start_s, opts, None)
     }
 
     fn spawn(
         path: &Path,
-        start_secs: f64,
+        start_s: f64,
         opts: &ReaderOptions,
         hwaccel: Option<&str>,
     ) -> Result<Self, FfmpegCliError> {
@@ -576,8 +576,7 @@ impl CliReader {
         if let Some(accel) = hwaccel {
             cmd.args(["-hwaccel", accel]);
         }
-        cmd.args(["-ss", &format!("{start_secs:.6}"), "-i"])
-            .arg(path);
+        cmd.args(["-ss", &format!("{start_s:.6}"), "-i"]).arg(path);
         if let Some(fps) = opts.output_fps {
             cmd.args(["-r", &format!("{fps:.6}")]);
         }
@@ -625,7 +624,7 @@ impl CliReader {
             pending_first_frame: None,
             hw_retry: hwaccel.map(|_| HwRetry {
                 path: path.to_path_buf(),
-                start_secs,
+                start_s,
                 opts: *opts,
             }),
         })
@@ -654,7 +653,7 @@ impl CliReader {
         // probe succeeded). Reporting end-of-stream here made export silently drop the
         // layer, so redo this open in software instead.
         if let Some(retry) = self.hw_retry.take() {
-            *self = Self::spawn(&retry.path, retry.start_secs, &retry.opts, None)?;
+            *self = Self::spawn(&retry.path, retry.start_s, &retry.opts, None)?;
             return self.read_frame_from_pipe();
         }
         Ok(None)
@@ -1034,7 +1033,7 @@ pub struct DuckSettings {
 pub fn mix_timeline_audio(
     clips: &[AudioMixClip],
     sample_rate: u32,
-    duration_secs: f64,
+    duration_us: i64,
     output_wav: &Path,
     duck: Option<DuckSettings>,
 ) -> Result<(), FfmpegCliError> {
@@ -1058,11 +1057,11 @@ pub fn mix_timeline_audio(
             // `?` alone would leak `temp_dir` on failure (it's already been created above,
             // unlike the later ffmpeg-status and `mix_clip_bus` calls further down, which
             // already clean up on their own error paths).
-            if let Err(e) = mix_clip_bus(&voice_clips, sample_rate, duration_secs, &voice_wav) {
+            if let Err(e) = mix_clip_bus(&voice_clips, sample_rate, duration_us, &voice_wav) {
                 std::fs::remove_dir_all(&temp_dir).ok();
                 return Err(e);
             }
-            if let Err(e) = mix_clip_bus(&music_clips, sample_rate, duration_secs, &music_wav) {
+            if let Err(e) = mix_clip_bus(&music_clips, sample_rate, duration_us, &music_wav) {
                 std::fs::remove_dir_all(&temp_dir).ok();
                 return Err(e);
             }
@@ -1102,12 +1101,12 @@ pub fn mix_timeline_audio(
             let mut final_clips = Vec::new();
             final_clips.push(AudioMixClip {
                 path: voice_wav.clone(),
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: duration_secs,
+                start_us: 0,
+                source_in_us: 0,
+                source_out_us: duration_us,
                 gain_db: 0.0,
-                fade_in_secs: 0.0,
-                fade_out_secs: 0.0,
+                fade_in_us: 0,
+                fade_out_us: 0,
                 role: None,
                 speed: 1.0,
                 effects: Vec::new(),
@@ -1115,12 +1114,12 @@ pub fn mix_timeline_audio(
             });
             final_clips.push(AudioMixClip {
                 path: ducked_wav.clone(),
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: duration_secs,
+                start_us: 0,
+                source_in_us: 0,
+                source_out_us: duration_us,
                 gain_db: 0.0,
-                fade_in_secs: 0.0,
-                fade_out_secs: 0.0,
+                fade_in_us: 0,
+                fade_out_us: 0,
                 role: None,
                 speed: 1.0,
                 effects: Vec::new(),
@@ -1130,19 +1129,19 @@ pub fn mix_timeline_audio(
                 final_clips.push(c.clone());
             }
 
-            let result = mix_clip_bus(&final_clips, sample_rate, duration_secs, output_wav);
+            let result = mix_clip_bus(&final_clips, sample_rate, duration_us, output_wav);
             std::fs::remove_dir_all(&temp_dir).ok();
             return result;
         }
     }
 
-    mix_clip_bus(clips, sample_rate, duration_secs, output_wav)
+    mix_clip_bus(clips, sample_rate, duration_us, output_wav)
 }
 
 fn mix_clip_bus(
     clips: &[AudioMixClip],
     sample_rate: u32,
-    duration_secs: f64,
+    duration_us: i64,
     output_wav: &Path,
 ) -> Result<(), FfmpegCliError> {
     if clips.is_empty() {
@@ -1157,12 +1156,12 @@ fn mix_clip_bus(
 
     for (i, clip) in clips.iter().enumerate() {
         let seg = temp_dir.join(format!("seg_{i}.wav"));
-        let seg_duration = clip.source_out_secs - clip.source_in_secs;
-        if seg_duration <= 0.0 {
+        let seg_duration = clip.source_out_us - clip.source_in_us;
+        if seg_duration <= 0 {
             std::fs::remove_dir_all(&temp_dir).ok();
             return Err(FfmpegCliError::BadOutput(format!(
-                "invalid audio clip range: source_out_secs ({}) <= source_in_secs ({})",
-                clip.source_out_secs, clip.source_in_secs
+                "invalid audio clip range: source_out_us ({}) <= source_in_us ({})",
+                clip.source_out_us, clip.source_in_us
             )));
         }
         let af = build_audio_filter(clip, seg_duration);
@@ -1184,13 +1183,13 @@ fn mix_clip_bus(
                 "error",
                 "-y",
                 "-ss",
-                &format!("{:.6}", clip.source_in_secs),
+                &format!("{:.6}", crate::time::us_to_seconds(clip.source_in_us)),
                 "-i",
             ])
             .arg(&input_path)
             .args([
                 "-t",
-                &format!("{seg_duration:.6}"),
+                &format!("{:.6}", crate::time::us_to_seconds(seg_duration)),
                 "-af",
                 &af,
                 "-ar",
@@ -1213,16 +1212,17 @@ fn mix_clip_bus(
         // `as u64` on a negative float saturates to 0 rather than panicking — relying on
         // that implicitly would silently turn a negative position into "starts at 0"
         // instead of a clearly-intentional clamp. `.max(0.0)` makes the clamp explicit.
-        let delay_ms = (clip.position_secs.max(0.0) * 1000.0).round() as u64;
+        let delay_ms = (clip.start_us.max(0) as f64 / 1000.0).round() as u64;
         filter_parts.push(format!("[{i}:a]adelay={delay_ms}|{delay_ms}[a{i}]"));
     }
 
     let n = clips.len();
     let mix_labels = (0..n).map(|i| format!("[a{i}]")).collect::<String>();
     let filter = format!(
-        "{};{}amix=inputs={n}:duration=longest:dropout_transition=0,apad=whole_dur={duration_secs:.6}[out]",
+        "{};{}amix=inputs={n}:duration=longest:dropout_transition=0,apad=whole_dur={:.6}[out]",
         filter_parts.join(";"),
         mix_labels,
+        crate::time::us_to_seconds(duration_us),
     );
 
     let mut cmd = crate::proc::command(ffmpeg_path()?);
@@ -1264,7 +1264,7 @@ fn rnnoise_input(clip: &AudioMixClip) -> Result<PathBuf, FfmpegCliError> {
     }
 }
 
-fn build_audio_filter(clip: &AudioMixClip, seg_duration: f64) -> String {
+fn build_audio_filter(clip: &AudioMixClip, seg_duration: i64) -> String {
     let volume = db_to_linear(clip.gain_db);
     let mut parts = Vec::new();
     if let Some(denoise) = clip.denoise.as_ref() {
@@ -1293,15 +1293,19 @@ fn build_audio_filter(clip: &AudioMixClip, seg_duration: f64) -> String {
         parts.push(format!("atempo={remaining:.6}"));
     }
     // Fades are in timeline seconds after tempo change.
-    let timeline_dur = seg_duration / speed;
-    if clip.fade_in_secs > 0.0 {
-        parts.push(format!("afade=t=in:st=0:d={:.6}", clip.fade_in_secs));
+    let timeline_dur = seg_duration as f64 / speed;
+    if clip.fade_in_us > 0 {
+        parts.push(format!(
+            "afade=t=in:st=0:d={:.6}",
+            crate::time::us_to_seconds(clip.fade_in_us)
+        ));
     }
-    if clip.fade_out_secs > 0.0 {
-        let st = (timeline_dur - clip.fade_out_secs).max(0.0);
+    if clip.fade_out_us > 0 {
+        let st =
+            (timeline_dur / 1_000_000.0 - crate::time::us_to_seconds(clip.fade_out_us)).max(0.0);
         parts.push(format!(
             "afade=t=out:st={st:.6}:d={:.6}",
-            clip.fade_out_secs
+            crate::time::us_to_seconds(clip.fade_out_us)
         ));
     }
     parts.join(",")
@@ -1330,12 +1334,12 @@ fn db_to_linear(gain_db: f64) -> f64 {
 #[derive(Debug, Clone)]
 pub struct AudioMixClip {
     pub path: PathBuf,
-    pub position_secs: f64,
-    pub source_in_secs: f64,
-    pub source_out_secs: f64,
+    pub start_us: i64,
+    pub source_in_us: i64,
+    pub source_out_us: i64,
     pub gain_db: f64,
-    pub fade_in_secs: f64,
-    pub fade_out_secs: f64,
+    pub fade_in_us: i64,
+    pub fade_out_us: i64,
     pub role: Option<TrackAudioRole>,
     /// Timeline playback rate (pitch-preserving via atempo). Default 1.0.
     pub speed: f64,
@@ -1417,7 +1421,7 @@ mod video_reader_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let video_path = dir.join("src.mp4");
 
-        let duration_secs = 2u32;
+        let duration_s = 2u32;
         let rate = 10u32;
         let status = crate::proc::command(ffmpeg_path().unwrap())
             .args([
@@ -1428,7 +1432,7 @@ mod video_reader_tests {
                 "-f",
                 "lavfi",
                 "-i",
-                &format!("testsrc=duration={duration_secs}:size=322x240:rate={rate}"),
+                &format!("testsrc=duration={duration_s}:size=322x240:rate={rate}"),
                 "-c:v",
                 "libx264",
                 "-pix_fmt",
@@ -1468,14 +1472,14 @@ mod video_reader_tests {
             // before finally erroring or exhausting the pipe; bail out early with a
             // clear failure rather than looping until some large default timeout.
             assert!(
-                frame_count <= duration_secs * rate + 2,
+                frame_count <= duration_s * rate + 2,
                 "read far more frames than the source contains — byte stream is desynced"
             );
         }
 
         assert_eq!(
             frame_count,
-            duration_secs * rate,
+            duration_s * rate,
             "frame count must exactly match source duration*rate — a mismatch means our \
              predicted frame_bytes disagreed with ffmpeg's actual scale=-2:h output at some \
              point and the raw pipe desynced"
@@ -1624,7 +1628,7 @@ mod thumbnail_strip_tests {
         super::is_available()
     }
 
-    fn generate_test_video(path: &std::path::Path, duration_secs: u32) {
+    fn generate_test_video(path: &std::path::Path, duration_s: u32) {
         let status = crate::proc::command(ffmpeg_path().unwrap())
             .args([
                 "-hide_banner",
@@ -1634,7 +1638,7 @@ mod thumbnail_strip_tests {
                 "-f",
                 "lavfi",
                 "-i",
-                &format!("testsrc=duration={duration_secs}:size=320x240:rate=10"),
+                &format!("testsrc=duration={duration_s}:size=320x240:rate=10"),
                 "-c:v",
                 "libx264",
                 "-pix_fmt",
@@ -1668,7 +1672,7 @@ mod thumbnail_strip_tests {
         assert!(strip.cols * strip.rows >= strip.tile_count);
         assert_eq!(strip.tile_height % 2, 0);
         assert_eq!(strip.tile_width % 2, 0);
-        assert!((strip.interval_secs - 2.0).abs() < 1e-6);
+        assert!((strip.interval_us - 2_000_000).abs() < 1_000);
 
         std::fs::remove_dir_all(&dir).ok();
     }

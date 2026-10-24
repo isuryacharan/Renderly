@@ -5,10 +5,12 @@
 //! Everything here is read-only except [`resolve_short_ids`], which rewrites a command's JSON
 //! before the normal command dispatch. Edits themselves still go through `apply_commands`.
 
-use renderly_core::project::{Clip, Id, MediaKind, Project, Track, TrackKind};
+use renderly_core::project::{
+    BlendMode, Clip, EffectInstance, EffectStatus, Id, MediaKind, Project, Track, TrackKind,
+};
 use renderly_core::{Command, CommandOutcome};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 /// Characters of outline pushed with every user turn before the rest is left for `timeline`.
@@ -20,7 +22,8 @@ pub fn short_id(id: Id) -> String {
 }
 
 /// `m:ss.s` for a time in seconds (`0:05.0`, `1:02.5`).
-pub fn fmt_time(secs: f64) -> String {
+pub fn fmt_time(us: i64) -> String {
+    let secs = us as f64 / 1e6;
     let t = if secs.is_finite() { secs.max(0.0) } else { 0.0 };
     let minutes = (t / 60.0).floor();
     let seconds = t - minutes * 60.0;
@@ -55,7 +58,8 @@ pub fn find_clip(project: &Project, clip_id: Id) -> Option<&Clip> {
 
 fn clip_label(project: &Project, clip_id: Id) -> String {
     match find_clip(project, clip_id) {
-        Some(Clip::Caption(c)) => format!("caption '{}'", truncate(&c.text, 40)),
+        Some(Clip::Caption(c)) => format!("caption '{}'", truncate(&c.body.text, 40)),
+        Some(Clip::Text(t)) => format!("text '{}'", truncate(&t.body.text, 40)),
         Some(Clip::Adjustment(_)) => "adjustment layer".into(),
         Some(Clip::Video(c)) | Some(Clip::Audio(c)) => {
             format!("'{}'", media_name(project, c.media_id))
@@ -73,26 +77,91 @@ fn truncate(text: &str, max: usize) -> String {
     out
 }
 
-fn effect_list(effects: &[renderly_core::project::EffectInstance]) -> String {
-    if effects.is_empty() {
+/// Effects and transitions that are not `ok`, by effect instance id (or clip id for a
+/// transition): the outline marks them so the agent sees a missing effect.
+type Problems = HashMap<Id, EffectStatus>;
+
+fn problems_of(project: &Project) -> Problems {
+    renderly_core::packs::status::installed_problem_effects(project)
+        .into_iter()
+        .map(|p| (p.instance_id.unwrap_or(p.clip_id), p.status))
+        .collect()
+}
+
+/// `blur`, `print` (a pack item shows as `<pack>/<item>`): the ref without prefix and version.
+fn short_ref(item_ref: &str) -> String {
+    let rest = item_ref
+        .strip_prefix("builtin:")
+        .or_else(|| item_ref.strip_prefix("pack:"))
+        .unwrap_or(item_ref);
+    rest.split('@').next().unwrap_or(rest).to_string()
+}
+
+fn effect_label(e: &EffectInstance, problems: &Problems) -> String {
+    let mut label = format!("{}:{}", short_ref(&e.item_ref), short_id(e.id));
+    if !e.enabled {
+        label.push_str(" off");
+    }
+    if let Some(status) = problems.get(&e.id) {
+        label.push_str(&format!(" {}", status.as_str()));
+    }
+    label
+}
+
+/// ` fx=[filter print:ab12cd34, key chroma_key:..., blur:..., ...]`: slots in render order,
+/// then the effects list.
+fn effect_list(stack: &[(&'static str, &EffectInstance)], problems: &Problems) -> String {
+    if stack.is_empty() {
         return String::new();
     }
-    let names: Vec<String> = effects
+    let names: Vec<String> = stack
         .iter()
-        .map(|e| {
-            let name = e.effect_id.strip_prefix("builtin:").unwrap_or(&e.effect_id);
-            let off = if e.enabled { "" } else { " off" };
-            format!("{name}:{}{off}", short_id(e.id))
+        .map(|(slot, e)| match *slot {
+            "effects" => effect_label(e, problems),
+            slot => format!("{slot} {}", effect_label(e, problems)),
         })
         .collect();
     format!(" fx=[{}]", names.join(", "))
 }
 
+fn blend_note(mode: BlendMode) -> String {
+    if mode.is_normal() {
+        String::new()
+    } else {
+        format!(" blend {}", mode.as_str())
+    }
+}
+
+/// ` style tiktok-box`, with the status when the style is not installed. `id` is the clip (or
+/// track) the problem entry is keyed by.
+fn style_note(item_ref: &str, id: Id, problems: &Problems) -> String {
+    let mut note = format!(" style {}", short_ref(item_ref));
+    if let Some(status) = problems.get(&id) {
+        note.push_str(&format!(" {}", status.as_str()));
+    }
+    note
+}
+
+/// ` anim in:fade-up,active:word-highlight` (stored; rendered from the captions phase).
+fn animation_note(animations: &renderly_core::project::TextAnimations) -> String {
+    let parts: Vec<String> = animations
+        .entries()
+        .into_iter()
+        .map(|(phase, a)| format!("{phase}:{}", short_ref(&a.item_ref)))
+        .collect();
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" anim {}", parts.join(","))
+    }
+}
+
 /// One line per clip, with the span on the timeline and the source range for media clips.
-fn clip_line(project: &Project, clip: &Clip) -> String {
+fn clip_line(project: &Project, clip: &Clip, problems: &Problems) -> String {
     match clip {
         Clip::Video(c) | Clip::Audio(c) => {
-            let len = (c.source_out_secs - c.source_in_secs) / c.speed.max(f64::EPSILON);
+            let len = ((c.source_out_us - c.source_in_us) as f64 / c.speed.max(f64::EPSILON))
+                .round() as i64;
             let mut line = format!(
                 "  clip {} {} {}-{} src {}-{} '{}'",
                 short_id(c.id),
@@ -101,10 +170,10 @@ fn clip_line(project: &Project, clip: &Clip) -> String {
                 } else {
                     "audio"
                 },
-                fmt_time(c.position_secs),
-                fmt_time(c.position_secs + len),
-                fmt_time(c.source_in_secs),
-                fmt_time(c.source_out_secs),
+                fmt_time(c.start_us),
+                fmt_time(c.start_us + len),
+                fmt_time(c.source_in_us),
+                fmt_time(c.source_out_us),
                 media_name(project, c.media_id),
             );
             if (c.speed - 1.0).abs() > 1e-9 {
@@ -119,9 +188,12 @@ fn clip_line(project: &Project, clip: &Clip) -> String {
             if let Some(t) = &c.outgoing_transition {
                 line.push_str(&format!(
                     " transition {} {}s",
-                    t.kind.as_str(),
-                    t.duration_secs
+                    short_ref(&t.item_ref),
+                    renderly_core::time::us_to_seconds(t.duration_us)
                 ));
+                if let Some(status) = problems.get(&c.id) {
+                    line.push_str(&format!(" {}", status.as_str()));
+                }
             }
             if c.mask.is_some() {
                 line.push_str(" mask");
@@ -129,29 +201,75 @@ fn clip_line(project: &Project, clip: &Clip) -> String {
             if c.background_removal.is_some() {
                 line.push_str(" bg-removal");
             }
-            line.push_str(&effect_list(&c.effects));
+            line.push_str(&blend_note(c.blend_mode));
+            line.push_str(&effect_list(&c.slot_entries(), problems));
             line
         }
-        Clip::Caption(c) => format!(
-            "  clip {} caption {}-{} '{}' style {}",
-            short_id(c.id),
-            fmt_time(c.position_secs),
-            fmt_time(c.position_secs + c.duration_secs),
-            truncate(&c.text, 60),
-            c.style_id,
-        ),
+        Clip::Caption(c) => {
+            let mut line = format!(
+                "  clip {} caption {}-{} '{}'",
+                short_id(c.id),
+                fmt_time(c.start_us),
+                fmt_time(c.start_us + c.duration_us),
+                truncate(&c.body.text, 60),
+            );
+            if !c.body.words.is_empty() {
+                let marked = c.body.words.iter().filter(|w| w.emphasis).count();
+                line.push_str(&format!(" words {}", c.body.words.len()));
+                if marked > 0 {
+                    line.push_str(&format!(" ({marked} emphasised)"));
+                }
+            }
+            match &c.style {
+                Some(style) => line.push_str(&style_note(&style.item_ref, c.id, problems)),
+                None => line.push_str(" style inherit"),
+            }
+            line.push_str(&animation_note(&c.animations));
+            line
+        }
+        Clip::Text(t) => {
+            let mut line = format!(
+                "  clip {} text {}-{} '{}'",
+                short_id(t.id),
+                fmt_time(t.start_us),
+                fmt_time(t.start_us + t.duration_us),
+                truncate(&t.body.text, 60),
+            );
+            line.push_str(&style_note(&t.style.item_ref, t.id, problems));
+            line.push_str(&animation_note(&t.animations));
+            if !t.enabled {
+                line.push_str(" disabled");
+            }
+            if let Some(tr) = &t.outgoing_transition {
+                line.push_str(&format!(
+                    " transition {} {}s",
+                    short_ref(&tr.item_ref),
+                    renderly_core::time::us_to_seconds(tr.duration_us)
+                ));
+            }
+            if !t.transform.is_identity() {
+                line.push_str(" transformed");
+            }
+            if t.mask.is_some() {
+                line.push_str(" mask");
+            }
+            line.push_str(&blend_note(t.blend_mode));
+            line.push_str(&effect_list(&t.slot_entries(), problems));
+            line
+        }
         Clip::Adjustment(c) => format!(
-            "  clip {} adjustment {}-{} opacity {}{}",
+            "  clip {} adjustment {}-{} opacity {}{}{}",
             short_id(c.id),
-            fmt_time(c.position_secs),
-            fmt_time(c.position_secs + c.duration_secs),
+            fmt_time(c.start_us),
+            fmt_time(c.start_us + c.duration_us),
             c.opacity,
-            effect_list(&c.effects),
+            blend_note(c.blend_mode),
+            effect_list(&c.slot_entries(), problems),
         ),
     }
 }
 
-fn track_block(project: &Project, index: usize, track: &Track) -> String {
+fn track_block(project: &Project, index: usize, track: &Track, problems: &Problems) -> String {
     let mut flags = Vec::new();
     if track.muted {
         flags.push("muted");
@@ -161,6 +279,9 @@ fn track_block(project: &Project, index: usize, track: &Track) -> String {
     }
     if track.hidden {
         flags.push("hidden");
+    }
+    if track.magnetic {
+        flags.push("magnetic");
     }
     let mut head = format!(
         "track {} {} '{}' {}",
@@ -172,6 +293,13 @@ fn track_block(project: &Project, index: usize, track: &Track) -> String {
     if !flags.is_empty() {
         head.push_str(&format!(" [{}]", flags.join(",")));
     }
+    if let Some(style) = &track.caption_style {
+        head.push_str(&style_note(&style.item_ref, track.id, problems).replacen(
+            " style",
+            " caption style",
+            1,
+        ));
+    }
     let mut lines = vec![head];
     let mut clips: Vec<&Clip> = track.clips.iter().collect();
     clips.sort_by(|a, b| {
@@ -180,7 +308,7 @@ fn track_block(project: &Project, index: usize, track: &Track) -> String {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     for clip in clips {
-        lines.push(clip_line(project, clip));
+        lines.push(clip_line(project, clip, problems));
     }
     if track.clips.is_empty() {
         lines.push("  (empty)".into());
@@ -188,27 +316,31 @@ fn track_block(project: &Project, index: usize, track: &Track) -> String {
     lines.join("\n")
 }
 
-fn clip_start(clip: &Clip) -> f64 {
+fn clip_start(clip: &Clip) -> i64 {
     match clip {
-        Clip::Video(c) | Clip::Audio(c) => c.position_secs,
-        Clip::Caption(c) => c.position_secs,
-        Clip::Adjustment(c) => c.position_secs,
+        Clip::Video(c) | Clip::Audio(c) => c.start_us,
+        Clip::Caption(c) => c.start_us,
+        Clip::Text(c) => c.start_us,
+        Clip::Adjustment(c) => c.start_us,
     }
 }
 
-/// Duration of the root timeline (the latest clip end), in seconds.
-pub fn timeline_duration(tracks: &[Track]) -> f64 {
+/// Duration of the root timeline (the latest clip end), in µs.
+pub fn timeline_duration(tracks: &[Track]) -> i64 {
     tracks
         .iter()
         .flat_map(|t| t.clips.iter())
         .map(|c| match c {
             Clip::Video(m) | Clip::Audio(m) => {
-                m.position_secs + (m.source_out_secs - m.source_in_secs) / m.speed.max(f64::EPSILON)
+                m.start_us
+                    + (((m.source_out_us - m.source_in_us) as f64) / m.speed.max(f64::EPSILON))
+                        .round() as i64
             }
-            Clip::Caption(c) => c.position_secs + c.duration_secs,
-            Clip::Adjustment(c) => c.position_secs + c.duration_secs,
+            Clip::Caption(c) => c.start_us + c.duration_us,
+            Clip::Text(c) => c.start_us + c.duration_us,
+            Clip::Adjustment(c) => c.start_us + c.duration_us,
         })
-        .fold(0.0, f64::max)
+        .fold(0, i64::max)
 }
 
 /// The full timeline outline: header, then one block per track in z-order (index 0 is the
@@ -229,12 +361,13 @@ pub fn timeline_outline(project: &Project, sequence: Option<Id>) -> String {
         label,
         s.width,
         s.height,
-        s.fps,
+        s.fps.as_f64(),
         fmt_time(timeline_duration(tracks)),
         tracks.len(),
     )];
+    let problems = problems_of(project);
     for (i, track) in tracks.iter().enumerate() {
-        out.push(track_block(project, i, track));
+        out.push(track_block(project, i, track, &problems));
     }
     if !project.sequences.is_empty() && sequence.is_none() {
         let seqs: Vec<String> = project
@@ -244,14 +377,70 @@ pub fn timeline_outline(project: &Project, sequence: Option<Id>) -> String {
             .collect();
         out.push(format!("sequences: {}", seqs.join(", ")));
     }
+    if sequence.is_none() {
+        if let Some(line) = markers_line(project) {
+            out.push(line);
+        }
+        out.extend(transcript_lines(project));
+    }
     out.join("\n")
+}
+
+/// `markers: 0:01.0 'drop', 0:02.5 beat, ...` (at most 12, then a count).
+fn markers_line(project: &Project) -> Option<String> {
+    if project.markers.is_empty() {
+        return None;
+    }
+    const SHOWN: usize = 12;
+    let mut items: Vec<String> = project
+        .markers
+        .iter()
+        .take(SHOWN)
+        .map(|m| {
+            if m.label.is_empty() {
+                format!("{} {}", fmt_time(m.time_us), m.kind.as_str())
+            } else {
+                format!("{} '{}'", fmt_time(m.time_us), truncate(&m.label, 24))
+            }
+        })
+        .collect();
+    if project.markers.len() > SHOWN {
+        items.push(format!("... {} more", project.markers.len() - SHOWN));
+    }
+    Some(format!(
+        "markers ({}): {}",
+        project.markers.len(),
+        items.join(", ")
+    ))
+}
+
+/// `transcript 3f2a... of 'interview': 340 words, 12 deleted` per transcript; the words are in
+/// `get_project` / `get_transcript`, not here.
+fn transcript_lines(project: &Project) -> Vec<String> {
+    project
+        .transcripts
+        .iter()
+        .map(|t| {
+            let deleted = t.words.iter().filter(|w| w.deleted).count();
+            let mut line = format!(
+                "transcript {} of '{}': {} words",
+                short_id(t.id),
+                media_name(project, t.media_id),
+                t.words.len()
+            );
+            if deleted > 0 {
+                line.push_str(&format!(", {deleted} deleted"));
+            }
+            line
+        })
+        .collect()
 }
 
 /// The per-turn context block prepended to the user's message. Keeps the outline short: when
 /// it is too long the block ends with a pointer to the `timeline` tool.
 pub fn context_block(
     project: &Project,
-    playhead_secs: f64,
+    playhead_us: i64,
     selected_clip_ids: &[String],
     sequence: Option<Id>,
 ) -> String {
@@ -275,7 +464,7 @@ pub fn context_block(
     } else {
         outline
     };
-    let mut lines = vec![format!("playhead {}", fmt_time(playhead_secs))];
+    let mut lines = vec![format!("playhead {}", fmt_time(playhead_us))];
     if !selected_clip_ids.is_empty() {
         let shorts: Vec<String> = selected_clip_ids
             .iter()
@@ -407,7 +596,7 @@ pub fn summarize(
             Command::AddClip {
                 track_id,
                 media_id,
-                position_secs,
+                start,
                 ..
             },
             _,
@@ -415,22 +604,21 @@ pub fn summarize(
             "Added '{}' to {} at {}",
             media_name(after, *media_id),
             track_name(after, *track_id),
-            fmt_time(*position_secs)
+            fmt_time(start.resolve(after.settings.fps))
         ),
-        (
-            Command::SplitClip {
-                clip_id, at_secs, ..
-            },
-            _,
-        ) => {
-            format!("Split {} at {}", named(*clip_id), fmt_time(*at_secs))
+        (Command::SplitClip { clip_id, at, .. }, _) => {
+            format!(
+                "Split {} at {}",
+                named(*clip_id),
+                fmt_time(at.resolve(after.settings.fps))
+            )
         }
         (Command::TrimClip { clip_id, .. }, _) => {
             let range = find_clip(after, *clip_id).and_then(|c| match c {
                 Clip::Video(m) | Clip::Audio(m) => Some(format!(
                     "{}-{}",
-                    fmt_time(m.source_in_secs),
-                    fmt_time(m.source_out_secs)
+                    fmt_time(m.source_in_us),
+                    fmt_time(m.source_out_us)
                 )),
                 _ => None,
             });
@@ -439,34 +627,44 @@ pub fn summarize(
                 None => format!("Trimmed {}", named(*clip_id)),
             }
         }
-        (
-            Command::MoveClip {
-                clip_id,
-                new_position_secs,
-                ..
-            },
-            _,
-        ) => {
+        (Command::MoveClip { clip_id, start, .. }, _) => {
             format!(
                 "Moved {} to {}",
                 name(*clip_id),
-                fmt_time(*new_position_secs)
+                fmt_time(start.resolve(after.settings.fps))
             )
         }
         (Command::DeleteClip { clip_id, .. }, _) => format!("Deleted {}", named(*clip_id)),
+        (Command::AddCaption { body, start, .. }, _) => format!(
+            "Added caption '{}' at {}",
+            truncate(&body.text, 60),
+            fmt_time(start.resolve(after.settings.fps))
+        ),
+        (Command::SetCaption { clip_id, .. }, _) => format!("Updated {}", named(*clip_id)),
+        (Command::AddText { body, start, .. }, _) => format!(
+            "Added text '{}' at {}",
+            truncate(&body.text, 60),
+            fmt_time(start.resolve(after.settings.fps))
+        ),
         (
-            Command::AddCaption {
-                text,
-                position_secs,
-                ..
+            Command::SetTextBody {
+                clip_id, targets, ..
+            }
+            | Command::SetTextStyle {
+                clip_id, targets, ..
+            }
+            | Command::SetTextAnimation {
+                clip_id, targets, ..
             },
             _,
         ) => format!(
-            "Added caption '{}' at {}",
-            truncate(text, 60),
-            fmt_time(*position_secs)
+            "Updated text of {}",
+            target_label(*clip_id, targets, &named)
         ),
-        (Command::SetCaption { clip_id, .. }, _) => format!("Updated {}", named(*clip_id)),
+        (Command::SplitCaptions { .. }, _) => "Re-split captions into pages".into(),
+        (Command::AddMarkers { markers }, _) => format!("Added {} marker(s)", markers.len()),
+        (Command::ApplyTranscriptCuts { .. }, _) => "Cut the deleted transcript words".into(),
+        (Command::RestoreTranscriptWords { .. }, _) => "Restored transcript words".into(),
         (
             Command::SetAudioGain {
                 clip_id, gain_db, ..
@@ -478,27 +676,46 @@ pub fn summarize(
         (Command::SetClipSpeed { clip_id, speed, .. }, _) => {
             format!("Set {} speed to {speed}x", named(*clip_id))
         }
-        (Command::SetClipTransform { clip_id, .. }, _) => {
-            format!("Changed position and scale of {}", named(*clip_id))
-        }
-        (Command::SetClipEffects { clip_id, .. }, _) => {
-            format!("Updated effects on {}", named(*clip_id))
-        }
+        (
+            Command::SetClipTransform {
+                clip_id, targets, ..
+            },
+            _,
+        ) => format!(
+            "Changed position and scale of {}",
+            target_label(*clip_id, targets, &named)
+        ),
+        (
+            Command::SetClipEffects {
+                clip_id, targets, ..
+            },
+            _,
+        ) => format!(
+            "Updated effects on {}",
+            target_label(*clip_id, targets, &named)
+        ),
         (
             Command::SetClipTransition {
                 clip_id,
-                transition,
+                targets,
+                item_ref,
                 ..
             },
             _,
-        ) => match transition {
-            Some(t) => format!(
+        ) => match item_ref {
+            Some(r) => format!(
                 "Set {} transition on {}",
-                t.kind.as_str().replace('_', " "),
-                named(*clip_id)
+                short_ref(r).replace('_', " "),
+                target_label(*clip_id, targets, &named)
             ),
-            None => format!("Removed transition from {}", named(*clip_id)),
+            None => format!(
+                "Removed transition from {}",
+                target_label(*clip_id, targets, &named)
+            ),
         },
+        (Command::SetKeyframeEasing { clip_id, .. }, _) => {
+            format!("Changed keyframe easing on {}", named(*clip_id))
+        }
         (Command::SetProjectSettings { .. }, _) => "Changed project size or frame rate".into(),
         (Command::RenameTrack { track_id, name, .. }, _) => {
             format!("Renamed track to '{name}' ({})", short_id(*track_id))
@@ -514,6 +731,20 @@ pub fn summarize(
     }
 }
 
+/// Names the clip a single-clip command targets, or counts the clips of a batch.
+fn target_label(
+    clip_id: Option<Id>,
+    targets: &[renderly_core::commands::ClipRef],
+    named: &dyn Fn(Id) -> String,
+) -> String {
+    match (clip_id, targets) {
+        (Some(id), []) => named(id),
+        (_, [one]) => named(one.clip_id),
+        (_, many) if !many.is_empty() => format!("{} clips", many.len()),
+        _ => "the clip".into(),
+    }
+}
+
 fn track_name(project: &Project, track_id: Id) -> String {
     project
         .tracks
@@ -524,46 +755,106 @@ fn track_name(project: &Project, track_id: Id) -> String {
         .unwrap_or_else(|| "a track".into())
 }
 
-/// The asset catalog for `assets`: built-in effects with defaults, transitions, caption styles
-/// and the packs and plugins this project has loaded.
-pub fn assets_text(project: &Project) -> String {
-    let mut out = String::from("Built-in effects (id: default params):\n");
-    for id in renderly_core::compose::BUILTIN_EFFECT_IDS {
-        let params =
-            serde_json::to_string(&renderly_core::compose::default_params(id)).unwrap_or_default();
-        out.push_str(&format!("- {id} {params}\n"));
+/// The `transcript` tool's text. Each transcript has a header, then its words as
+/// `w-<n>:word` tokens, ten to a line, each line starting with the source-media time of its first
+/// word; a deleted word is `~word~` and a detection tag follows in parentheses. `id` selects one
+/// transcript by transcript id or media id (a prefix of at least 4 hex digits works).
+pub fn transcript_text(project: &Project, id: Option<&str>) -> Result<String, String> {
+    if project.transcripts.is_empty() {
+        return Ok(
+            "The project has no transcripts. GenerateCaptions on a media item makes one.".into(),
+        );
     }
-    let transitions: Vec<&str> = renderly_core::project::TransitionKind::ALL
+    let wanted = id.map(str::to_ascii_lowercase);
+    let picked: Vec<&renderly_core::project::Transcript> = project
+        .transcripts
         .iter()
-        .map(|k| k.as_str())
+        .filter(|t| match &wanted {
+            None => true,
+            Some(w) => {
+                t.id.to_string().starts_with(w.as_str())
+                    || t.media_id.to_string().starts_with(w.as_str())
+            }
+        })
         .collect();
-    out.push_str(&format!("Transitions: {}\n", transitions.join(", ")));
+    if picked.is_empty() {
+        return Err(format!(
+            "no transcript matches '{}'",
+            id.unwrap_or_default()
+        ));
+    }
+    let mut out: Vec<String> = Vec::new();
+    for t in picked {
+        let deleted = t.words.iter().filter(|w| w.deleted).count();
+        out.push(format!(
+            "transcript {} of '{}' (media {}): {} words{}{}",
+            short_id(t.id),
+            media_name(project, t.media_id),
+            short_id(t.media_id),
+            t.words.len(),
+            if deleted > 0 {
+                format!(", {deleted} deleted")
+            } else {
+                String::new()
+            },
+            if t.language.is_empty() {
+                String::new()
+            } else {
+                format!(", {}", t.language)
+            },
+        ));
+        for line in t.words.chunks(10) {
+            let words: Vec<String> = line
+                .iter()
+                .map(|w| {
+                    let mut text = if w.deleted {
+                        format!("~{}~", w.text)
+                    } else {
+                        w.text.clone()
+                    };
+                    if !w.tags.is_empty() {
+                        text.push_str(&format!("({})", w.tags.join(",")));
+                    }
+                    format!("{}:{text}", w.id)
+                })
+                .collect();
+            out.push(format!(
+                "{} {}",
+                fmt_time(line[0].start_us),
+                words.join(" ")
+            ));
+        }
+    }
+    Ok(out.join("\n"))
+}
+
+/// The asset catalog for `assets`: every effect, filter, transition and LUT that can be applied
+/// by ref (builtins and the installed packs) with its params, caption styles, and the WASM
+/// plugins this project loaded.
+pub fn assets_text(project: &Project) -> String {
+    let installed = renderly_core::packs::load_installed_packs();
+    let mut out = renderly_core::packs::describe::catalogue_text(&installed);
+    out.push_str(
+        "Apply by ref: SetClipEffects {filter | key | adjust | effects:[{ref, params}]}, \
+         SetClipTransition {ref, duration}.\n",
+    );
     out.push_str(&format!(
-        "Caption styles: {}\n",
+        "Caption and text styles (style.ref builtin:<id>@1): {}\n",
         renderly_core::captions::BUILTIN_STYLES.join(", ")
     ));
-    let list = |paths: &[PathBuf]| -> String {
-        if paths.is_empty() {
-            "none".into()
+    let plugins: Vec<String> = project
+        .legacy_pack_paths
+        .iter()
+        .filter(|p| p.join("plugin.json").is_file())
+        .filter_map(|p| p.file_name().map(|f| f.to_string_lossy().into_owned()))
+        .collect();
+    out.push_str(&format!(
+        "Loaded WASM plugins (wasm:<id>): {}\n",
+        if plugins.is_empty() {
+            "none".to_string()
         } else {
-            paths
-                .iter()
-                .map(|p| {
-                    p.file_name()
-                        .map(|f| f.to_string_lossy().into_owned())
-                        .unwrap_or_default()
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
+            plugins.join(", ")
         }
-    };
-    out.push_str(&format!(
-        "Loaded asset packs: {}\n",
-        list(&project.asset_pack_paths)
-    ));
-    out.push_str(&format!(
-        "Loaded WASM plugins: {}\n",
-        list(&project.wasm_plugin_paths)
     ));
     out
 }
@@ -618,7 +909,7 @@ pub fn find_media_text(dir: &Path, recursive: bool, max: usize) -> Result<String
                     Some(MediaKind::Image) => "image",
                     _ => "other",
                 };
-                let dur = p.duration_secs.map(fmt_time).unwrap_or_else(|| "?".into());
+                let dur = p.duration_us.map(fmt_time).unwrap_or_else(|| "?".into());
                 line.push_str(&format!(" {kind} {dur}"));
                 if let (Some(w), Some(h)) = (p.width, p.height) {
                     line.push_str(&format!(" {w}x{h}"));
@@ -638,6 +929,7 @@ pub fn find_media_text(dir: &Path, recursive: bool, max: usize) -> Result<String
 mod tests {
     use super::*;
     use renderly_core::project::{MediaClip, MediaItem, Settings};
+    use renderly_core::time::Time;
 
     fn project_with_clip() -> (Project, Id, Id) {
         let mut p = Project::new("Demo", Settings::default());
@@ -646,7 +938,7 @@ mod tests {
             id: media_id,
             path: PathBuf::from("C:/clips/Gameplay 1.mp4"),
             kind: MediaKind::Video,
-            duration_secs: Some(10.0),
+            duration_us: Some(10_000_000),
             width: Some(1920),
             height: Some(1080),
             fps: Some(60.0),
@@ -657,17 +949,21 @@ mod tests {
         track.clips.push(Clip::Video(MediaClip {
             id: clip_id,
             media_id,
-            position_secs: 1.0,
-            source_in_secs: 0.0,
-            source_out_secs: 5.0,
+            start_us: 1000000,
+            source_in_us: 0,
+            source_out_us: 5000000,
             gain_db: 0.0,
             enabled: true,
-            fade_in_secs: 0.0,
-            fade_out_secs: 0.0,
+            fade_in_us: 0,
+            fade_out_us: 0,
             speed: 1.0,
             transform: Default::default(),
             keyframes: vec![],
+            filter: None,
+            key: None,
+            adjust: None,
             effects: vec![],
+            blend_mode: BlendMode::Normal,
             outgoing_transition: None,
             mask: None,
             background_removal: None,
@@ -676,6 +972,112 @@ mod tests {
         }));
         p.tracks.push(track);
         (p, media_id, clip_id)
+    }
+
+    #[test]
+    fn outline_shows_text_markers_magnetic_tracks_and_transcripts() {
+        use renderly_core::project::{
+            CaptionWord, Marker, MarkerKind, TextAnimationRef, TextBody, TextClip, TextStyleRef,
+            Transcript, TranscriptWord,
+        };
+        let (mut p, media_id, _) = project_with_clip();
+        p.tracks[0].magnetic = true;
+        // A caption track with a track style, one caption with words and an animation.
+        let mut caps = Track::new(TrackKind::Caption, "Subs");
+        caps.caption_style = Some(TextStyleRef::builtin("tiktok-box"));
+        let mut cap =
+            renderly_core::project::CaptionClip::new(1_000_000, 2_000_000, "Let's build it");
+        cap.body.words = vec![
+            CaptionWord {
+                text: "Let's".into(),
+                start_us: 0,
+                end_us: 300_000,
+                emphasis: false,
+                word_id: None,
+            },
+            CaptionWord {
+                text: "build".into(),
+                start_us: 400_000,
+                end_us: 800_000,
+                emphasis: true,
+                word_id: None,
+            },
+        ];
+        cap.animations.in_ = Some(TextAnimationRef {
+            item_ref: "builtin:fade-up@1".into(),
+            hash: None,
+            params: Default::default(),
+            duration_us: None,
+        });
+        caps.clips.push(Clip::Caption(cap));
+        p.tracks.push(caps);
+        // A title on its own video track with an unknown pack style.
+        let mut titles = Track::new(TrackKind::Video, "Titles");
+        let mut title = TextClip::new(0, 3_000_000, TextBody::plain("EPISODE 12"));
+        title.style = TextStyleRef::new("pack:mira.titles/neon@2");
+        titles.clips.push(Clip::Text(title));
+        p.tracks.push(titles);
+        p.markers.push(Marker {
+            id: Id::new_v4(),
+            time_us: 4_000_000,
+            label: "drop".into(),
+            color: String::new(),
+            kind: MarkerKind::User,
+        });
+        p.transcripts.push(Transcript {
+            id: Id::new_v4(),
+            media_id,
+            language: "en".into(),
+            model: "base".into(),
+            words: vec![
+                TranscriptWord {
+                    id: "w-1".into(),
+                    text: "So".into(),
+                    start_us: 1_200_000,
+                    end_us: 1_400_000,
+                    deleted: false,
+                    tags: vec![],
+                },
+                TranscriptWord {
+                    id: "w-2".into(),
+                    text: "um".into(),
+                    start_us: 1_500_000,
+                    end_us: 1_700_000,
+                    deleted: true,
+                    tags: vec!["filler".into()],
+                },
+            ],
+        });
+
+        let outline = timeline_outline(&p, None);
+        assert!(outline.contains("[magnetic]"), "{outline}");
+        assert!(outline.contains("caption style tiktok-box"), "{outline}");
+        assert!(
+            outline.contains("caption 0:01.0-0:03.0 'Let's build it' words 2 (1 emphasised) style inherit anim in:fade-up"),
+            "{outline}"
+        );
+        assert!(
+            outline.contains("text 0:00.0-0:03.0 'EPISODE 12' style mira.titles/neon"),
+            "{outline}"
+        );
+        assert!(
+            outline.contains("missing"),
+            "an uninstalled style is marked: {outline}"
+        );
+        assert!(outline.contains("markers (1): 0:04.0 'drop'"), "{outline}");
+        assert!(
+            outline.contains("transcript") && outline.contains("2 words, 1 deleted"),
+            "{outline}"
+        );
+
+        let words = transcript_text(&p, None).unwrap();
+        assert!(words.contains("w-1:So w-2:~um~(filler)"), "{words}");
+        assert!(words.starts_with("transcript "), "{words}");
+        assert!(transcript_text(&p, Some("ffffffff")).is_err());
+        let empty = Project::new("x", renderly_core::project::Settings::default());
+        assert!(transcript_text(&empty, None)
+            .unwrap()
+            .contains("no transcripts"));
     }
 
     #[test]
@@ -694,7 +1096,7 @@ mod tests {
     fn short_id_resolves_when_unique_and_errors_when_ambiguous() {
         let (p, _, clip_id) = project_with_clip();
         let short = short_id(clip_id);
-        let mut cmd = serde_json::json!({"command": "TrimClip", "track_id": p.tracks[0].id.to_string(), "clip_id": short, "new_source_out_secs": 3.0});
+        let mut cmd = serde_json::json!({"command": "TrimClip", "track_id": p.tracks[0].id.to_string(), "clip_id": short, "source_out": "3s"});
         resolve_short_ids(&mut cmd, &p).expect("unique prefix resolves");
         assert_eq!(cmd["clip_id"], clip_id.to_string());
 
@@ -707,13 +1109,13 @@ mod tests {
             .clips
             .push(Clip::Adjustment(renderly_core::project::AdjustmentClip {
                 id: a,
-                ..renderly_core::project::AdjustmentClip::new(0.0, 1.0)
+                ..renderly_core::project::AdjustmentClip::new(0, 1_000_000)
             }));
         other.tracks[0]
             .clips
             .push(Clip::Adjustment(renderly_core::project::AdjustmentClip {
                 id: b,
-                ..renderly_core::project::AdjustmentClip::new(2.0, 1.0)
+                ..renderly_core::project::AdjustmentClip::new(2_000_000, 1_000_000)
             }));
         let mut amb = serde_json::json!({"clip_id": "12345678"});
         let err = resolve_short_ids(&mut amb, &other).unwrap_err();
@@ -744,8 +1146,8 @@ mod tests {
         let cmd = Command::TrimClip {
             track_id: p.tracks[0].id,
             clip_id,
-            new_source_in_secs: None,
-            new_source_out_secs: Some(5.0),
+            source_in: None,
+            source_out: Some(Time::Us(5_000_000)),
         };
         let s = summarize(&cmd, &p, &p, &CommandOutcome::Applied);
         assert_eq!(s, "Trimmed 'Gameplay 1' to 0:00.0-0:05.0");
@@ -758,7 +1160,7 @@ mod tests {
             p.tracks
                 .push(Track::new(TrackKind::Video, format!("Track {i}")));
         }
-        let block = context_block(&p, 1.5, &[], None);
+        let block = context_block(&p, 1_500_000, &[], None);
         assert!(block.contains("call timeline for the full outline"));
         assert!(block.starts_with("[Renderly context"));
         assert!(block.chars().count() < CONTEXT_OUTLINE_CHARS + 400);
@@ -774,7 +1176,7 @@ mod tests {
             second
                 .clips
                 .push(Clip::Video(renderly_core::project::MediaClip {
-                    position_secs: 6.0 + i as f64 * 4.0,
+                    start_us: 6_000_000 + i as i64 * 4_000_000,
                     ..match p.tracks[0].clips[0].clone() {
                         Clip::Video(c) => c,
                         _ => unreachable!("fixture clip is a video clip"),
@@ -794,15 +1196,13 @@ mod tests {
                 .clips
                 .push(Clip::Caption(renderly_core::project::CaptionClip {
                     id: Id::new_v4(),
-                    text: (*text).into(),
-                    position_secs: i as f64 * 2.0,
-                    duration_secs: 2.0,
-                    style_id: "tiktok-box".into(),
+                    ..renderly_core::project::CaptionClip::new(i as i64 * 2_000_000, 2000000, *text)
+                        .with_style("tiktok-box")
                 }));
         }
         p.tracks.push(second);
         p.tracks.push(captions);
-        let block = context_block(&p, 2.5, &[], None);
+        let block = context_block(&p, 2_500_000, &[], None);
         eprintln!("typical context block: {} chars", block.len());
         assert!(block.len() < 1200, "context block is {} chars", block.len());
         assert!(block.contains("track 2 caption 'Captions'"));
@@ -812,14 +1212,14 @@ mod tests {
     fn assets_lists_builtin_effects_and_transitions() {
         let (p, _, _) = project_with_clip();
         let text = assets_text(&p);
-        assert!(text.contains("builtin:"));
-        assert!(text.contains("crossfade"));
+        assert!(text.contains("builtin:blur@1"));
+        assert!(text.contains("builtin:crossfade@1"));
     }
 
     #[test]
     fn fmt_time_formats_minutes_and_fraction() {
-        assert_eq!(fmt_time(5.0), "0:05.0");
-        assert_eq!(fmt_time(62.5), "1:02.5");
-        assert_eq!(fmt_time(-3.0), "0:00.0");
+        assert_eq!(fmt_time(5_000_000), "0:05.0");
+        assert_eq!(fmt_time(62_500_000), "1:02.5");
+        assert_eq!(fmt_time(-3_000_000), "0:00.0");
     }
 }

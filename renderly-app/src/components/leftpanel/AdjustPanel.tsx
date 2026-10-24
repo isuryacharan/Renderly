@@ -1,81 +1,40 @@
 import { SlidersHorizontal } from "lucide-react";
-import { setClipEffects } from "../../lib/commands";
-import type { EffectInstance, MediaClip } from "../../lib/types";
-import { activeTracks } from "../../lib/container";
-import { useEditorStore, type DispatchOptions } from "../../store/editorStore";
-import { EffectList } from "./EffectsPanel";
+import { useCatalogue } from "../../lib/useCatalogue";
+import { useSelectedClip } from "../../lib/useSelectedClip";
+import { EffectStack } from "../inspector/EffectStack";
+import { EffectGallery } from "./EffectGallery";
 
-const COLOR_ADJUST_ID = "builtin:color_adjust";
-const DEFAULTS = { exposure: 0, contrast: 1, saturation: 1 };
-
-function newId(): string {
-  return crypto.randomUUID();
-}
-
+/// Adjust tab: colour adjustment (the clip's adjust slot) with generic parameter rows.
 export function AdjustPanel() {
-  const project = useEditorStore((s) => s.project);
-  const selection = useEditorStore((s) => s.selection);
-  const dispatch = useEditorStore((s) => s.dispatch);
+  const catalogue = useCatalogue();
+  const selected = useSelectedClip();
 
-  const activeSequenceId = useEditorStore((s) => s.activeSequenceId);
-  const track = activeTracks(project, activeSequenceId).find((t) => t.id === selection?.trackId);
-  const clip = track?.clips.find((c) => c.id === selection?.clipId);
-  const mediaClip =
-    clip && clip.type !== "caption" ? (clip as MediaClip) : null;
-  const locked = track?.locked ?? true;
-
-  if (!mediaClip || !track || track.kind !== "video") {
+  if (!selected || selected.track.kind !== "video") {
     return (
       <div className="panel-body">
         <h3>Adjust</h3>
-        <p className="empty-hint">Select a video clip to adjust exposure, contrast, and saturation.</p>
+        <p className="empty-hint">Select a video clip to adjust its colour.</p>
       </div>
     );
   }
-
-  const effects = mediaClip.effects ?? [];
-  const hasAdjust = effects.some((e) => e.effect_id === COLOR_ADJUST_ID);
-
-  async function commit(next: EffectInstance[], opts?: DispatchOptions) {
-    await dispatch(setClipEffects(track!.id, mediaClip!.id, next), false, opts);
-  }
-
-  function ensureAdjust() {
-    if (hasAdjust) return;
-    void commit([
-      ...effects,
-      {
-        id: newId(),
-        effect_id: COLOR_ADJUST_ID,
-        enabled: true,
-        params: { ...DEFAULTS },
-      },
-    ]);
-  }
-
-  const adjustOnly = effects.filter((e) => e.effect_id === COLOR_ADJUST_ID);
+  const { track, clip } = selected;
+  const items = catalogue
+    .filter((e) => e.slot === "adjust" && e.state === "ok")
+    .map((e) => ({ ref: e.ref, label: e.label, entry: e }));
 
   return (
     <div className="panel-body effects-panel">
       <h3>Adjust</h3>
-      <p className="empty-hint">Exposure, contrast, and saturation (builtin:color_adjust).</p>
-      {!hasAdjust ? (
-        <button type="button" disabled={locked} onClick={ensureAdjust}>
-          <SlidersHorizontal size={14} strokeWidth={1.75} />
-          Add color adjust
-        </button>
-      ) : (
-        <EffectList
+      <p className="empty-hint">Colour adjustment (one per clip).</p>
+      {!clip.adjust && (
+        <EffectGallery
+          items={items}
           track={track}
-          clip={mediaClip}
-          effects={adjustOnly}
-          locked={locked}
-          onCommit={async (nextAdjust, opts) => {
-            const others = effects.filter((e) => e.effect_id !== COLOR_ADJUST_ID);
-            await commit([...others, ...nextAdjust], opts);
-          }}
+          clip={clip}
+          icon={<SlidersHorizontal size={14} strokeWidth={1.75} />}
         />
       )}
+      <EffectStack track={track} clip={clip} slots={["adjust"]} emptyHint="" />
     </div>
   );
 }

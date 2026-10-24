@@ -71,6 +71,18 @@ pub fn builtin_sources(name: &str) -> Option<(&'static str, BTreeMap<String, Str
     Some((b.json, shaders))
 }
 
+/// Names of the builtin transition items (`crossfade`, `wipe_left`, ...), in table order.
+pub fn transition_ids() -> Vec<&'static str> {
+    BUILTINS
+        .iter()
+        .filter(|b| {
+            manifest(b.name)
+                .is_some_and(|m| m.kind == super::runtime::manifest::ItemKind::Transition)
+        })
+        .map(|b| b.name)
+        .collect()
+}
+
 /// Compiles builtin `name` (validates the manifest and every pass with naga).
 pub fn load_builtin(name: &str) -> Result<CompiledEffect, EffectError> {
     let (json, shaders) =

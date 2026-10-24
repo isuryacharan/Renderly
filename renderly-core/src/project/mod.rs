@@ -1,22 +1,40 @@
-//! Project schema v7 — matches docs/project-schema.md exactly.
+//! Project schema v8 — matches docs/project-schema.md exactly.
 //! If you change a type here, update that doc in the same change.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 pub mod anim;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod backup;
+pub mod effects;
+pub mod keys;
+pub mod migrate;
+pub mod text;
+
+use crate::time::Fps;
 
 pub use anim::{
-    evaluate_adjustment_opacity, evaluate_speed, evaluate_transform, evaluate_volume_db,
-    integrate_speed, source_time_at, timeline_duration_secs,
+    evaluate_adjustment_opacity, evaluate_effect_stack, evaluate_speed, evaluate_text_transform,
+    evaluate_transform, evaluate_volume_db, integrate_speed, sample_track_value, source_time_at,
+    timeline_duration_us,
+};
+pub use effects::{
+    BlendMode, ClipTransition, EffectInstance, EffectParam, EffectParams, EffectStatus,
+    ProgressEasing,
+};
+pub use keys::{split_bezier_span, Easing, KeyValue, Keyframe, KeyframeTrack, TrackProperty};
+pub use text::{
+    CaptionClip, CaptionWord, Marker, MarkerKind, TextAnimationRef, TextAnimations, TextBody,
+    TextClip, TextRun, TextStyleRef, Transcript, TranscriptRef, TranscriptWord,
 };
 
 pub type Id = uuid::Uuid;
 
-/// Current on-disk schema. Loaders accept `1`..=`7` (older files get serde defaults for
-/// new fields); new projects and saves write `7`.
-pub const SCHEMA_VERSION: u32 = 7;
+/// Current on-disk schema. Loaders accept `1`..=`8`: files older than 8 run through the
+/// migration chain in [`migrate`] first (v7 -> v8 converts float seconds to integer µs).
+/// New projects and saves write `8`.
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// Deepest allowed chain of nested sequences (a sequence placed inside a sequence inside ...).
 /// Evaluation fails with an error beyond this instead of overflowing the stack; commands
@@ -46,12 +64,19 @@ pub struct Project {
     /// [`MediaKind::Sequence`] media item. Empty on older projects.
     #[serde(default)]
     pub sequences: Vec<Sequence>,
-    /// Absolute or project-relative paths to loaded asset-pack roots (Phase 3).
+    /// Transitional (schema v8): the pack and WASM-plugin folders a v7 project listed in
+    /// `asset_pack_paths` / `wasm_plugin_paths`. Hosts install the pack folders into the user
+    /// library as `local.<id>` packs on open and clear them from this list (see
+    /// [`crate::library::adopt_legacy_paths`]); plugin folders stay until plugins move into
+    /// packs. v8 projects otherwise store item refs only, never pack paths.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub asset_pack_paths: Vec<PathBuf>,
-    /// Absolute or project-relative paths to loaded WASM plugin roots (Phase 3).
+    pub legacy_pack_paths: Vec<PathBuf>,
+    /// Timeline markers on the root timeline (schema v8). Snapping includes them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub wasm_plugin_paths: Vec<PathBuf>,
+    pub markers: Vec<Marker>,
+    /// Word-level transcripts of media items, in source media time (schema v8).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transcripts: Vec<Transcript>,
     /// Multicam sync groups (Phase 4). Empty on older projects.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub multicam_groups: Vec<MulticamGroup>,
@@ -70,8 +95,9 @@ impl Project {
             media: Vec::new(),
             tracks: Vec::new(),
             sequences: Vec::new(),
-            asset_pack_paths: Vec::new(),
-            wasm_plugin_paths: Vec::new(),
+            legacy_pack_paths: Vec::new(),
+            markers: Vec::new(),
+            transcripts: Vec::new(),
             multicam_groups: Vec::new(),
             segmentation_model_path: None,
         }
@@ -157,16 +183,16 @@ impl Project {
 
     /// End of the last enabled video/audio/adjustment clip in a sequence (captions are not
     /// rendered inside sequences). `0.0` for an unknown or empty sequence.
-    pub fn sequence_duration(&self, sequence_id: Id) -> f64 {
+    pub fn sequence_duration(&self, sequence_id: Id) -> i64 {
         let Some(seq) = self.find_sequence(sequence_id) else {
-            return 0.0;
+            return 0;
         };
         seq.tracks
             .iter()
             .flat_map(|t| t.clips.iter())
             .filter(|c| c.is_enabled() && !matches!(c, Clip::Caption(_)))
-            .map(|c| c.end_secs())
-            .fold(0.0_f64, f64::max)
+            .map(|c| c.end_us())
+            .fold(0_i64, i64::max)
     }
 
     /// A copy of the project whose root timeline is `sequence_id`'s tracks, for hosts that
@@ -194,13 +220,13 @@ impl Project {
     }
 
     /// Duration of a media item. Sequence media is derived from the inner timeline so it can
-    /// never go stale; everything else is the probed `duration_secs`.
-    pub fn media_duration(&self, media_id: Id) -> Option<f64> {
+    /// never go stale; everything else is the probed `duration_us`.
+    pub fn media_duration(&self, media_id: Id) -> Option<i64> {
         let media = self.find_media(media_id)?;
         match (media.kind, media.sequence_id) {
             (MediaKind::Sequence, Some(seq)) => Some(self.sequence_duration(seq)),
             (MediaKind::Sequence, None) => None,
-            _ => media.duration_secs,
+            _ => media.duration_us,
         }
     }
 
@@ -262,15 +288,22 @@ impl Project {
     /// it. Every loader (CLI, MCP, the app) goes through this, so a broken or too-new file
     /// fails with a clear error instead of rendering wrongly.
     pub fn from_json(data: &str) -> Result<Self, ProjectLoadError> {
-        let mut project: Project = serde_json::from_str(data).map_err(ProjectLoadError::Parse)?;
-        if project.schema_version < MIN_LOADABLE_SCHEMA_VERSION
-            || project.schema_version > SCHEMA_VERSION
-        {
-            return Err(ProjectLoadError::UnsupportedVersion(project.schema_version));
-        }
+        Self::from_json_with_report(data).map(|(project, _)| project)
+    }
+
+    /// Like [`Self::from_json`] but also reports which migration steps ran, so hosts can
+    /// back up the original file before its first save (see [`backup`]).
+    pub fn from_json_with_report(
+        data: &str,
+    ) -> Result<(Self, migrate::MigrationReport), ProjectLoadError> {
+        let value: serde_json::Value =
+            serde_json::from_str(data).map_err(ProjectLoadError::Parse)?;
+        let (value, report) = migrate::migrate_to_current(value)?;
+        let mut project: Project =
+            serde_json::from_value(value).map_err(ProjectLoadError::Parse)?;
         project.validate().map_err(ProjectLoadError::Invalid)?;
         project.schema_version = SCHEMA_VERSION;
-        Ok(project)
+        Ok((project, report))
     }
 
     /// Structural checks that serde cannot express; run after loading a project file.
@@ -314,6 +347,7 @@ impl Project {
         for seq in &self.sequences {
             self.check_sequence_depth(seq.id, &mut vec![seq.id])?;
         }
+        self.validate_text()?;
         Ok(())
     }
 
@@ -344,6 +378,8 @@ pub enum ProjectLoadError {
     UnsupportedVersion(u32),
     #[error("invalid project: {0}")]
     Invalid(ProjectError),
+    #[error("migrating project: {0}")]
+    Migration(String),
 }
 
 /// Which timeline a track belongs to: `None` is the root timeline (`Project::tracks`),
@@ -368,6 +404,12 @@ pub enum ProjectError {
     SequenceCycle(Id),
     #[error("sequence {0} is nested deeper than the limit of {MAX_SEQUENCE_DEPTH}")]
     SequenceTooDeep(Id),
+    #[error("transcript id {0} appears more than once")]
+    DuplicateTranscriptId(Id),
+    #[error("transcript {0} has more than one word with id '{1}'")]
+    DuplicateTranscriptWord(Id, String),
+    #[error("marker id {0} appears more than once")]
+    DuplicateMarkerId(Id),
 }
 
 /// A nested timeline (schema v7). Placed on another timeline through the sequence's
@@ -387,7 +429,9 @@ pub struct Sequence {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Settings {
-    pub fps: f64,
+    /// Project frame rate, rational (`30000/1001` for NTSC). Frame boundaries are computed from
+    /// it (see [`crate::time::Fps::frame_start`]).
+    pub fps: Fps,
     pub width: u32,
     pub height: u32,
     pub sample_rate: u32,
@@ -404,7 +448,7 @@ impl Default for Settings {
     /// TikTok/shorts-friendly vertical default — matches the primary Ultra Bruno workflow.
     fn default() -> Self {
         Self {
-            fps: 60.0,
+            fps: Fps::new(60, 1),
             width: 1080,
             height: 1920,
             sample_rate: 48000,
@@ -430,12 +474,13 @@ pub struct MediaItem {
     pub kind: MediaKind,
     /// Known only for kinds/formats the prober supports today; see docs/project-schema.md
     /// and renderly-core::media for current coverage.
-    pub duration_secs: Option<f64>,
+    pub duration_us: Option<i64>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    /// Probed frame rate, display only; clip timing uses the project rate.
     pub fps: Option<f64>,
     /// Present iff `kind == Sequence` (schema v7). For sequence media `path` is empty and
-    /// `duration_secs`/`width`/`height`/`fps` are `None`: derive them with
+    /// `duration_us`/`width`/`height`/`fps` are `None`: derive them with
     /// [`Project::media_duration`] / [`Project::media_size`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sequence_id: Option<Id>,
@@ -471,6 +516,19 @@ pub struct Track {
     /// Excluded from composited video layers / burned-in captions on export/playback.
     #[serde(default)]
     pub hidden: bool,
+    /// Magnetic track (schema v8): clips stay contiguous from 0, so every edit that changes a
+    /// clip's span ripples the rest (`AddClip`, `MoveClip`, `DeleteClip`, `TrimClip`, ...).
+    /// Video and audio tracks only; `false` on projects migrated from v7.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub magnetic: bool,
+    /// Default style of the captions on a caption track; clips without their own `style`
+    /// inherit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption_style: Option<TextStyleRef>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -494,6 +552,8 @@ impl Track {
             muted: false,
             locked: false,
             hidden: false,
+            magnetic: false,
+            caption_style: None,
         }
     }
 
@@ -508,6 +568,8 @@ pub enum Clip {
     Video(MediaClip),
     Audio(MediaClip),
     Caption(CaptionClip),
+    /// A title layer on a video track (schema v8).
+    Text(TextClip),
     /// Effects applied to everything composited beneath it (schema v7). Video tracks only.
     Adjustment(AdjustmentClip),
 }
@@ -517,35 +579,39 @@ impl Clip {
         match self {
             Clip::Video(c) | Clip::Audio(c) => c.id,
             Clip::Caption(c) => c.id,
+            Clip::Text(c) => c.id,
             Clip::Adjustment(c) => c.id,
         }
     }
 
-    pub fn position_secs(&self) -> f64 {
+    pub fn start_us(&self) -> i64 {
         match self {
-            Clip::Video(c) | Clip::Audio(c) => c.position_secs,
-            Clip::Caption(c) => c.position_secs,
-            Clip::Adjustment(c) => c.position_secs,
+            Clip::Video(c) | Clip::Audio(c) => c.start_us,
+            Clip::Caption(c) => c.start_us,
+            Clip::Text(c) => c.start_us,
+            Clip::Adjustment(c) => c.start_us,
         }
     }
 
-    pub fn duration_secs(&self) -> f64 {
+    pub fn duration_us(&self) -> i64 {
         match self {
-            Clip::Video(c) | Clip::Audio(c) => c.timeline_duration_secs(),
-            Clip::Caption(c) => c.duration_secs,
-            Clip::Adjustment(c) => c.duration_secs,
+            Clip::Video(c) | Clip::Audio(c) => c.timeline_duration_us(),
+            Clip::Caption(c) => c.duration_us,
+            Clip::Text(c) => c.duration_us,
+            Clip::Adjustment(c) => c.duration_us,
         }
     }
 
-    pub fn end_secs(&self) -> f64 {
-        self.position_secs() + self.duration_secs()
+    pub fn end_us(&self) -> i64 {
+        self.start_us() + self.duration_us()
     }
 
-    pub fn set_position_secs(&mut self, position_secs: f64) {
+    pub fn set_start_us(&mut self, start_us: i64) {
         match self {
-            Clip::Video(c) | Clip::Audio(c) => c.position_secs = position_secs,
-            Clip::Caption(c) => c.position_secs = position_secs,
-            Clip::Adjustment(c) => c.position_secs = position_secs,
+            Clip::Video(c) | Clip::Audio(c) => c.start_us = start_us,
+            Clip::Caption(c) => c.start_us = start_us,
+            Clip::Text(c) => c.start_us = start_us,
+            Clip::Adjustment(c) => c.start_us = start_us,
         }
     }
 
@@ -555,6 +621,7 @@ impl Clip {
         match self {
             Clip::Video(c) | Clip::Audio(c) => c.enabled,
             Clip::Caption(_) => true,
+            Clip::Text(c) => c.enabled,
             Clip::Adjustment(c) => c.enabled,
         }
     }
@@ -562,14 +629,14 @@ impl Clip {
     pub fn as_media(&self) -> Option<&MediaClip> {
         match self {
             Clip::Video(c) | Clip::Audio(c) => Some(c),
-            Clip::Caption(_) | Clip::Adjustment(_) => None,
+            Clip::Caption(_) | Clip::Text(_) | Clip::Adjustment(_) => None,
         }
     }
 
     pub fn as_media_mut(&mut self) -> Option<&mut MediaClip> {
         match self {
             Clip::Video(c) | Clip::Audio(c) => Some(c),
-            Clip::Caption(_) | Clip::Adjustment(_) => None,
+            Clip::Caption(_) | Clip::Text(_) | Clip::Adjustment(_) => None,
         }
     }
 
@@ -595,15 +662,23 @@ impl Clip {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AdjustmentClip {
     pub id: Id,
-    pub position_secs: f64,
-    pub duration_secs: f64,
+    pub start_us: i64,
+    pub duration_us: i64,
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// 0..=1 mix between the unadjusted and adjusted picture.
     #[serde(default = "default_opacity")]
     pub opacity: f64,
+    /// Slots in render order: `filter`, `adjust`, then `effects[]` (no `key` slot here).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<EffectInstance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adjust: Option<EffectInstance>,
     #[serde(default)]
     pub effects: Vec<EffectInstance>,
+    /// How the adjusted picture combines with what is beneath (default `normal`).
+    #[serde(default, skip_serializing_if = "BlendMode::is_normal")]
+    pub blend_mode: BlendMode,
     /// Limits where the adjustment applies. UVs are output-frame coordinates (0..1 across
     /// the canvas).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -614,22 +689,54 @@ pub struct AdjustmentClip {
 }
 
 impl AdjustmentClip {
-    pub fn new(position_secs: f64, duration_secs: f64) -> Self {
+    pub fn new(start_us: i64, duration_us: i64) -> Self {
         Self {
             id: Id::new_v4(),
-            position_secs,
-            duration_secs,
+            start_us,
+            duration_us,
             enabled: true,
             opacity: 1.0,
+            filter: None,
+            adjust: None,
             effects: Vec::new(),
+            blend_mode: BlendMode::Normal,
             mask: None,
             keyframes: Vec::new(),
         }
     }
 
+    /// Every effect instance in render order: filter, adjust, then `effects[]`.
+    pub fn effect_stack(&self) -> Vec<&EffectInstance> {
+        self.filter
+            .iter()
+            .chain(self.adjust.iter())
+            .chain(self.effects.iter())
+            .collect()
+    }
+
+    /// `(slot name, instance)` in render order.
+    pub fn slot_entries(&self) -> Vec<(&'static str, &EffectInstance)> {
+        let mut out: Vec<(&'static str, &EffectInstance)> = Vec::new();
+        out.extend(self.filter.iter().map(|e| ("filter", e)));
+        out.extend(self.adjust.iter().map(|e| ("adjust", e)));
+        out.extend(self.effects.iter().map(|e| ("effects", e)));
+        out
+    }
+
+    /// Mutable access to the slots (no `key` on an adjustment layer).
+    pub fn slots_mut(&mut self) -> SlotsMut<'_> {
+        SlotsMut {
+            filter: &mut self.filter,
+            key: None,
+            adjust: &mut self.adjust,
+            effects: &mut self.effects,
+            blend_mode: &mut self.blend_mode,
+        }
+    }
+
     /// Effective mix opacity at absolute time `t` (keyframes override the static value).
-    pub fn opacity_at(&self, t: f64) -> f64 {
-        anim::evaluate_adjustment_opacity(self, t)
+    pub fn opacity_at(&self, t_us: i64) -> f64 {
+        anim::evaluate_adjustment_opacity(self, t_us)
     }
 }
 
@@ -763,127 +870,66 @@ pub enum AnimProperty {
     FitY,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum Easing {
-    #[default]
-    Linear,
-    EaseIn,
-    EaseOut,
-    EaseInOut,
-    Bezier,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct Keyframe {
-    /// Time relative to the clip's timeline start (`position_secs`).
-    pub time_secs: f64,
-    pub value: f64,
-    #[serde(default)]
-    pub easing: Easing,
-    /// Bezier handle (time_offset, value_offset) relative to this key.
-    /// Used when easing is Bezier (Phase 4 / C7).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub handle_left: Option<(f64, f64)>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub handle_right: Option<(f64, f64)>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct KeyframeTrack {
-    pub property: AnimProperty,
-    pub keys: Vec<Keyframe>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct EffectInstance {
-    pub id: Id,
-    /// Builtin id (Phase 3.4): `builtin:color_adjust`, `builtin:blur`,
-    /// `builtin:lut_contrast`, `builtin:lut_warm`.
-    pub effect_id: String,
-    #[serde(default = "default_effect_enabled")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub params: BTreeMap<String, f64>,
-}
-
-fn default_effect_enabled() -> bool {
-    true
-}
-
-/// Outgoing transition at the end of a media clip (Phase 3.5). Video tracks only for now.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ClipTransition {
-    pub kind: TransitionKind,
-    pub duration_secs: f64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum TransitionKind {
-    Crossfade,
-    FadeBlack,
-    WipeLeft,
-    WipeRight,
-    WipeUp,
-    WipeDown,
-    SlideLeft,
-    SlideRight,
-    Iris,
-    BlurDissolve,
-}
-
-impl TransitionKind {
-    pub const ALL: &[TransitionKind] = &[
-        Self::Crossfade,
-        Self::FadeBlack,
-        Self::WipeLeft,
-        Self::WipeRight,
-        Self::WipeUp,
-        Self::WipeDown,
-        Self::SlideLeft,
-        Self::SlideRight,
-        Self::Iris,
-        Self::BlurDissolve,
+impl AnimProperty {
+    pub const ALL: [AnimProperty; 10] = [
+        AnimProperty::PosX,
+        AnimProperty::PosY,
+        AnimProperty::ScaleX,
+        AnimProperty::ScaleY,
+        AnimProperty::Rotation,
+        AnimProperty::Opacity,
+        AnimProperty::Volume,
+        AnimProperty::Speed,
+        AnimProperty::FitX,
+        AnimProperty::FitY,
     ];
 
+    /// The snake_case name used in files and commands.
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Crossfade => "crossfade",
-            Self::FadeBlack => "fade_black",
-            Self::WipeLeft => "wipe_left",
-            Self::WipeRight => "wipe_right",
-            Self::WipeUp => "wipe_up",
-            Self::WipeDown => "wipe_down",
-            Self::SlideLeft => "slide_left",
-            Self::SlideRight => "slide_right",
-            Self::Iris => "iris",
-            Self::BlurDissolve => "blur_dissolve",
+            AnimProperty::PosX => "pos_x",
+            AnimProperty::PosY => "pos_y",
+            AnimProperty::ScaleX => "scale_x",
+            AnimProperty::ScaleY => "scale_y",
+            AnimProperty::Rotation => "rotation",
+            AnimProperty::Opacity => "opacity",
+            AnimProperty::Volume => "volume",
+            AnimProperty::Speed => "speed",
+            AnimProperty::FitX => "fit_x",
+            AnimProperty::FitY => "fit_y",
         }
     }
+
+    pub fn parse(text: &str) -> Option<AnimProperty> {
+        Self::ALL.into_iter().find(|p| p.as_str() == text)
+    }
+}
+
+/// Mutable views of a clip's effect slots, so commands treat video clips and adjustment layers
+/// alike. `key` is `None` on adjustment layers.
+pub struct SlotsMut<'a> {
+    pub filter: &'a mut Option<EffectInstance>,
+    pub key: Option<&'a mut Option<EffectInstance>>,
+    pub adjust: &'a mut Option<EffectInstance>,
+    pub effects: &'a mut Vec<EffectInstance>,
+    pub blend_mode: &'a mut BlendMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaClip {
     pub id: Id,
     pub media_id: Id,
-    pub position_secs: f64,
-    pub source_in_secs: f64,
-    pub source_out_secs: f64,
+    pub start_us: i64,
+    pub source_in_us: i64,
+    pub source_out_us: i64,
     pub gain_db: f64,
     pub enabled: bool,
     /// Fade-in duration at the clip start (audio export, Phase 1).
     #[serde(default)]
-    pub fade_in_secs: f64,
+    pub fade_in_us: i64,
     /// Fade-out duration at the clip end (audio export, Phase 1).
     #[serde(default)]
-    pub fade_out_secs: f64,
+    pub fade_out_us: i64,
     /// Timeline playback rate (Phase 3). `1.0` = realtime; timeline length =
     /// `(source_out - source_in) / speed`.
     #[serde(default = "default_speed")]
@@ -893,9 +939,20 @@ pub struct MediaClip {
     pub transform: ClipTransform,
     #[serde(default)]
     pub keyframes: Vec<KeyframeTrack>,
-    /// Effect slots executed by the compositor (Phase 3.4 builtins).
+    /// Effect slots, in render order: `filter`, `key`, `adjust`, then `effects[]`, then the
+    /// matte or clip mask, then the composite (docs/effect-pack-format.md "Stack slots").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<EffectInstance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<EffectInstance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adjust: Option<EffectInstance>,
+    /// Free effect list, in list order (also holds `wasm:*` frame/audio plugins).
     #[serde(default)]
     pub effects: Vec<EffectInstance>,
+    /// How this clip's picture combines with what is beneath (default `normal`).
+    #[serde(default, skip_serializing_if = "BlendMode::is_normal")]
+    pub blend_mode: BlendMode,
     /// Transition into the next clip on the same track (Phase 3.5). Renderer-only overlap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outgoing_transition: Option<ClipTransition>,
@@ -1035,14 +1092,15 @@ pub struct BackgroundRemoval {
 
 /// Index of a per-frame matte sequence stored in a background-removal cache dir as
 /// `f000000.png`, `f000001.png`, ... (grayscale PNG, 255 = subject). Matte frame `i` belongs to
-/// *source* time `start_secs + i / fps`, so a matte is valid for every clip that shows that part
+/// *source* time `start_us + i / fps`, so a matte is valid for every clip that shows that part
 /// of the source regardless of speed or timeline position.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MatteFrames {
-    /// Source time (seconds) of matte frame 0.
-    pub start_secs: f64,
-    pub fps: f64,
+    /// Source time (µs) of matte frame 0.
+    pub start_us: i64,
+    /// Frame rate of the matte sequence (rational, like the project rate).
+    pub fps: Fps,
     pub count: u32,
     pub width: u32,
     pub height: u32,
@@ -1053,14 +1111,17 @@ pub struct MatteFrames {
 }
 
 impl MatteFrames {
-    /// Nearest matte frame for `source_time` (clamped to the sequence).
-    pub fn index_at(&self, source_time: f64) -> u32 {
-        if self.count == 0 || !source_time.is_finite() || !(self.fps.is_finite() && self.fps > 0.0)
-        {
+    /// Nearest matte frame for source time `source_time_us` (clamped to the sequence).
+    pub fn index_at(&self, source_time_us: i64) -> u32 {
+        if self.count == 0 {
             return 0;
         }
-        let i = ((source_time - self.start_secs) * self.fps).round();
-        i.clamp(0.0, f64::from(self.count - 1)) as u32
+        // round((t - start) * num / (den * 1e6)) in exact integer arithmetic.
+        let num = i128::from(self.fps.num.max(1));
+        let unit = i128::from(crate::time::US_PER_SEC) * i128::from(self.fps.den.max(1));
+        let delta = i128::from(source_time_us) - i128::from(self.start_us);
+        let i = (delta * num + unit / 2).div_euclid(unit);
+        i.clamp(0, i128::from(self.count - 1)) as u32
     }
 
     /// File name of matte frame `index` inside the cache dir.
@@ -1110,9 +1171,9 @@ pub struct MulticamGroup {
     /// Index into `angle_clip_ids` that is currently active for export/preview.
     #[serde(default)]
     pub active_angle: usize,
-    /// Sync offset per angle in seconds (same length as angles, optional).
+    /// Sync offset per angle in µs (same length as angles, optional).
     #[serde(default)]
-    pub sync_offsets_secs: Vec<f64>,
+    pub sync_offsets_us: Vec<i64>,
 }
 
 impl Default for MediaClip {
@@ -1120,17 +1181,21 @@ impl Default for MediaClip {
         Self {
             id: Id::new_v4(),
             media_id: Id::new_v4(),
-            position_secs: 0.0,
-            source_in_secs: 0.0,
-            source_out_secs: 0.0,
+            start_us: 0,
+            source_in_us: 0,
+            source_out_us: 0,
             gain_db: 0.0,
             enabled: true,
-            fade_in_secs: 0.0,
-            fade_out_secs: 0.0,
+            fade_in_us: 0,
+            fade_out_us: 0,
             speed: 1.0,
             transform: ClipTransform::default(),
             keyframes: Vec::new(),
+            filter: None,
+            key: None,
+            adjust: None,
             effects: Vec::new(),
+            blend_mode: BlendMode::Normal,
             outgoing_transition: None,
             mask: None,
             background_removal: None,
@@ -1145,27 +1210,61 @@ impl MediaClip {
         clamp_clip_speed(self.speed)
     }
 
+    /// Every effect instance in render order: filter, key, adjust, then `effects[]`.
+    pub fn effect_stack(&self) -> Vec<&EffectInstance> {
+        self.filter
+            .iter()
+            .chain(self.key.iter())
+            .chain(self.adjust.iter())
+            .chain(self.effects.iter())
+            .collect()
+    }
+
+    /// `(slot name, instance)` in render order.
+    pub fn slot_entries(&self) -> Vec<(&'static str, &EffectInstance)> {
+        let mut out: Vec<(&'static str, &EffectInstance)> = Vec::new();
+        out.extend(self.filter.iter().map(|e| ("filter", e)));
+        out.extend(self.key.iter().map(|e| ("key", e)));
+        out.extend(self.adjust.iter().map(|e| ("adjust", e)));
+        out.extend(self.effects.iter().map(|e| ("effects", e)));
+        out
+    }
+
+    /// Mutable access to the slots.
+    pub fn slots_mut(&mut self) -> SlotsMut<'_> {
+        SlotsMut {
+            filter: &mut self.filter,
+            key: Some(&mut self.key),
+            adjust: &mut self.adjust,
+            effects: &mut self.effects,
+            blend_mode: &mut self.blend_mode,
+        }
+    }
+
     /// Timeline span occupied by this clip (honors Speed keyframes when present).
-    pub fn timeline_duration_secs(&self) -> f64 {
-        anim::timeline_duration_secs(self)
+    pub fn timeline_duration_us(&self) -> i64 {
+        anim::timeline_duration_us(self)
     }
 
-    /// Media source time corresponding to absolute timeline time `t`.
-    pub fn source_time_at(&self, t: f64) -> f64 {
-        anim::source_time_at(self, t)
+    /// Media source time (µs) corresponding to absolute timeline time `t_us`.
+    pub fn source_time_at(&self, t_us: i64) -> i64 {
+        anim::source_time_at(self, t_us)
     }
 
-    /// Instantaneous speed at absolute timeline time `t`.
-    pub fn speed_at(&self, t: f64) -> f64 {
-        anim::evaluate_speed(self, t)
+    /// Instantaneous speed at absolute timeline time `t_us`.
+    pub fn speed_at(&self, t_us: i64) -> f64 {
+        anim::evaluate_speed(self, t_us)
     }
 }
 
-/// Split keyframe tracks at `split_offset` (seconds from clip start). Left keeps keys
-/// with `t < split_offset`; right remaps surviving keys to `t - split_offset`.
+/// Split keyframe tracks at `split_offset_us` (µs from clip start). Left keeps keys
+/// with `t < split_offset_us`; right remaps surviving keys to `t - split_offset_us`.
+/// `effect_remap` maps the effect instance ids of the left half to the ids minted for the right
+/// half; effect-parameter tracks on the right half follow it.
 pub fn split_keyframes(
     tracks: &[KeyframeTrack],
-    split_offset: f64,
+    split_offset_us: i64,
+    effect_remap: &std::collections::HashMap<Id, Id>,
 ) -> (Vec<KeyframeTrack>, Vec<KeyframeTrack>) {
     let mut left = Vec::new();
     let mut right = Vec::new();
@@ -1173,27 +1272,31 @@ pub fn split_keyframes(
         let mut left_keys = Vec::new();
         let mut right_keys = Vec::new();
         for key in &track.keys {
-            if key.time_secs < split_offset {
+            if key.time_us < split_offset_us {
                 left_keys.push(key.clone());
             } else {
                 right_keys.push(Keyframe {
-                    time_secs: key.time_secs - split_offset,
-                    value: key.value,
-                    easing: key.easing,
-                    handle_left: key.handle_left,
-                    handle_right: key.handle_right,
+                    time_us: key.time_us - split_offset_us,
+                    ..key.clone()
                 });
             }
         }
+        let right_property = match &track.property {
+            TrackProperty::Effect { instance, param } => TrackProperty::Effect {
+                instance: effect_remap.get(instance).copied().unwrap_or(*instance),
+                param: param.clone(),
+            },
+            other => other.clone(),
+        };
         if !left_keys.is_empty() {
             left.push(KeyframeTrack {
-                property: track.property,
+                property: track.property.clone(),
                 keys: left_keys,
             });
         }
         if !right_keys.is_empty() {
             right.push(KeyframeTrack {
-                property: track.property,
+                property: right_property,
                 keys: right_keys,
             });
         }
@@ -1201,26 +1304,58 @@ pub fn split_keyframes(
     (left, right)
 }
 
-/// Clone effects for the right half of a split, minting fresh instance ids.
-pub fn clone_effects_with_new_ids(effects: &[EffectInstance]) -> Vec<EffectInstance> {
-    effects
-        .iter()
-        .map(|e| EffectInstance {
-            id: Id::new_v4(),
-            effect_id: e.effect_id.clone(),
-            enabled: e.enabled,
-            params: e.params.clone(),
-        })
-        .collect()
+/// Mint fresh ids for every instance in `slots`, recording `old -> new` in `remap`.
+fn reid_slots(slots: SlotsMut<'_>, remap: &mut std::collections::HashMap<Id, Id>) {
+    let mut reid = |e: &mut EffectInstance| {
+        let old = e.id;
+        e.id = Id::new_v4();
+        remap.insert(old, e.id);
+    };
+    if let Some(e) = slots.filter {
+        reid(e);
+    }
+    if let Some(e) = slots.key.and_then(|k| k.as_mut()) {
+        reid(e);
+    }
+    if let Some(e) = slots.adjust {
+        reid(e);
+    }
+    for e in slots.effects.iter_mut() {
+        reid(e);
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CaptionClip {
-    pub id: Id,
-    pub text: String,
-    pub position_secs: f64,
-    pub duration_secs: f64,
-    pub style_id: String,
+/// Point effect-parameter tracks at their instances' new ids.
+pub fn remap_effect_tracks(
+    tracks: &mut [KeyframeTrack],
+    remap: &std::collections::HashMap<Id, Id>,
+) {
+    for track in tracks {
+        if let TrackProperty::Effect { instance, .. } = &mut track.property {
+            if let Some(new) = remap.get(instance) {
+                *instance = *new;
+            }
+        }
+    }
+}
+
+impl MediaClip {
+    /// Give every effect instance a fresh id (a clone must not share ids with its original).
+    /// Returns `old -> new`; keyframe tracks are left alone (use [`remap_effect_tracks`]).
+    pub fn reid_effects(&mut self) -> std::collections::HashMap<Id, Id> {
+        let mut remap = std::collections::HashMap::new();
+        reid_slots(self.slots_mut(), &mut remap);
+        remap
+    }
+}
+
+impl AdjustmentClip {
+    /// As [`MediaClip::reid_effects`].
+    pub fn reid_effects(&mut self) -> std::collections::HashMap<Id, Id> {
+        let mut remap = std::collections::HashMap::new();
+        reid_slots(self.slots_mut(), &mut remap);
+        remap
+    }
 }
 
 #[cfg(test)]
@@ -1309,9 +1444,9 @@ mod tests {
         let json = r#"{
             "id": "00000000-0000-4000-8000-000000000001",
             "media_id": "00000000-0000-4000-8000-000000000002",
-            "position_secs": 0.0,
-            "source_in_secs": 0.0,
-            "source_out_secs": 5.0,
+            "start_us": 0,
+            "source_in_us": 0,
+            "source_out_us": 5000000,
             "gain_db": 0.0,
             "enabled": true
         }"#;
@@ -1324,35 +1459,17 @@ mod tests {
     #[test]
     fn split_keyframes_remaps_right() {
         let tracks = vec![KeyframeTrack {
-            property: AnimProperty::Opacity,
+            property: AnimProperty::Opacity.into(),
             keys: vec![
-                Keyframe {
-                    time_secs: 0.0,
-                    value: 1.0,
-                    easing: Easing::Linear,
-                    handle_left: None,
-                    handle_right: None,
-                },
-                Keyframe {
-                    time_secs: 2.0,
-                    value: 0.5,
-                    easing: Easing::Linear,
-                    handle_left: None,
-                    handle_right: None,
-                },
-                Keyframe {
-                    time_secs: 4.0,
-                    value: 0.0,
-                    easing: Easing::Linear,
-                    handle_left: None,
-                    handle_right: None,
-                },
+                Keyframe::new(0, 1.0),
+                Keyframe::new(2000000, 0.5),
+                Keyframe::new(4000000, 0.0),
             ],
         }];
-        let (left, right) = split_keyframes(&tracks, 2.5);
+        let (left, right) = split_keyframes(&tracks, 2500000, &Default::default());
         assert_eq!(left[0].keys.len(), 2);
         assert_eq!(right[0].keys.len(), 1);
-        assert!((right[0].keys[0].time_secs - 1.5).abs() < 1e-9);
+        assert!((right[0].keys[0].time_us - 1500000).abs() < 1);
     }
 
     // ---- schema v7 --------------------------------------------------------------------
@@ -1379,21 +1496,20 @@ mod tests {
     }"#;
 
     #[test]
-    fn v6_project_loads_unchanged_under_v7() {
-        let project: Project = serde_json::from_str(V6_PROJECT_JSON).unwrap();
-        assert_eq!(
-            project.schema_version, 6,
-            "the file's version is preserved on load"
-        );
+    fn v6_project_migrates_to_the_current_schema() {
+        let (project, report) = Project::from_json_with_report(V6_PROJECT_JSON).unwrap();
+        assert_eq!(report.from_version, 6);
+        assert_eq!(project.schema_version, SCHEMA_VERSION);
         assert!(project.sequences.is_empty());
         assert_eq!(project.media[0].sequence_id, None);
         assert_eq!(project.media[0].kind, MediaKind::Video);
+        assert_eq!(project.media[0].duration_us, Some(10_000_000));
         assert!(project.validate().is_ok());
         const {
             assert!(MIN_LOADABLE_SCHEMA_VERSION <= 6 && 6 <= SCHEMA_VERSION);
         }
-        assert_eq!(SCHEMA_VERSION, 7);
-        // Re-saving writes no v7-only keys for features the project does not use.
+        assert_eq!(SCHEMA_VERSION, 8);
+        // Re-saving writes no sequence-only keys for features the project does not use.
         let json = serde_json::to_value(&project).unwrap();
         assert!(json["media"][0].get("sequence_id").is_none());
         assert_eq!(json["sequences"], serde_json::json!([]));
@@ -1436,7 +1552,7 @@ mod tests {
             id: video,
             path: "a.mp4".into(),
             kind: MediaKind::Video,
-            duration_secs: Some(10.0),
+            duration_us: Some(10000000),
             width: Some(100),
             height: Some(100),
             fps: Some(30.0),
@@ -1447,14 +1563,14 @@ mod tests {
         let mut inner = Track::new(TrackKind::Video, "inner");
         inner.clips.push(Clip::Video(MediaClip {
             media_id: video,
-            position_secs: 1.0,
-            source_in_secs: 0.0,
-            source_out_secs: 3.0,
+            start_us: 1000000,
+            source_in_us: 0,
+            source_out_us: 3000000,
             ..Default::default()
         }));
         inner
             .clips
-            .push(Clip::Adjustment(AdjustmentClip::new(0.0, 6.0)));
+            .push(Clip::Adjustment(AdjustmentClip::new(0, 6000000)));
         p.sequences.push(Sequence {
             id: seq_id,
             name: "S".into(),
@@ -1466,7 +1582,7 @@ mod tests {
             id: seq_media,
             path: PathBuf::new(),
             kind: MediaKind::Sequence,
-            duration_secs: None,
+            duration_us: None,
             width: None,
             height: None,
             fps: None,
@@ -1475,9 +1591,9 @@ mod tests {
         let mut root = Track::new(TrackKind::Video, "root");
         root.clips.push(Clip::Video(MediaClip {
             media_id: seq_media,
-            position_secs: 0.0,
-            source_in_secs: 0.0,
-            source_out_secs: 6.0,
+            start_us: 0,
+            source_in_us: 0,
+            source_out_us: 6000000,
             ..Default::default()
         }));
         p.tracks.push(root);
@@ -1515,18 +1631,18 @@ mod tests {
     fn derived_duration_and_size_for_sequence_media() {
         let (mut p, seq_id, seq_media, video) = seq_project();
         // Last enabled clip ends at max(1+3, 0+6) = 6 (the adjustment layer counts).
-        assert!((p.sequence_duration(seq_id) - 6.0).abs() < 1e-9);
-        assert!((p.media_duration(seq_media).unwrap() - 6.0).abs() < 1e-9);
+        assert!((p.sequence_duration(seq_id) - 6000000).abs() < 1);
+        assert!((p.media_duration(seq_media).unwrap() - 6000000).abs() < 1);
         // Own width, inherited height.
         assert_eq!(p.media_size(seq_media), Some((640, p.settings.height)));
         // Plain media keeps its probed values.
-        assert_eq!(p.media_duration(video), Some(10.0));
+        assert_eq!(p.media_duration(video), Some(10000000));
         assert_eq!(p.media_size(video), Some((100, 100)));
         // Disabled clips do not extend it.
         if let Clip::Adjustment(a) = &mut p.sequences[0].tracks[0].clips[1] {
             a.enabled = false;
         }
-        assert!((p.sequence_duration(seq_id) - 4.0).abs() < 1e-9);
+        assert!((p.sequence_duration(seq_id) - 4000000).abs() < 1);
         assert_eq!(p.media_duration(Id::new_v4()), None);
     }
 
@@ -1653,7 +1769,7 @@ mod tests {
             id: Id::new_v4(),
             path: PathBuf::new(),
             kind: MediaKind::Sequence,
-            duration_secs: None,
+            duration_us: None,
             width: None,
             height: None,
             fps: None,
@@ -1691,9 +1807,9 @@ mod tests {
         };
         track.clips.push(Clip::Video(MediaClip {
             media_id: media,
-            position_secs: 100.0,
-            source_in_secs: 0.0,
-            source_out_secs: 1.0,
+            start_us: 100000000,
+            source_in_us: 0,
+            source_out_us: 1000000,
             ..Default::default()
         }));
     }
@@ -1721,7 +1837,7 @@ mod tests {
             id: b_media,
             path: PathBuf::new(),
             kind: MediaKind::Sequence,
-            duration_secs: None,
+            duration_us: None,
             width: None,
             height: None,
             fps: None,
@@ -1754,7 +1870,7 @@ mod tests {
                 // Each sequence places the previous (deeper) one.
                 t.clips.push(Clip::Video(MediaClip {
                     media_id: pm,
-                    source_out_secs: 1.0,
+                    source_out_us: 1000000,
                     ..Default::default()
                 }));
             }
@@ -1769,7 +1885,7 @@ mod tests {
                 id: media,
                 path: PathBuf::new(),
                 kind: MediaKind::Sequence,
-                duration_secs: None,
+                duration_us: None,
                 width: None,
                 height: None,
                 fps: None,

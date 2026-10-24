@@ -7,7 +7,7 @@
 use std::sync::{Arc, OnceLock};
 
 use crate::compose::builtins::{load_builtin, BUILTINS};
-use crate::compose::runtime::{CompiledEffect, ItemKind};
+use crate::compose::runtime::{CompiledEffect, DecodedImage, ItemKind};
 
 /// The load state of an item. Only `Ok` items render; the rest are reported with a reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +80,57 @@ impl LoadedItem {
             hash: None,
             compiled: None,
             alias_of: None,
+        }
+    }
+}
+
+impl LoadedItem {
+    /// Compiles an effect, filter or transition from in-memory sources: its `effect.json`, the
+    /// WGSL files its passes name (by path) and its decoded file textures (by path). Nothing
+    /// touches the filesystem, so the wasm preview builds pack items this way from files the
+    /// webview fetched. A manifest or shader that fails to load gives an `Error` item that
+    /// renders pass-through, like on the native side. `hash` is the host-reported content hash.
+    pub fn from_sources(
+        manifest_json: &str,
+        shaders: &std::collections::BTreeMap<String, String>,
+        textures: &std::collections::BTreeMap<String, DecodedImage>,
+        hash: Option<String>,
+    ) -> LoadedItem {
+        let raw: serde_json::Value =
+            serde_json::from_str(manifest_json).unwrap_or(serde_json::Value::Null);
+        let id = raw
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let version = raw
+            .get("version")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|v| u32::try_from(v).ok())
+            .unwrap_or(1);
+        match CompiledEffect::load(manifest_json, shaders, textures) {
+            Ok(compiled) => {
+                let m = compiled.manifest();
+                LoadedItem {
+                    kind: kind_name(m.kind).to_string(),
+                    id: m.id.clone(),
+                    version: m.version,
+                    label: m.label.clone(),
+                    path: None,
+                    state: ItemState::Ok,
+                    hash,
+                    compiled: Some(Arc::new(compiled)),
+                    alias_of: None,
+                }
+            }
+            Err(e) => LoadedItem::with_state(
+                "effect",
+                &id,
+                version,
+                ItemState::Error {
+                    message: e.to_string(),
+                },
+            ),
         }
     }
 }

@@ -10,9 +10,10 @@ These are Claude Code skills for driving Renderly through the `renderly-mcp` ser
 | `rough-cut-from-transcript` | Keeps the transcript segments you ask for and removes the rest. |
 | `captions-pass` | Generates Whisper captions, restyles them, and checks a frame. |
 | `fit-to-length` | Condenses the timeline to a target length using pauses, and speed only with agreement. |
+| `apply-look` | Applies a LUT/filter, effects, blend modes, transitions and animated effect parameters by ref, and checks a frame. |
 
-Not included: word-level timing and beat detection. Renderly does not build them yet, so no skill
-relies on them.
+Not included: beat detection (`AddMarkers` exists for beat markers, nothing writes them yet) and
+word-synced caption animation (word timings are stored; the styles that use them render later).
 
 ## Install
 
@@ -22,12 +23,12 @@ Claude Code loads skills from two places (see the Claude Code skills documentati
 - **Personal** (all your projects): `~/.claude/skills/<skill-name>/SKILL.md`
 - **Project** (this repository only): `.claude/skills/<skill-name>/SKILL.md`
 
-To install all four for yourself, copy each folder into your personal skills directory. On
+To install them all for yourself, copy each folder into your personal skills directory. On
 Windows, `%USERPROFILE%\.claude\skills\`; on macOS or Linux, `~/.claude/skills/`:
 
 ```sh
 mkdir -p ~/.claude/skills
-cp -r skills/remove-silences skills/rough-cut-from-transcript skills/captions-pass skills/fit-to-length ~/.claude/skills/
+cp -r skills/remove-silences skills/rough-cut-from-transcript skills/captions-pass skills/fit-to-length skills/apply-look ~/.claude/skills/
 ```
 
 To use them only inside a project, copy them to that project's `.claude/skills/` folder instead.
@@ -38,7 +39,7 @@ the top-level `skills` folder during a session, run `/reload-skills` once.
 ## Requirements
 
 - The `renderly-mcp` server, registered with Claude Code under the name `renderly`. The skills
-  call its tools by their bare names (`get_project`, `apply_command`, `detect_silence`, ...);
+  call its tools by their bare names (`get_project`, `apply_command`, `detect_silence`, `describe_effects`, ...);
   Claude Code exposes them as `mcp__renderly__<tool>`. See the "Running the server" section of
   [docs/mcp-agent-guide.md](../docs/mcp-agent-guide.md).
 - A project open in `renderly-mcp` (`open_project` or `new_project`). With the desktop app open on

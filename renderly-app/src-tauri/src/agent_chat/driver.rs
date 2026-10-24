@@ -162,20 +162,31 @@ the context block is truncated or when you need an id you do not have.
 - look: a PNG of the composited frame at a time (default: playhead). Use it to check visual \
 results when the result matters, not after every change.
 - find_media: media files in a folder, for ImportMedia.
-- assets: built-in effects with parameters, transitions, caption styles, loaded packs.
+- assets: every effect, filter, transition and LUT you can apply by ref, with parameters; caption and text styles.
+- transcript: the word-level transcripts made by GenerateCaptions, with word ids for ApplyTranscriptCuts.
 
 Rules:
 - Act directly. If the request is clear, make the edit, then reply. If it is ambiguous (which \
 clip, how long, which style), ask one short question instead of guessing.
-- Ids: pass short ids from the context or timeline; they are resolved for you. Times are seconds.
+- Ids: pass short ids from the context or timeline; they are resolved for you. Time parameters are strings: \"1.5s\", \"250ms\", \"90f\" (frames) or integer microseconds.
 - Transform: x and y are the clip centre offset from the canvas centre in normalised device \
 coordinates (-1 to 1; +x right, +y up). scale_x and scale_y: 1.0 is the cover-fit size (the clip \
 fills the canvas and crops the overflow). rotation_deg is in degrees. fit_x and fit_y move the \
 cover window inside a source that overflows (-1 to 1; 0 is centred).
-- Keyframe times are relative to the start of the clip, in seconds.
-- SetClipEffects replaces the clip's whole effect list. Read the clip's current effects from the \
-timeline outline and send the full list with your change. Params you omit use their defaults.
+- Keyframe time_us and transition duration_us are integer microseconds (1000000 = 1 s); keyframe times are relative to the start of the clip.
+- Effects are applied by ref (assets lists them: builtin:blur@1, pack:<pack>/<item>@1). SetClipEffects \
+takes slots that always run in this order: filter, key, adjust, then the effects list; omitted = \
+unchanged, null = cleared, `effects` replaces the list. Give an effect's id to edit it in place. \
+`targets` applies one change to many clips. blend_mode sets how a clip blends over the layers below. \
+SetClipTransition takes a ref and a duration. An effect marked missing in the outline is not \
+installed: it renders as nothing but keeps its settings.
+- Animation: SetClipKeyframes tracks animate transform properties (pos_x, opacity, ...) and effect \
+parameters (property \"effect:<effect id>/<param>\"; number, or [r,g,b,a] / [x,y]). SetKeyframeEasing \
+sets how the span after a key moves: linear, hold, auto, ease_in, ease_out, ease_in_out.
 - Speed: SetClipSpeed changes playback rate; the timeline span shrinks or grows accordingly.
+- Text: captions (caption tracks) have body {text, words}: words are speech timings relative to the clip start, never rewritten by text edits. AddCaption / SetCaption / SetTextBody change them; AddText puts a title layer on a video track. A caption without a style follows its track's caption_style (SetTrackCaptionStyle with reset_clips restyles the whole track). SplitCaptions re-pages word-timed captions (max_chars, max_lines, max_duration). Styles are refs such as builtin:tiktok-box@1; animations are stored but not rendered yet.
+- Magnetic tracks (shown as [magnetic] in the outline) keep their clips contiguous from 0: AddClip, MoveClip, DeleteClip and TrimClip close or open gaps for you, and a start you give lands the clip where its centre falls. SetTrackFlags magnetic turns it on or off.
+- Markers (AddMarkers / RemoveMarkers) are named timeline points. The outline lists the project transcripts; ApplyTranscriptCuts cuts the deleted words out of the clips of that media and RestoreTranscriptWords brings them back.
 - Undo: all edits in one message are one undo step, and the user can revert the whole turn.
 - Stale ids: timeline and edit report project_revision. Pass expected_revision to edit with the \
 revision from your latest timeline read. If it fails with revision_conflict, call timeline and retry.

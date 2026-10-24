@@ -70,6 +70,10 @@ pub struct WriteOptions {
     /// Required for an agent write that deletes anything.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_deletion: Option<AllowDeletion>,
+    /// Deprecation messages from the parser (legacy `*_secs` parameters). Set by the surface that
+    /// parsed the commands; reported in `WriteResult.warnings`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deprecations: Vec<String>,
 }
 
 /// The result every write returns on every surface.
@@ -260,7 +264,7 @@ pub fn plan_write(
         }
     }
 
-    let mut warnings = Vec::new();
+    let mut warnings = options.deprecations.clone();
     if caller == Caller::Agent && options.expected_revision.is_none() {
         warnings.push(format!(
             "no expected_revision was sent, so this write was not checked against your last read; pass expected_revision: {revision} (or the revision from your latest timeline/get_project) to guard against stale ids"
@@ -441,6 +445,19 @@ fn humanize(name: &str) -> String {
 pub fn capabilities() -> Value {
     json!({
         "capabilities": CAPABILITIES,
+        "project_schema_version": crate::project::SCHEMA_VERSION,
+        "time": {
+            "stored": "integer microseconds (`*_us` fields)",
+            "grammar": [
+                "integer: microseconds, e.g. 1500000",
+                "\"<n>s\" or \"<n>.<f>s\": seconds, e.g. \"1.5s\"",
+                "\"<n>ms\": milliseconds, e.g. \"1500ms\"",
+                "\"<n>f\": frames at the project frame rate, e.g. \"90f\" (lands on the frame boundary)",
+                "\"HH:MM:SS:FF\": non-drop timecode at the project frame rate, e.g. \"00:00:01:15\""
+            ],
+            "serialised": "integer microseconds",
+            "deprecated_aliases": "the *_secs parameters (float seconds) are accepted for one release; each use adds a warning to the result",
+        },
         "revisions": {
             "field": "project_revision",
             "monotonic": true,

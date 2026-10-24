@@ -1,7 +1,8 @@
 // Host-supplied assets for the wasm preview compositor (docs/preview-webview.md P4b).
 //
 // The wasm build of renderly-core has no filesystem, so data the native export reads from
-// disk - raster / generated mattes and pack `.cube` LUTs - is fetched here and handed over.
+// disk - raster / generated mattes and the files of pack items (LUTs, effects, filters,
+// transitions) - is fetched here and handed over.
 // This file is plumbing only: WHICH files are needed (and their cache keys) is answered by
 // the wasm module (`required_assets()`, core Rust), the bytes come from the Tauri backend,
 // and every pixel/LUT operation (RGBA -> luma, .cube parsing, compositing) stays in
@@ -12,24 +13,46 @@ export interface PreviewAssetHost {
   required_assets(): string;
   /// Per-frame background-removal mattes the layers visible at timeline time `t` need (JSON
   /// `FrameMatteRequest[]`). Absent on older wasm builds.
-  required_frame_mattes?(timeSecs: number): string;
+  required_frame_mattes?(timeUs: number): string;
   set_matte(key: string, width: number, height: number, rgba: Uint8Array): void;
   remove_matte(key: string): void;
-  set_pack_lut(packId: string, lutId: string, cubeText: string): void;
-  clear_pack_luts(): void;
+  /// Register (replace) one pack item. `itemJson` is the backend's item minus its textures;
+  /// `textures` are the effect's file textures decoded to RGBA (or undefined).
+  set_pack_item(itemJson: string, textures: PackTexture[] | undefined): void;
+  clear_pack_items(): void;
 }
 
-export interface PackLutPayload {
+/// A decoded file texture of an effect, as `WasmCompositor.set_pack_item` takes it.
+export interface PackTexture {
+  path: string;
+  width: number;
+  height: number;
+  rgba: Uint8Array;
+}
+
+/// A pack item as the backend returns it (`read_preview_pack_items`).
+export interface PackItemPayload {
+  ref: string;
   pack_id: string;
-  lut_id: string;
-  cube: string;
+  item_id: string;
+  version: number;
+  kind: string;
+  hash?: string | null;
+  cube?: string;
+  manifest?: string;
+  shaders: Record<string, string>;
+  textures: { path: string; bytes_base64: string }[];
 }
 
 /// Where the bytes come from (`lib/ipc.ts` in the app, a stub in tests).
 export interface PreviewAssetBackend {
   readMatte(path: string): Promise<ArrayBuffer>;
   matteStamps(paths: string[]): Promise<number[]>;
-  readPackLuts(wanted: { pack_id: string; lut_id: string }[]): Promise<PackLutPayload[]>;
+  /// `includeInstalled` also serves installed items the project does not use yet (hover preview).
+  readPackItems(
+    wanted: { ref: string; hash?: string | null }[],
+    includeInstalled?: boolean,
+  ): Promise<PackItemPayload[]>;
 }
 
 export interface DecodedImage {
@@ -66,7 +89,9 @@ export async function decodeImageToRgba(bytes: ArrayBuffer): Promise<DecodedImag
 
 interface RequiredAssets {
   mattes: { key: string; path: string }[];
-  pack_luts: { pack_id: string; lut_id: string }[];
+  /// The `pack:` refs of the effects, filters, transitions and LUTs the project uses, each with
+  /// the hash stored where it was applied.
+  pack_items: { ref: string; hash?: string | null }[];
   /// Some clip has a per-frame (time-indexed) background-removal matte.
   frame_mattes?: boolean;
 }
@@ -79,12 +104,19 @@ interface FrameMatteRequest {
   stamp: number;
 }
 
-/// How far ahead (timeline seconds) matte frames are decoded into the cache during playback.
-const FRAME_MATTE_PREFETCH_SECS = 0.1;
+/// How far ahead (timeline µs) matte frames are decoded into the cache during playback.
+const FRAME_MATTE_PREFETCH_US = 100_000;
 /// Decoded matte frames kept (720p RGBA is ~3.7 MB each).
 const FRAME_MATTE_CACHE = 6;
 
-const lutKey = (packId: string, lutId: string) => `${packId}\u0000${lutId}`;
+const itemKey = (ref: string, hash?: string | null) => `${ref}\u0000${hash ?? ""}`;
+
+function base64ToArrayBuffer(b64: string): ArrayBuffer {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes.buffer;
+}
 
 /// Keeps the compositor's host-supplied assets in step with the project. Call `sync` after
 /// every `set_project`; calls coalesce (one in flight, one queued) so rapid project patches
@@ -92,8 +124,10 @@ const lutKey = (packId: string, lutId: string) => `${packId}\u0000${lutId}`;
 /// file-backed actually changed.
 export class PreviewAssetSync {
   private readonly loadedMattes = new Map<string, { path: string; stamp: number }>();
-  private readonly loadedLuts = new Set<string>();
-  private packSignature = "";
+  /// Pack items the project uses that were fetched (or attempted), by `ref` + hash.
+  private readonly loadedItems = new Set<string>();
+  /// Installed items fetched for hover preview only (not in the project yet), by ref.
+  private readonly hoverItems = new Set<string>();
   /// Per-frame mattes (time-indexed): which frame is registered per key, decoded frames kept
   /// for scrubbing / prefetch, and the single-flight state of the loader.
   private frameMattesWanted = false;
@@ -111,7 +145,6 @@ export class PreviewAssetSync {
     /// Fired after assets were added/replaced/removed so the engine can repaint.
     private readonly onChange: () => void,
     private readonly decode: (bytes: ArrayBuffer) => Promise<DecodedImage> = decodeImageToRgba,
-    private readonly packPaths: () => readonly string[] = () => [],
   ) {}
 
   dispose(): void {
@@ -121,8 +154,8 @@ export class PreviewAssetSync {
   /// Forget everything (compositor recreated / project closed); the next `sync` reloads.
   reset(): void {
     this.loadedMattes.clear();
-    this.loadedLuts.clear();
-    this.packSignature = "";
+    this.loadedItems.clear();
+    this.hoverItems.clear();
     this.frameLoaded.clear();
     this.frameDecoded.clear();
   }
@@ -150,7 +183,7 @@ export class PreviewAssetSync {
         this.frameQueued = null;
         if (await this.registerFrameMattes(next)) this.onChange();
         if (this.frameQueued === null) {
-          await this.prefetchFrameMattes(next + FRAME_MATTE_PREFETCH_SECS);
+          await this.prefetchFrameMattes(next + FRAME_MATTE_PREFETCH_US);
         }
         next = this.frameQueued;
       }
@@ -251,7 +284,7 @@ export class PreviewAssetSync {
       this.frameDecoded.clear();
     }
     changed = (await this.syncMattes(required.mattes)) || changed;
-    changed = (await this.syncPackLuts(required.pack_luts)) || changed;
+    changed = (await this.syncPackItems(required.pack_items ?? [])) || changed;
     if (changed && !this.disposed) this.onChange();
   }
 
@@ -297,39 +330,79 @@ export class PreviewAssetSync {
     return changed;
   }
 
-  private async syncPackLuts(wanted: RequiredAssets["pack_luts"]): Promise<boolean> {
+  /// The library changed (a pack installed, updated or removed): drop every registered pack item
+  /// so the next `sync` re-fetches what the project uses.
+  invalidatePackItems(): void {
+    if (this.loadedItems.size > 0 || this.hoverItems.size > 0) this.host.clear_pack_items();
+    this.loadedItems.clear();
+    this.hoverItems.clear();
+  }
+
+  private async syncPackItems(wanted: RequiredAssets["pack_items"]): Promise<boolean> {
     let changed = false;
-    const wantedKeys = new Set(wanted.map((l) => lutKey(l.pack_id, l.lut_id)));
-    const signature = this.packPaths().join("\u0000");
-    const lostSome = Array.from(this.loadedLuts).some((k) => !wantedKeys.has(k));
-    if (signature !== this.packSignature || lostSome) {
-      // Pack loaded/unloaded/swapped, or a LUT no longer used: rebuild from scratch (the
-      // compositor also drops its uploaded 3D textures on clear).
-      if (this.loadedLuts.size > 0) {
-        this.host.clear_pack_luts();
-        changed = true;
-      }
-      this.loadedLuts.clear();
-      this.packSignature = signature;
+    const wantedKeys = new Set(wanted.map((i) => itemKey(i.ref, i.hash)));
+    const lostSome = Array.from(this.loadedItems).some((k) => !wantedKeys.has(k));
+    if (lostSome) {
+      // An item no longer used (or replaced by another version): rebuild from scratch (the
+      // compositor also drops its uploaded textures on clear). Hover items go with it.
+      this.host.clear_pack_items();
+      this.loadedItems.clear();
+      this.hoverItems.clear();
+      changed = true;
     }
-    const missing = wanted.filter((l) => !this.loadedLuts.has(lutKey(l.pack_id, l.lut_id)));
+    const missing = wanted.filter((i) => !this.loadedItems.has(itemKey(i.ref, i.hash)));
     if (missing.length === 0) return changed;
+    if (await this.fetchAndRegister(missing, false)) changed = true;
+    // Attempted (even if the backend could not resolve some): don't re-ask every patch.
+    for (const i of missing) this.loadedItems.add(itemKey(i.ref, i.hash));
+    return changed;
+  }
+
+  private async fetchAndRegister(
+    wanted: { ref: string; hash?: string | null }[],
+    includeInstalled: boolean,
+  ): Promise<boolean> {
+    let changed = false;
     try {
-      const payloads = await this.backend.readPackLuts(missing);
+      const payloads = await this.backend.readPackItems(wanted, includeInstalled);
       if (this.disposed) return changed;
       for (const p of payloads) {
         try {
-          this.host.set_pack_lut(p.pack_id, p.lut_id, p.cube);
+          const { textures, ...item } = p;
+          const decoded: PackTexture[] = [];
+          for (const t of textures ?? []) {
+            const img = await this.decode(base64ToArrayBuffer(t.bytes_base64));
+            decoded.push({ path: t.path, width: img.width, height: img.height, rgba: img.rgba });
+          }
+          if (this.disposed) return changed;
+          this.host.set_pack_item(JSON.stringify(item), decoded.length > 0 ? decoded : undefined);
           changed = true;
         } catch (err) {
-          console.error(`[preview] pack LUT ${p.pack_id}/${p.lut_id} rejected:`, err);
+          console.error(`[preview] pack item ${p.ref} rejected:`, err);
         }
       }
     } catch (err) {
-      console.error("[preview] pack LUT load failed:", err);
+      console.error("[preview] pack item load failed:", err);
     }
-    // Attempted (even if the backend could not resolve some): don't re-ask every patch.
-    for (const l of missing) this.loadedLuts.add(lutKey(l.pack_id, l.lut_id));
+    return changed;
+  }
+
+  /// Make sure installed pack items the project does not use yet are registered, for hover
+  /// preview. Builtin refs need nothing (compiled into the wasm build). Resolves true when a
+  /// new item was registered (the caller repaints). Failures leave the item pass-through.
+  async ensurePackItems(refs: readonly string[]): Promise<boolean> {
+    const wanted = refs
+      .filter((r) => r.startsWith("pack:"))
+      .filter((r) => !this.hoverItems.has(r))
+      .filter((r) => !Array.from(this.loadedItems).some((k) => k.startsWith(`${r}\u0000`)));
+    if (wanted.length === 0 || this.disposed) return false;
+    const unique = Array.from(new Set(wanted));
+    const changed = await this.fetchAndRegister(
+      unique.map((ref) => ({ ref })),
+      true,
+    );
+    for (const r of unique) this.hoverItems.add(r);
+    if (changed && !this.disposed) this.onChange();
     return changed;
   }
 }

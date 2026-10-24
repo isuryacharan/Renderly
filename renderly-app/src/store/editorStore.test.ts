@@ -66,7 +66,7 @@ beforeEach(() => {
   ipc.setActiveSequence.mockResolvedValue(undefined);
   ipc.scrubAudio.mockResolvedValue(undefined);
   ipc.seek.mockResolvedValue(undefined);
-  ipc.pause.mockResolvedValue(7);
+  ipc.pause.mockResolvedValue(7_000_000);
   ipc.play.mockResolvedValue(undefined);
   ipc.getProject.mockResolvedValue({ project: sample(), revision: 99 });
   ipc.setPreviewOverride.mockResolvedValue(undefined);
@@ -127,9 +127,9 @@ describe("selection", () => {
   it("openContextMenu on an unselected clip selects only it", () => {
     load();
     store().setSelections([sel("v1", "A"), sel("v1", "B")]);
-    store().openContextMenu(10, 20, "a1", "C", 1.5);
+    store().openContextMenu(10, 20, "a1", "C", 1_500_000);
     expect(store().selections).toEqual([sel("a1", "C")]);
-    expect(store().contextMenu).toEqual({ x: 10, y: 20, trackId: "a1", clipId: "C", atSecs: 1.5 });
+    expect(store().contextMenu).toEqual({ x: 10, y: 20, trackId: "a1", clipId: "C", atUs: 1_500_000 });
   });
 
   it("openContextMenu on a member of a multi-selection keeps the group and promotes it to primary", () => {
@@ -158,42 +158,44 @@ describe("playhead & transport", () => {
   it("setPlayheadLocal clamps below zero", () => {
     store().setPlayheadLocal(-3);
     expect(store().playhead).toBe(0);
-    store().setPlayheadLocal(4.25);
-    expect(store().playhead).toBe(4.25);
+    store().setPlayheadLocal(4_250_000);
+    expect(store().playhead).toBe(4_250_000);
+    store().setPlayheadLocal(4_250_000.4);
+    expect(store().playhead).toBe(4_250_000); // integer µs
   });
 
   it("seekTo clamps, updates the playhead optimistically and tells the backend", async () => {
     await store().seekTo(-1);
     expect(store().playhead).toBe(0);
     expect(ipc.seek).toHaveBeenLastCalledWith(0);
-    await store().seekTo(6.5);
-    expect(store().playhead).toBe(6.5);
-    expect(ipc.seek).toHaveBeenLastCalledWith(6.5);
+    await store().seekTo(6_500_000);
+    expect(store().playhead).toBe(6_500_000);
+    expect(ipc.seek).toHaveBeenLastCalledWith(6_500_000);
   });
 
   it("seekTo surfaces backend errors as a toast without losing the playhead", async () => {
     ipc.seek.mockRejectedValueOnce("seek failed: boom");
-    await store().seekTo(2);
-    expect(store().playhead).toBe(2);
+    await store().seekTo(2_000_000);
+    expect(store().playhead).toBe(2_000_000);
     expect(lastToast()).toMatchObject({ kind: "error", message: "seek failed: boom" });
   });
 
   it("scrubAt clamps and scrubs audio", () => {
     store().scrubAt(-9);
     expect(store().playhead).toBe(0);
-    store().scrubAt(1.2);
-    expect(ipc.scrubAudio).toHaveBeenLastCalledWith(1.2);
+    store().scrubAt(1_200_000);
+    expect(ipc.scrubAudio).toHaveBeenLastCalledWith(1_200_000);
   });
 
   it("playback tick/state events overwrite the playhead; stopping clears the perf sample", () => {
     const sample = { fps: 60 } as never;
     store().onPlaybackPerf(sample);
-    store().onPlaybackState({ playing: true, time_secs: 1 });
+    store().onPlaybackState({ playing: true, time_us: 1_000_000 });
     expect(store().perfSample).toBe(sample);
-    store().onPlaybackTick({ time_secs: 2, playing: true });
-    expect(store().playhead).toBe(2);
-    store().onPlaybackState({ playing: false, time_secs: 3 });
-    expect(store()).toMatchObject({ playing: false, playhead: 3, perfSample: null });
+    store().onPlaybackTick({ time_us: 2_000_000, playing: true });
+    expect(store().playhead).toBe(2_000_000);
+    store().onPlaybackState({ playing: false, time_us: 3_000_000 });
+    expect(store()).toMatchObject({ playing: false, playhead: 3_000_000, perfSample: null });
   });
 
   it("startPlayback needs a project, and rolls back `playing` if the backend refuses", async () => {
@@ -212,7 +214,7 @@ describe("playhead & transport", () => {
     expect(store().playing).toBe(false);
     await Promise.resolve();
     await Promise.resolve();
-    expect(store().playhead).toBe(7);
+    expect(store().playhead).toBe(7_000_000);
   });
 });
 
@@ -253,7 +255,7 @@ describe("zoom / scroll", () => {
   it("ensurePlayheadVisible scrolls right when the playhead is off-screen", () => {
     load(makeProject([track("v", "video", [videoClip("X", 0, 0, 30)])]));
     vi.stubGlobal("document", { getElementById: () => ({ clientWidth: 800, clientHeight: 300 }) });
-    useEditorStore.setState({ playhead: 20 }); // x = 96 + 1600 = 1696 > 800 - 64
+    useEditorStore.setState({ playhead: 20_000_000 }); // x = 96 + 1600 = 1696 > 800 - 64
     store().ensurePlayheadVisible();
     expect(store().scrollX).toBe(1696 - (800 - 64));
   });
@@ -263,10 +265,10 @@ describe("applying backend JSON patches (dispatch)", () => {
   it("applies a replace patch and records the new revision", async () => {
     load();
     ipc.applyCommand.mockResolvedValue(
-      ok([{ op: "replace", path: "/tracks/0/clips/0/position_secs", value: 10 }], 5),
+      ok([{ op: "replace", path: "/tracks/0/clips/0/start_us", value: 10_000_000 }], 5),
     );
     expect(await store().dispatch({ command: "MoveClip" })).toBe(true);
-    expect(store().project!.tracks[0].clips[0].position_secs).toBe(10);
+    expect(store().project!.tracks[0].clips[0].start_us).toBe(10_000_000);
     expect(store().clientRevision).toBe(5);
     expect(ipc.getProject).not.toHaveBeenCalled();
   });
@@ -286,7 +288,7 @@ describe("applying backend JSON patches (dispatch)", () => {
     load();
     ipc.applyCommand.mockResolvedValue(
       ok([
-        { op: "add", path: "/tracks/1/clips/-", value: { ...C, id: "C2", position_secs: 9 } },
+        { op: "add", path: "/tracks/1/clips/-", value: { ...C, id: "C2", start_us: 9_000_000 } },
         { op: "remove", path: "/tracks/0/clips/1" },
         { op: "copy", from: "/name", path: "/id" },
         { op: "move", from: "/tracks/2/name", path: "/tracks/2/name2" },
@@ -337,11 +339,11 @@ describe("applying backend JSON patches (dispatch)", () => {
   });
 
   it("passes the command and a mutation id to the backend, then refreshes the frame at the playhead", async () => {
-    load(sample(), { playhead: 1.5 });
+    load(sample(), { playhead: 1_500_000 });
     ipc.applyCommand.mockResolvedValue(ok());
     await store().dispatch({ command: "SplitClip" });
     expect(ipc.applyCommand).toHaveBeenCalledWith({ command: "SplitClip" }, expect.any(String), undefined);
-    expect(ipc.refreshFrame).toHaveBeenCalledWith(1.5);
+    expect(ipc.refreshFrame).toHaveBeenCalledWith(1_500_000);
   });
 
   it("a failing refreshFrame never fails the edit", async () => {
@@ -356,15 +358,15 @@ describe("applying backend JSON patches (dispatch)", () => {
     ipc.applyCommands.mockResolvedValue(
       ok(
         [
-          { op: "replace", path: "/tracks/0/clips/0/position_secs", value: 1 },
-          { op: "replace", path: "/tracks/0/clips/1/position_secs", value: 8 },
+          { op: "replace", path: "/tracks/0/clips/0/start_us", value: 1_000_000 },
+          { op: "replace", path: "/tracks/0/clips/1/start_us", value: 8_000_000 },
         ],
         3,
       ),
     );
     await store().dispatchBatch([{ a: 1 }, { b: 2 }]);
     expect(ipc.applyCommands).toHaveBeenCalledWith([{ a: 1 }, { b: 2 }], expect.any(String), undefined);
-    expect(store().project!.tracks[0].clips.map((c) => c.position_secs)).toEqual([1, 8]);
+    expect(store().project!.tracks[0].clips.map((c) => c.start_us)).toEqual([1_000_000, 8_000_000]);
   });
 
   it("refetchProject is skipped with no project path", async () => {
@@ -499,23 +501,22 @@ describe("clipboard / duplicate", () => {
     store().setSelections([{ trackId: "v1", clipId: "F" }]);
     await store().duplicateSelection();
     expect(ipc.applyCommand).toHaveBeenCalledWith(
-      { command: "AddClip", track_id: "v1", media_id: "m-F", position_secs: 7, source_in_secs: 0, source_out_secs: 6 },
+      { command: "AddClip", track_id: "v1", media_id: "m-F", start: 7_000_000, source_in: 0, source_out: 6_000_000 },
       expect.any(String),
       undefined,
     );
   });
 
-  it("duplicating a caption emits AddCaption with its text/style", async () => {
+  it("duplicating a caption emits AddCaption with its body (and no style when it inherits)", async () => {
     load();
     store().setSelections([{ trackId: "c1", clipId: "K" }]);
     await store().duplicateSelection();
     expect(ipc.applyCommand.mock.calls[0][0]).toEqual({
       command: "AddCaption",
       track_id: "c1",
-      text: "hi",
-      position_secs: 3,
-      duration_secs: 1,
-      style_id: "tiktok-minimal",
+      body: { text: "hi" },
+      start: 3_000_000,
+      duration: 1_000_000,
     });
   });
 
@@ -528,12 +529,12 @@ describe("clipboard / duplicate", () => {
   });
 
   it("pasteAtPlayhead keeps relative spacing and anchors the earliest clip at the playhead", async () => {
-    load(sample(), { playhead: 10 });
+    load(sample(), { playhead: 10_000_000 });
     store().setSelections([{ trackId: "v1", clipId: "A" }, { trackId: "v1", clipId: "B" }]);
     store().copySelection();
     await store().pasteAtPlayhead();
-    const cmds = ipc.applyCommands.mock.calls[0][0] as { position_secs: number; track_id: string }[];
-    expect(cmds.map((c) => c.position_secs)).toEqual([10, 13]); // A at 0, B at 3 -> offsets preserved
+    const cmds = ipc.applyCommands.mock.calls[0][0] as { start: number; track_id: string }[];
+    expect(cmds.map((c) => c.start)).toEqual([10_000_000, 13_000_000]); // A at 0, B at 3 -> offsets preserved
     expect(cmds.every((c) => c.track_id === "v1")).toBe(true);
   });
 
@@ -567,40 +568,40 @@ describe("placeMediaOnTimeline / dropMediaOnTimeline", () => {
 
   const withMedia = (tracks = sample().tracks): Project => ({
     ...makeProject(tracks),
-    media: [{ id: "M", path: "C:\\clips\\x.mp4", kind: "video", duration_secs: 4, width: 1, height: 1, fps: 30 }],
+    media: [{ id: "M", path: "C:\\clips\\x.mp4", kind: "video", duration_us: 4_000_000, width: 1, height: 1, fps: 30 }],
   });
 
   it("places at the playhead when the slot is free", async () => {
-    load(withMedia([track("v1", "video", [A])]), { playhead: 5 });
+    load(withMedia([track("v1", "video", [A])]), { playhead: 5_000_000 });
     await store().placeMediaOnTimeline("M", "video", true);
     expect(ipc.applyCommand.mock.calls[0][0]).toMatchObject({
       command: "AddClip",
       track_id: "v1",
       media_id: "M",
-      position_secs: 5,
-      source_in_secs: 0,
-      source_out_secs: 4,
+      start: 5_000_000,
+      source_in: 0,
+      source_out: 4_000_000,
     });
   });
 
   it("falls back to appending after the last clip when the playhead slot overlaps", async () => {
-    load(withMedia([track("v1", "video", [A, B])]), { playhead: 1 });
+    load(withMedia([track("v1", "video", [A, B])]), { playhead: 1_000_000 });
     await store().placeMediaOnTimeline("M", "video", true);
-    expect(ipc.applyCommand.mock.calls[0][0]).toMatchObject({ position_secs: 5 }); // B ends at 5
+    expect(ipc.applyCommand.mock.calls[0][0]).toMatchObject({ start: 5_000_000 }); // B ends at 5
   });
 
   it("an exactly-adjacent slot is not treated as an overlap", async () => {
-    load(withMedia([track("v1", "video", [A])]), { playhead: 2 }); // A ends at 2
+    load(withMedia([track("v1", "video", [A])]), { playhead: 2_000_000 }); // A ends at 2
     await store().placeMediaOnTimeline("M", "video", true);
-    expect(ipc.applyCommand.mock.calls[0][0]).toMatchObject({ position_secs: 2 });
+    expect(ipc.applyCommand.mock.calls[0][0]).toMatchObject({ start: 2_000_000 });
   });
 
   it("uses a 5s default for media with unknown duration (images)", async () => {
     const p = withMedia([track("v1", "video")]);
-    p.media[0] = { ...p.media[0], kind: "image", duration_secs: null };
+    p.media[0] = { ...p.media[0], kind: "image", duration_us: null };
     load(p);
     await store().placeMediaOnTimeline("M", "image", true);
-    expect(ipc.applyCommand.mock.calls[0][0]).toMatchObject({ source_out_secs: 5 });
+    expect(ipc.applyCommand.mock.calls[0][0]).toMatchObject({ source_out: 5_000_000 });
   });
 
   it("creates a track of the right kind when none exists", async () => {
@@ -617,8 +618,8 @@ describe("placeMediaOnTimeline / dropMediaOnTimeline", () => {
   const ghost = (over = {}) => ({
     mediaId: "M",
     kind: "video" as const,
-    durationSecs: 4,
-    positionSecs: 2.5,
+    durationUs: 4_000_000,
+    startUs: 2_500_000,
     trackIndex: 0 as number | null,
     row: 0,
     valid: true,
@@ -634,9 +635,9 @@ describe("placeMediaOnTimeline / dropMediaOnTimeline", () => {
       command: "AddClip",
       track_id: "v1",
       media_id: "M",
-      position_secs: 2.5,
-      source_in_secs: 0,
-      source_out_secs: 4,
+      start: 2_500_000,
+      source_in: 0,
+      source_out: 4_000_000,
     });
   });
 
@@ -689,8 +690,8 @@ describe("misc store state", () => {
 
   it("onWaveformReady stores peaks per media id without clobbering thumbnails", () => {
     useEditorStore.setState({ mediaAssets: { m1: { thumbnails: { stripUrl: "s" } as never } } });
-    store().onWaveformReady({ media_id: "m1", peaks: [0.1, 0.9], bucket_secs: 0.5 } as never);
-    expect(store().mediaAssets.m1.waveform).toEqual({ peaks: [0.1, 0.9], bucketSecs: 0.5 });
+    store().onWaveformReady({ media_id: "m1", peaks: [0.1, 0.9], bucket_us: 500_000 } as never);
+    expect(store().mediaAssets.m1.waveform).toEqual({ peaks: [0.1, 0.9], bucketUs: 500_000 });
     expect(store().mediaAssets.m1.thumbnails?.stripUrl).toBe("s");
   });
 });
@@ -703,8 +704,8 @@ describe("nested sequences (schema v7)", () => {
   function seqProject(): Project {
     const p = makeProject([track("v1", "video", [A]), track("a1", "audio", [C])]);
     p.media = [
-      { id: "m-s1", path: "", kind: "sequence", sequence_id: "s1", duration_secs: null, width: null, height: null, fps: null },
-      { id: "m-s2", path: "", kind: "sequence", sequence_id: "s2", duration_secs: null, width: null, height: null, fps: null },
+      { id: "m-s1", path: "", kind: "sequence", sequence_id: "s1", duration_us: null, width: null, height: null, fps: null },
+      { id: "m-s2", path: "", kind: "sequence", sequence_id: "s2", duration_us: null, width: null, height: null, fps: null },
     ];
     p.sequences = [
       {
@@ -835,29 +836,29 @@ describe("nested sequences (schema v7)", () => {
     expect(ipc.applyCommand.mock.calls[0][0]).toMatchObject({ command: "AddTrack", kind: "audio", sequence_id: "s2" });
 
     ipc.applyCommands.mockClear();
-    store().setDragGhost({ mediaId: "m-s2", kind: "video", durationSecs: 2, positionSecs: 1, trackIndex: null, row: -1, valid: true });
+    store().setDragGhost({ mediaId: "m-s2", kind: "video", durationUs: 2_000_000, startUs: 1_000_000, trackIndex: null, row: -1, valid: true });
     await store().dropMediaOnTimeline();
     const batch = ipc.applyCommands.mock.calls[0][0];
     expect(batch[0]).toMatchObject({ command: "AddTrack", kind: "video", sequence_id: "s2" });
-    expect(batch[1]).toMatchObject({ command: "AddClip", media_id: "m-s2", position_secs: 1 });
+    expect(batch[1]).toMatchObject({ command: "AddClip", media_id: "m-s2", start: 1_000_000 });
   });
 
   it("drops resolve track indices against the open container", async () => {
     load(seqProject());
     await store().openSequence("s1");
     // Index 1 of Intro is its audio lane `ia1`; of the root it would be `a1`... use index 0 -> iv1.
-    store().setDragGhost({ mediaId: "m-s2", kind: "sequence", durationSecs: 1, positionSecs: 4, trackIndex: 0, row: 0, valid: true });
+    store().setDragGhost({ mediaId: "m-s2", kind: "sequence", durationUs: 1_000_000, startUs: 4_000_000, trackIndex: 0, row: 0, valid: true });
     await store().dropMediaOnTimeline();
     expect(ipc.applyCommand.mock.calls[0][0]).toMatchObject({ command: "AddClip", track_id: "iv1" });
   });
 
   it("a sequence dropped below every lane creates an audio track; empty sequences are refused", async () => {
     load(seqProject());
-    store().setDragGhost({ mediaId: "m-s1", kind: "sequence", durationSecs: 3, positionSecs: 0, trackIndex: null, row: 2, valid: true });
+    store().setDragGhost({ mediaId: "m-s1", kind: "sequence", durationUs: 3_000_000, startUs: 0, trackIndex: null, row: 2, valid: true });
     await store().dropMediaOnTimeline();
     expect(ipc.applyCommands.mock.calls[0][0][0]).toMatchObject({ command: "AddTrack", kind: "audio" });
     ipc.applyCommands.mockClear();
-    store().setDragGhost({ mediaId: "m-s1", kind: "sequence", durationSecs: 0, positionSecs: 0, trackIndex: null, row: -1, valid: true });
+    store().setDragGhost({ mediaId: "m-s1", kind: "sequence", durationUs: 0, startUs: 0, trackIndex: null, row: -1, valid: true });
     await store().dropMediaOnTimeline();
     expect(ipc.applyCommands).not.toHaveBeenCalled();
     expect(lastToast()?.kind).toBe("error");
@@ -869,10 +870,10 @@ describe("nested sequences (schema v7)", () => {
     store().setSelections([{ trackId: "iv1", clipId: "IA" }]);
     store().copySelection();
     expect(store().clipboard!.items[0]!.clip.id).toBe("IA");
-    store().setPlayheadLocal(5);
+    store().setPlayheadLocal(5_000_000);
     await store().pasteAtPlayhead();
     // Pasted onto Intro's video lane, not the root's v1.
-    expect(ipc.applyCommand.mock.calls[0][0]).toMatchObject({ command: "AddClip", track_id: "iv1", position_secs: 5 });
+    expect(ipc.applyCommand.mock.calls[0][0]).toMatchObject({ command: "AddClip", track_id: "iv1", start: 5_000_000 });
   });
 
   it("nestSelection dispatches NestClips with the selected clips", async () => {
@@ -912,26 +913,26 @@ describe("nested sequences (schema v7)", () => {
   it("addAdjustmentLayerAtPlayhead adds a 5s layer at the playhead on the selected video track and selects it", async () => {
     load();
     store().select({ trackId: "v1", clipId: "A" });
-    store().setPlayheadLocal(6);
+    store().setPlayheadLocal(6_000_000);
     ipc.applyCommand.mockImplementationOnce(async () => ({
       revision: 2,
-      patch: [{ op: "add", path: "/tracks/0/clips/-", value: { type: "adjustment", id: "ADJ", position_secs: 6, duration_secs: 5, enabled: true } }],
+      patch: [{ op: "add", path: "/tracks/0/clips/-", value: { type: "adjustment", id: "ADJ", start_us: 6_000_000, duration_us: 5_000_000, enabled: true } }],
       outcome: "Applied",
     }));
     await store().addAdjustmentLayerAtPlayhead();
     expect(ipc.applyCommand.mock.calls[0][0]).toEqual({
       command: "AddAdjustmentLayer",
       track_id: "v1",
-      position_secs: 6,
-      duration_secs: 5,
+      start: 6_000_000,
+      duration: 5_000_000,
     });
     expect(store().selection).toEqual({ trackId: "v1", clipId: "ADJ" });
   });
 
   it("addAdjustmentLayerAtPlayhead surfaces the overlap error and creates a track in an empty sequence", async () => {
     load(seqProject());
-    store().setPlayheadLocal(1);
-    ipc.applyCommand.mockRejectedValueOnce("clip range [1, 6) overlaps an existing clip on track v1");
+    store().setPlayheadLocal(1_000_000);
+    ipc.applyCommand.mockRejectedValueOnce("clip range [1000000, 6000000) overlaps an existing clip on track v1");
     await store().addAdjustmentLayerAtPlayhead("v1");
     expect(lastToast()!.message).toContain("overlaps");
 
@@ -939,17 +940,17 @@ describe("nested sequences (schema v7)", () => {
     p.sequences![1]!.tracks = [];
     load(p);
     await store().openSequence("s2");
-    await store().addAdjustmentLayerAtPlayhead(undefined, 2);
+    await store().addAdjustmentLayerAtPlayhead(undefined, 2_000_000);
     const batch = ipc.applyCommands.mock.calls[0][0];
     expect(batch[0]).toMatchObject({ command: "AddTrack", kind: "video", sequence_id: "s2" });
-    expect(batch[1]).toMatchObject({ command: "AddAdjustmentLayer", track_id: batch[0].id, duration_secs: 2 });
+    expect(batch[1]).toMatchObject({ command: "AddAdjustmentLayer", track_id: batch[0].id, duration: 2_000_000 });
   });
 });
 
 describe("formatCommandError", () => {
   it("turns the engine's overlap error into a sentence without the track id", () => {
     const msg = formatCommandError(
-      new Error("clip range [31, 36) overlaps an existing clip on track bbbbbbbb-0000-4000-8000-000000000007"),
+      new Error("clip range [31000000, 36000000) overlaps an existing clip on track bbbbbbbb-0000-4000-8000-000000000007"),
     );
     expect(msg).toBe("Can't place it there: 31.0s–36.0s overlaps another clip on that track");
     expect(msg).not.toMatch(/[0-9a-f]{8}-/);
@@ -1001,19 +1002,34 @@ describe("live edits: preview overrides and one undo step per gesture", () => {
     expect(store().canUndo).toBe(false);
   });
 
+  const blurEntry = {
+    ref: "builtin:blur@1",
+    params: [
+      { key: "radius", type: "float" as const, min: 0, max: 64, default: 0, initial: 8 },
+    ],
+  };
+  const adjustEntry = {
+    ref: "builtin:color_adjust@1",
+    params: [
+      { key: "exposure", type: "float" as const, min: -5, max: 5, default: 0, initial: 0 },
+    ],
+  };
+
   it("hover preview adds a temporary effect to the selected clip, with no command, and clears on leave", () => {
     load(sample(), { selections: [sel("v1", "A")], selection: sel("v1", "A") });
 
-    store().previewEffectOnSelection("builtin:blur", { radius: 4 });
+    store().previewEffectOnSelection(blurEntry);
     const effects = store().previewOverrides.A?.effects ?? [];
     expect(effects).toHaveLength(1);
-    expect(effects[0]).toMatchObject({ effect_id: "builtin:blur", enabled: true, params: { radius: 4 } });
+    // The temporary instance carries the catalogue's `initial` values, not a UI default.
+    expect(effects[0]).toMatchObject({ ref: "builtin:blur@1", enabled: true, params: { radius: 8 } });
+    expect(effects[0]).not.toHaveProperty("effect_id");
     expect(ipc.applyCommand).not.toHaveBeenCalled();
     expect(store().project).toEqual(sample());
     expect(store().canUndo).toBe(false);
 
     // Moving to another effect replaces the hover instance rather than stacking it.
-    store().previewEffectOnSelection("builtin:color_adjust", { exposure: 0 });
+    store().previewEffectOnSelection(adjustEntry);
     expect(store().previewOverrides.A?.effects).toHaveLength(1);
 
     store().clearEffectPreview();
@@ -1022,15 +1038,38 @@ describe("live edits: preview overrides and one undo step per gesture", () => {
     expect(ipc.applyCommand).not.toHaveBeenCalled();
   });
 
-  it("hover preview keeps the clip's committed effects and appends the temporary one", () => {
-    const withGlitch = sample();
-    const a = withGlitch.tracks[0].clips[0] as { effects?: unknown[] };
-    a.effects = [{ id: "e1", effect_id: "builtin:glitch", enabled: true, params: { intensity: 0.5 } }];
-    load(withGlitch, { selections: [sel("v1", "A")], selection: sel("v1", "A") });
+  it("hover preview sends the whole stack in render order plus the temporary instance", () => {
+    const withStack = sample();
+    const a = withStack.tracks[0].clips[0] as unknown as Record<string, unknown>;
+    a.adjust = { id: "ad", ref: "builtin:color_adjust@1", enabled: true, params: { exposure: 1 } };
+    a.filter = { id: "fi", ref: "builtin:lut_filter@1", enabled: true, params: {} };
+    a.effects = [{ id: "e1", ref: "builtin:glitch@1", enabled: true, params: { intensity: 0.5 } }];
+    load(withStack, { selections: [sel("v1", "A")], selection: sel("v1", "A") });
 
-    store().previewEffectOnSelection("builtin:blur", { radius: 4 });
+    store().previewEffectOnSelection(blurEntry);
     const effects = store().previewOverrides.A?.effects ?? [];
-    expect(effects.map((e) => e.effect_id)).toEqual(["builtin:glitch", "builtin:blur"]);
+    // filter, key, adjust, effects[], then the hovered one
+    expect(effects.map((e) => e.ref)).toEqual([
+      "builtin:lut_filter@1",
+      "builtin:color_adjust@1",
+      "builtin:glitch@1",
+      "builtin:blur@1",
+    ]);
+    expect(effects.map((e) => e.id).slice(0, 3)).toEqual(["fi", "ad", "e1"]);
+  });
+
+  it("hover preview of a transition sets a transition override on the selected video clip only", () => {
+    load(sample(), { selections: [sel("v1", "A")], selection: sel("v1", "A") });
+    store().previewTransitionOnSelection(
+      { ref: "builtin:wipe_left@1", params: [] },
+      400_000,
+    );
+    expect(store().previewOverrides.A).toEqual({
+      transition: { ref: "builtin:wipe_left@1", duration_us: 400_000, params: {}, easing: null },
+    });
+    expect(ipc.applyCommand).not.toHaveBeenCalled();
+    store().clearEffectPreview();
+    expect(store().previewOverrides).toEqual({});
   });
 
   it("a rejected commit still clears the override, so no phantom preview remains", async () => {

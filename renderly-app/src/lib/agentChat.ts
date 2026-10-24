@@ -437,6 +437,7 @@ const PERCEPTION_TOOLS = new Set([
   "mcp__renderly__look",
   "mcp__renderly__assets",
   "mcp__renderly__find_media",
+  "mcp__renderly__transcript",
 ]);
 
 /** The `edit` tool: applies commands to the project as one undo step. */
@@ -509,6 +510,7 @@ export function activityLabel(items: TranscriptItem[]): string | null {
       if (item.name === "mcp__renderly__look") return "Looking at the frame…";
       if (item.name === "mcp__renderly__find_media") return "Searching for media…";
       if (item.name === "mcp__renderly__assets") return "Checking effects and styles…";
+      if (item.name === "mcp__renderly__transcript") return "Reading the transcript…";
       return "Using a tool…";
     }
     if (item.kind === "agent" && item.streaming) return null;

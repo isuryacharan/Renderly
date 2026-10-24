@@ -1,0 +1,95 @@
+{
+  "schema_version": 6,
+  "id": "66666666-6666-4666-8666-666666666666",
+  "name": "fixture v6",
+  "settings": {
+    "fps": 30.0,
+    "width": 1920,
+    "height": 1080,
+    "sample_rate": 48000,
+    "duck_db": -12.0
+  },
+  "media": [
+    {
+      "id": "a6000000-0000-4000-8000-000000000001",
+      "path": "media/a.mp4",
+      "kind": "video",
+      "duration_secs": 10.0,
+      "width": 1920,
+      "height": 1080,
+      "fps": 30.0
+    },
+    {
+      "id": "a6000000-0000-4000-8000-000000000002",
+      "path": "media/b.mp4",
+      "kind": "video",
+      "duration_secs": 10.0,
+      "width": 1920,
+      "height": 1080,
+      "fps": 30.0
+    }
+  ],
+  "tracks": [
+    {
+      "id": "b6000000-0000-4000-8000-000000000001",
+      "kind": "video",
+      "name": "V1",
+      "clips": [
+        {
+          "type": "video",
+          "id": "c6000000-0000-4000-8000-000000000001",
+          "media_id": "a6000000-0000-4000-8000-000000000001",
+          "position_secs": 0.0,
+          "source_in_secs": 0.0,
+          "source_out_secs": 3.0,
+          "gain_db": 0.0,
+          "enabled": true,
+          "background_removal": {
+            "enabled": true,
+            "model_id": "rvm",
+            "threshold": 0.15,
+            "feather": 0.0,
+            "temporal": true,
+            "matte_cache_dir": "mattes/a",
+            "matte_frames": {
+              "start_secs": 0.5,
+              "fps": 24.0,
+              "count": 4,
+              "width": 640,
+              "height": 360,
+              "stamp": 1
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "b6000000-0000-4000-8000-000000000002",
+      "kind": "audio",
+      "name": "A1",
+      "clips": [
+        {
+          "type": "audio",
+          "id": "c6000000-0000-4000-8000-000000000002",
+          "media_id": "a6000000-0000-4000-8000-000000000002",
+          "position_secs": 0.0,
+          "source_in_secs": 0.0,
+          "source_out_secs": 3.0,
+          "gain_db": 0.0,
+          "enabled": true,
+          "audio_denoise": { "enabled": true, "backend": "afftdn", "strength": 0.5 },
+          "multicam_group_id": "e6000000-0000-4000-8000-000000000001"
+        }
+      ]
+    }
+  ],
+  "multicam_groups": [
+    {
+      "id": "e6000000-0000-4000-8000-000000000001",
+      "name": "Angles",
+      "angle_clip_ids": ["c6000000-0000-4000-8000-000000000002"],
+      "active_angle": 0,
+      "sync_offsets_secs": [0.25]
+    }
+  ]
+}

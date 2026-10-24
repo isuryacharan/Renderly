@@ -1,6 +1,6 @@
 import { findSequence } from "./container";
 import type { Clip, MediaClip, Project, Track } from "./types";
-import { clipEndSecs } from "./types";
+import { clipEndUs } from "./types";
 
 /**
  * "Apply to" choices for TrackMotion: the tracked clip itself, or a video clip on another
@@ -45,8 +45,8 @@ export function motionTargetChoices(
 ): MotionTargetChoices {
   const options = [{ value: MOTION_TARGET_SELF, label: "This clip" }];
   const own = tracks.findIndex((t) => t.id === track.id);
-  const start = clip.position_secs;
-  const end = clipEndSecs(clip);
+  const start = clip.start_us;
+  const end = clipEndUs(clip);
   const n = tracks.length;
   const distance = (index: number) => (index > own ? index - own : n + own - index);
   // Nearest track above first, then nearest below.
@@ -59,14 +59,14 @@ export function motionTargetChoices(
     const overlapping = t.clips
       .filter(
         (c: Clip): c is MediaClip =>
-          c.type === "video" && c.position_secs < end - 1e-6 && clipEndSecs(c) > start + 1e-6,
+          c.type === "video" && c.start_us < end && clipEndUs(c) > start,
       )
-      .sort((a, b) => a.position_secs - b.position_secs);
+      .sort((a, b) => a.start_us - b.start_us);
     for (const c of overlapping) {
       const value = `${t.id}|${c.id}`;
       options.push({
         value,
-        label: `${clipLabel(project, c)} (${t.name}, at ${c.position_secs.toFixed(1)} s)`,
+        label: `${clipLabel(project, c)} (${t.name}, at ${(c.start_us / 1_000_000).toFixed(1)} s)`,
       });
       if (defaultValue === MOTION_TARGET_SELF && index > own) defaultValue = value;
     }

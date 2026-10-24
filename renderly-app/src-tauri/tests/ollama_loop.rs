@@ -60,8 +60,8 @@ impl ToolHost for TestHost {
             .map_err(|e| e.to_string())
     }
 
-    fn playhead_secs(&self) -> f64 {
-        0.0
+    fn playhead_us(&self) -> i64 {
+        0
     }
 
     fn active_sequence(&self) -> Option<Id> {
@@ -134,7 +134,7 @@ impl ToolHost for TestHost {
 
     fn render_png(
         &self,
-        _time_secs: f64,
+        _time_us: i64,
         _preset: renderly_core::commands::ExportPreset,
     ) -> Result<Vec<u8>, String> {
         Err("rendering is not available in tests".into())
@@ -301,7 +301,7 @@ fn stream_chat(stream: &mut std::net::TcpStream, req: &Value, _n: usize) {
             stream,
             &json!({ "model": "qwen3:4b", "message": { "role": "assistant", "content": "", "tool_calls": [
             { "function": { "name": "add_caption", "arguments": {
-                "track_id": CAPTION_TRACK, "text": "Hello", "position_secs": 1.0, "duration_secs": 2.0 } } } ] }, "done": false }),
+                "track_id": CAPTION_TRACK, "text": "Hello", "start": "1s", "duration": "2s" } } } ] }, "done": false }),
         );
         ndjson(stream, &done);
     }
@@ -518,7 +518,7 @@ fn real_qwen3_round_trip_against_the_local_server() {
         .expect("start against the local server");
     session
         .send_turn(&format!(
-            "Call the add_caption tool once: track_id {CAPTION_TRACK}, text \"Hello\", position_secs 1, duration_secs 2."
+            "Call the add_caption tool once: track_id {CAPTION_TRACK}, text \"Hello\", start_us 1, duration_us 2."
         ))
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(600);

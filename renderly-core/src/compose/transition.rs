@@ -1,17 +1,15 @@
 //! Dual-input transitions (Phase 3), run on the effect runtime.
 //!
-//! The outgoing and incoming pictures are drawn into two offscreen targets, then the builtin
-//! transition item named by the clip's [`TransitionKind`] blends them onto the output (the
+//! The outgoing and incoming pictures are drawn into two offscreen targets, then the transition
+//! item named by the clip's `ref` (a builtin or a pack item) blends them onto the output (the
 //! item's `from` and `to` inputs). Its last pass is alpha-blended straight into the output, so
 //! a transition costs no copy pass.
 
-use std::collections::HashMap;
-
-use crate::project::TransitionKind;
-
-use super::effects::ensure_item;
-use super::runtime::{CompiledEffect, EffectExecutor, EffectInputs, HostValues, ParamValue};
-use super::ComposeError;
+use super::effects::{effect_host, stored_to_runtime};
+use super::runtime::manifest::Easing as ItemEasing;
+use super::runtime::{CompiledEffect, EffectExecutor, EffectInputs, ParamValue};
+use super::{ComposeError, FxTiming, LayerTransition};
+use crate::project::ProgressEasing;
 
 struct Offscreen {
     _texture: wgpu::Texture,
@@ -22,8 +20,6 @@ struct Offscreen {
 
 pub struct TransitionPass {
     executor: EffectExecutor,
-    /// Compiled builtin transition items, loaded on first use.
-    items: HashMap<&'static str, CompiledEffect>,
     rt_a: Option<Offscreen>,
     rt_b: Option<Offscreen>,
 }
@@ -32,12 +28,10 @@ impl TransitionPass {
     pub fn new(device: &wgpu::Device) -> Self {
         Self {
             executor: EffectExecutor::new(device),
-            items: HashMap::new(),
             rt_a: None,
             rt_b: None,
         }
     }
-
     /// Marks the start of a submitted frame; see [`EffectExecutor::begin_frame`].
     pub fn begin_frame(&mut self) {
         self.executor.begin_frame();
@@ -71,19 +65,20 @@ impl TransitionPass {
             .unwrap_or_else(|| unreachable!("ensure_rts runs before any transition draw"))
     }
 
-    /// Blends the two offscreen pictures onto `output_view` with the builtin item for `kind`.
+    /// Blends the two offscreen pictures onto `output_view` with the transition `item`, using
+    /// the stored `transition.params` and progress (eased by the item's default unless the
+    /// transition carries its own easing).
     pub fn blend(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         output_view: &wgpu::TextureView,
-        kind: TransitionKind,
-        progress: f32,
+        item: &CompiledEffect,
+        transition: &LayerTransition,
     ) -> Result<(), ComposeError> {
         let Self {
             executor,
-            items,
             rt_a,
             rt_b,
         } = self;
@@ -92,20 +87,16 @@ impl TransitionPass {
                 "transition targets are not allocated".into(),
             ));
         };
-        let item = ensure_item(items, kind.as_str())?;
         let mut inputs = EffectInputs::new();
         inputs.bind("from", &a.view).bind("to", &b.view);
-        let host = HostValues {
-            width: a.width,
-            height: a.height,
-            time: 0.0,
-            duration: 0.0,
-            progress: f64::from(progress.clamp(0.0, 1.0)),
-            frame: 0,
-            seed: 0,
-            speed: 1.0,
-        };
-        let no_params = |_: &str| -> Option<ParamValue> { None };
+        let mut progress = f64::from(transition.progress.clamp(0.0, 1.0));
+        if transition.default_easing {
+            progress = default_easing(item).apply(progress);
+        }
+        let mut host = effect_host(a.width, a.height, &FxTiming::default(), 0);
+        host.progress = progress;
+        let params =
+            |key: &str| -> Option<ParamValue> { transition.params.get(key).map(stored_to_runtime) };
         executor
             .run_blended(
                 device,
@@ -113,7 +104,7 @@ impl TransitionPass {
                 encoder,
                 item,
                 &inputs,
-                &no_params,
+                &params,
                 &host,
                 output_view,
             )
@@ -145,25 +136,36 @@ fn create_offscreen(device: &wgpu::Device, label: &str, width: u32, height: u32)
     }
 }
 
+/// The item's declared default easing as a progress curve (CSS presets for the named ones).
+fn default_easing(item: &CompiledEffect) -> ProgressEasing {
+    match item.manifest().transition.map(|t| t.easing) {
+        Some(ItemEasing::EaseIn) => ProgressEasing::EASE_IN,
+        Some(ItemEasing::EaseOut) => ProgressEasing::EASE_OUT,
+        Some(ItemEasing::EaseInOut) => ProgressEasing::EASE_IN_OUT,
+        _ => ProgressEasing::Linear,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::compose::builtins;
     use crate::compose::runtime::manifest::ItemKind;
 
-    /// Every transition kind has a transition item of the same name, and nothing else is a
-    /// transition: `TransitionKind::ALL` agrees with the builtin manifests.
+    /// The ten builtin transitions are exactly the transition items, and each defaults to
+    /// linear progress (the goldens depend on it).
     #[test]
-    fn transition_kinds_agree_with_builtin_manifests() {
-        for kind in TransitionKind::ALL {
-            let m = builtins::manifest(kind.as_str())
-                .unwrap_or_else(|| panic!("no builtin item for {kind:?}"));
-            assert_eq!(m.kind, ItemKind::Transition, "{kind:?}");
+    fn builtin_transitions_are_linear_and_listed() {
+        let names = builtins::transition_ids();
+        assert_eq!(names.len(), 10);
+        for name in names {
+            let m = builtins::manifest(name).unwrap_or_else(|| panic!("no builtin {name}"));
+            assert_eq!(m.kind, ItemKind::Transition, "{name}");
+            assert_eq!(
+                m.transition.map(|t| t.easing),
+                Some(ItemEasing::Linear),
+                "{name}"
+            );
         }
-        let transitions = builtins::BUILTINS
-            .iter()
-            .filter(|b| builtins::manifest(b.name).is_some_and(|m| m.kind == ItemKind::Transition))
-            .count();
-        assert_eq!(transitions, TransitionKind::ALL.len());
     }
 }

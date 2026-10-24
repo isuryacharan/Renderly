@@ -122,7 +122,12 @@ impl RenderlyMcp {
     fn save(session: &Session) -> Result<(), String> {
         let data = serde_json::to_string_pretty(&session.project)
             .map_err(|e| format!("serialize project: {e}"))?;
-        std::fs::write(&session.path, data).map_err(|e| format!("write project: {e}"))
+        renderly_core::project::backup::save_project_file(
+            &session.path,
+            &data,
+            renderly_core::project::SCHEMA_VERSION,
+        )
+        .map_err(|e| format!("write project: {e}"))
     }
 
     fn block_on_bridge<F, T>(f: F) -> Result<T, String>
@@ -320,6 +325,7 @@ impl ApplyCommandRequest {
             dry_run: self.dry_run,
             request_id: self.request_id.clone(),
             allow_deletion,
+            deprecations: Vec::new(),
         })
     }
 }
@@ -330,13 +336,15 @@ impl ApplyCommandRequest {
 /// other clients send the object directly — both shapes must work. Callers re-serialise
 /// the parsed command before forwarding (e.g. to the live bridge) so downstream always
 /// sees a canonical object.
-fn parse_command_param(value: &serde_json::Value) -> Result<Command, String> {
-    match value {
+fn parse_command_param(value: &serde_json::Value) -> Result<(Command, Vec<String>), String> {
+    let json = match value {
         serde_json::Value::String(s) => {
-            serde_json::from_str(s).map_err(|e| format!("invalid command JSON: {e}"))
+            serde_json::from_str(s).map_err(|e| format!("invalid command JSON: {e}"))?
         }
-        v => serde_json::from_value(v.clone()).map_err(|e| format!("invalid command JSON: {e}")),
-    }
+        v => v.clone(),
+    };
+    renderly_core::commands::parse_command_json(json)
+        .map_err(|e| format!("invalid command JSON: {e}"))
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -380,6 +388,14 @@ pub struct DescribeEffectsRequest {
     pub packs: Vec<String>,
 }
 
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetProjectRequest {
+    /// Include every caption's word timings and every transcript's words in full (large for a
+    /// long video). Default false: they are replaced by `words_count` (and `deleted_count`).
+    #[serde(default)]
+    pub include_words: bool,
+}
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ProbeMediaRequest {
     pub path: String,
@@ -388,11 +404,20 @@ pub struct ProbeMediaRequest {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct TranscriptRequest {
     pub media_id: String,
+    /// Run speech recognition again even if the project already holds a transcript of this
+    /// media (it replaces nothing; use GenerateCaptions to store one).
+    #[serde(default)]
+    pub refresh: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct RenderFrameRequest {
-    pub time_secs: f64,
+    /// Timeline time: integer microseconds or a Time string such as "1.5s" or "90f".
+    #[serde(default)]
+    pub time: Option<renderly_core::time::Time>,
+    /// Deprecated alias for `time`, float seconds. Removed in a later release.
+    #[serde(default)]
+    pub time_secs: Option<f64>,
     #[serde(default = "default_preset")]
     pub preset: String,
 }
@@ -402,15 +427,26 @@ pub struct SilenceDetectRequest {
     pub media_id: String,
     #[serde(default = "default_noise_db")]
     pub noise_db: f64,
-    #[serde(default = "default_min_silence")]
-    pub min_duration_secs: f64,
+    /// Shortest silence reported: a Time, e.g. "0.5s" or 500000 (default 0.5s).
+    #[serde(default)]
+    pub min_duration: Option<renderly_core::time::Time>,
+    /// Deprecated alias for `min_duration`, float seconds. Removed in a later release.
+    #[serde(default)]
+    pub min_duration_secs: Option<f64>,
+}
+
+impl SilenceDetectRequest {
+    fn min_duration_us(&self, fps: renderly_core::time::Fps) -> i64 {
+        match (self.min_duration, self.min_duration_secs) {
+            (Some(t), _) => t.resolve(fps),
+            (None, Some(s)) => renderly_core::time::seconds_to_us(s),
+            (None, None) => 500_000,
+        }
+    }
 }
 
 fn default_noise_db() -> f64 {
     -30.0
-}
-fn default_min_silence() -> f64 {
-    0.5
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -464,7 +500,7 @@ impl RenderlyMcp {
         let project = Project::new(
             req.name,
             Settings {
-                fps: req.fps,
+                fps: renderly_core::time::Fps::from_f64(req.fps),
                 width: req.width,
                 height: req.height,
                 sample_rate: 48000,
@@ -495,9 +531,21 @@ impl RenderlyMcp {
     fn open_project_impl(&self, req: OpenProjectRequest) -> Result<String, String> {
         let path = PathBuf::from(&req.path);
         let data = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        let project = Project::from_json(&data).map_err(|e| e.to_string())?;
+        let mut project = Project::from_json(&data).map_err(|e| e.to_string())?;
+        // A v7 project's pack folders are installed into the user library as `local.<id>`
+        // packs, and the transitional list is cleared (core's loader never touches the library).
+        let adopted =
+            renderly_core::library::adopt_legacy_paths_default(&mut project, path.parent());
         *self.session.lock().map_err(|e| e.to_string())? = Some(Session::new(path, project));
-        Ok(format!("opened {}", req.path))
+        let mut note = format!("opened {}", req.path);
+        if adopted.changed() {
+            note.push_str(&format!(
+                "; installed {} pack folder(s) from the project into the library ({})",
+                adopted.installed.len(),
+                adopted.installed.join(", ")
+            ));
+        }
+        Ok(note)
     }
 
     #[tool(
@@ -543,14 +591,14 @@ impl RenderlyMcp {
     }
 
     #[tool(
-        description = "Return the current project JSON, plus project_revision at its top level. Pass project_revision as expected_revision on your next write."
+        description = "Return the current project JSON, plus project_revision at its top level (pass it as expected_revision on your next write), and effect_status when any effect, transition or caption/text style is changed, missing or disabled (clip_id, instance_id, ref, status: a missing effect renders pass-through and keeps its params). Effects sit in the clip's filter / key / adjust slots and effects[] list, each with a ref like builtin:blur@1. Captions and text clips show body.text, runs, style (null = inherits the track's caption_style) and animations; their word timings and the project's transcripts are summarised as words_count (and deleted_count) unless include_words is true (get_transcript lists transcript words). Tracks show magnetic (clips stay contiguous from 0); markers[] lists timeline markers."
     )]
-    fn get_project(&self) -> String {
-        self.get_project_impl()
+    fn get_project(&self, Parameters(req): Parameters<GetProjectRequest>) -> String {
+        self.get_project_impl(req.include_words)
             .unwrap_or_else(|e| format!("error: {e}"))
     }
 
-    fn get_project_impl(&self) -> Result<String, String> {
+    fn get_project_impl(&self, include_words: bool) -> Result<String, String> {
         self.with_live_or_headless(
             |client| {
                 let value =
@@ -560,6 +608,12 @@ impl RenderlyMcp {
                 if let Some(obj) = project.as_object_mut() {
                     obj.insert("project_revision".into(), revision);
                 }
+                if let Ok(parsed) = serde_json::from_value::<Project>(project.clone()) {
+                    insert_effect_status(&mut project, &parsed);
+                }
+                if !include_words {
+                    summarise_words(&mut project);
+                }
                 serde_json::to_string_pretty(&project).map_err(|e| e.to_string())
             },
             |session| {
@@ -567,6 +621,10 @@ impl RenderlyMcp {
                     serde_json::to_value(&session.project).map_err(|e| e.to_string())?;
                 if let Some(obj) = project.as_object_mut() {
                     obj.insert("project_revision".into(), json!(session.revision));
+                }
+                insert_effect_status(&mut project, &session.project);
+                if !include_words {
+                    summarise_words(&mut project);
                 }
                 serde_json::to_string_pretty(&project).map_err(|e| e.to_string())
             },
@@ -598,8 +656,9 @@ impl RenderlyMcp {
     /// One write through the edit contract: live on the desktop app when it is open on this
     /// project (the app checks and commits), otherwise headless on the project file.
     fn apply_write_impl(&self, req: ApplyCommandRequest) -> Result<Value, EditError> {
-        let cmd = parse_command_param(&req.command).map_err(EditError::invalid)?;
-        let options = req.write_options()?;
+        let (cmd, deprecations) = parse_command_param(&req.command).map_err(EditError::invalid)?;
+        let mut options = req.write_options()?;
+        options.deprecations = deprecations;
         let path = {
             let guard = self.session.lock().map_err(lock_error)?;
             guard.as_ref().map(|s| s.path.clone())
@@ -798,7 +857,8 @@ impl RenderlyMcp {
             .map_err(|e| format!("invalid media_id UUID: {e}"))?;
         self.with_session(|session| {
             let path = media_path(&session.project, media_id)?;
-            let spans = analyze_silence(&path, req.noise_db, req.min_duration_secs)
+            let fps = session.project.settings.fps;
+            let spans = analyze_silence(&path, req.noise_db, req.min_duration_us(fps))
                 .map_err(|e| e.to_string())?;
             serde_json::to_string_pretty(&spans).map_err(|e| e.to_string())
         })
@@ -854,7 +914,9 @@ impl RenderlyMcp {
         serde_json::to_string_pretty(&probed).map_err(|e| e.to_string())
     }
 
-    #[tool(description = "Whisper transcript for a media_id in the open project (local STT)")]
+    #[tool(
+        description = "Transcript of a media_id in the open project. If the project already holds one (made by GenerateCaptions, in source-media time with word ids, `deleted` flags and detection tags) it is returned as {source: \"project\", transcript}; otherwise local Whisper STT runs and returns {source: \"whisper\", segments with word timings when the recogniser reports them}. `refresh: true` always runs STT. Cut or restore words with ApplyTranscriptCuts / RestoreTranscriptWords"
+    )]
     fn get_transcript(&self, Parameters(req): Parameters<TranscriptRequest>) -> String {
         self.get_transcript_impl(req)
             .unwrap_or_else(|e| format!("error: {e}"))
@@ -866,14 +928,30 @@ impl RenderlyMcp {
             .parse()
             .map_err(|e| format!("invalid media_id UUID: {e}"))?;
         self.with_session(|session| {
+            if !req.refresh {
+                if let Some(stored) = session
+                    .project
+                    .transcripts
+                    .iter()
+                    .find(|t| t.media_id == media_id)
+                {
+                    return serde_json::to_string_pretty(
+                        &serde_json::json!({ "source": "project", "transcript": stored }),
+                    )
+                    .map_err(|e| e.to_string());
+                }
+            }
             let transcript =
                 transcribe_media(&session.project, media_id).map_err(|e| e.to_string())?;
-            serde_json::to_string_pretty(&transcript).map_err(|e| e.to_string())
+            serde_json::to_string_pretty(
+                &serde_json::json!({ "source": "whisper", "transcript": transcript }),
+            )
+            .map_err(|e| e.to_string())
         })
     }
 
     #[tool(
-        description = "Render a PNG preview of the composited frame at time_secs (base64-encoded PNG in JSON)"
+        description = "Render a PNG preview of the composited frame at `time` (a Time: integer microseconds, \"1.5s\" or \"90f\"; the old `time_secs` float is a deprecated alias). Base64-encoded PNG in JSON"
     )]
     fn render_frame(&self, Parameters(req): Parameters<RenderFrameRequest>) -> String {
         self.render_frame_impl(req)
@@ -882,6 +960,18 @@ impl RenderlyMcp {
 
     fn render_frame_impl(&self, req: RenderFrameRequest) -> Result<String, String> {
         let preset = parse_preset(&req.preset)?;
+        let mut warnings: Vec<String> = Vec::new();
+        let time = match (req.time, req.time_secs) {
+            (Some(t), _) => t,
+            (None, Some(secs)) => {
+                warnings.push(
+                    "render_frame: parameter `time_secs` is deprecated (float seconds); use `time`                      with a Time value such as \"1.5s\" or integer microseconds."
+                        .into(),
+                );
+                renderly_core::time::Time::Us(renderly_core::time::seconds_to_us(secs))
+            }
+            (None, None) => return Err("render_frame requires `time`".into()),
+        };
         self.with_live_or_headless(
             |client| {
                 let value = Self::block_on_bridge(async {
@@ -889,7 +979,7 @@ impl RenderlyMcp {
                         .call(
                             "render_frame",
                             json!({
-                                "time_secs": req.time_secs,
+                                "time": time,
                                 "preset": req.preset,
                             }),
                         )
@@ -898,13 +988,15 @@ impl RenderlyMcp {
                 serde_json::to_string(&value).map_err(|e| e.to_string())
             },
             |session| {
-                let png = perceive::render_frame_png(&session.project, req.time_secs, preset)
+                let time_us = time.resolve(session.project.settings.fps);
+                let png = perceive::render_frame_png(&session.project, time_us, preset)
                     .map_err(|e| e.to_string())?;
                 let encoded = base64_encode(&png);
                 serde_json::to_string(&serde_json::json!({
-                    "time_secs": req.time_secs,
+                    "time_us": time_us,
                     "png_base64": encoded,
                     "byte_len": png.len(),
+                    "warnings": warnings,
                 }))
                 .map_err(|e| e.to_string())
             },
@@ -922,7 +1014,7 @@ impl RenderlyMcp {
     }
 
     #[tool(
-        description = "Effects, filters, transitions and LUTs the engine can apply: the builtins, plus the packs you name by folder (each holds pack.json), or the open project's packs when none are named. One line per item: ref, kind, label, state (ok; disabled or error with the reason; skipped), then params (type, range, default, initial). Read-only; needs no project."
+        description = "Effects, filters, transitions and LUTs the engine can apply by ref: the builtins, plus the packs installed in the user library (or the packs you name by folder, each holding pack.json). One line per item: ref, kind, label, state (ok; disabled or error with the reason; skipped), then params (type, range, default, initial). Apply with SetClipEffects (filter / key / adjust / effects) or SetClipTransition. Read-only; needs no project."
     )]
     fn describe_effects(&self, Parameters(req): Parameters<DescribeEffectsRequest>) -> String {
         if req.packs.is_empty() {
@@ -944,19 +1036,11 @@ impl RenderlyMcp {
         text
     }
 
-    /// The packs of the open project, loaded for perception. A pack that fails to load is left
-    /// out; `describe_effects` with an explicit folder reports the error.
+    /// The packs installed in the user library, loaded for perception (items are applied by
+    /// ref, wherever the project lives). A pack that fails to load is left out;
+    /// `describe_effects` with an explicit folder reports the error.
     fn open_project_packs(&self) -> Vec<renderly_core::packs::LoadedPack> {
-        let paths: Vec<PathBuf> = self
-            .session
-            .lock()
-            .ok()
-            .and_then(|guard| guard.as_ref().map(|s| s.project.asset_pack_paths.clone()))
-            .unwrap_or_default();
-        paths
-            .iter()
-            .filter_map(|p| renderly_core::packs::load_pack(p).ok())
-            .collect()
+        renderly_core::packs::load_installed_packs()
     }
 
     #[tool(
@@ -1147,6 +1231,67 @@ fn project_dir(path: &std::path::Path) -> Option<PathBuf> {
 /// The command reference `describe_commands` returns: the `Command` enum block from
 /// docs/command-api.md (the spec this server dispatches to), plus how it maps to JSON. Agents
 /// otherwise guess field names from error messages one at a time.
+/// Replace the bulky word lists of a project JSON value by counts: each caption / text clip's
+/// `body.words` becomes `body.words_count`, each transcript's `words` becomes `words_count` and
+/// `deleted_count`. Keeps `get_project` compact for a long video.
+fn summarise_words(project: &mut Value) {
+    fn clips(tracks: Option<&mut Vec<Value>>) {
+        for track in tracks.into_iter().flatten() {
+            let Some(list) = track.get_mut("clips").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for clip in list {
+                if !matches!(
+                    clip.get("type").and_then(Value::as_str),
+                    Some("caption" | "text")
+                ) {
+                    continue;
+                }
+                if let Some(body) = clip.get_mut("body").and_then(Value::as_object_mut) {
+                    if let Some(Value::Array(words)) = body.remove("words") {
+                        body.insert("words_count".into(), json!(words.len()));
+                    }
+                }
+            }
+        }
+    }
+    clips(project.get_mut("tracks").and_then(Value::as_array_mut));
+    if let Some(seqs) = project.get_mut("sequences").and_then(Value::as_array_mut) {
+        for seq in seqs {
+            clips(seq.get_mut("tracks").and_then(Value::as_array_mut));
+        }
+    }
+    if let Some(list) = project.get_mut("transcripts").and_then(Value::as_array_mut) {
+        for t in list {
+            let Some(obj) = t.as_object_mut() else {
+                continue;
+            };
+            if let Some(Value::Array(words)) = obj.remove("words") {
+                let deleted = words
+                    .iter()
+                    .filter(|w| w.get("deleted").and_then(Value::as_bool) == Some(true))
+                    .count();
+                obj.insert("words_count".into(), json!(words.len()));
+                obj.insert("deleted_count".into(), json!(deleted));
+            }
+        }
+    }
+}
+
+/// Adds `effect_status` to a project JSON value: the effects and transitions that are not `ok`
+/// (`changed`, `missing`, `disabled`), each with its clip id, instance id and ref. Omitted when
+/// everything resolves, so a healthy project costs nothing. Status is computed here on load
+/// and never stored in the file.
+fn insert_effect_status(value: &mut Value, project: &Project) {
+    let problems = renderly_core::packs::status::installed_problem_effects(project);
+    if problems.is_empty() {
+        return;
+    }
+    if let (Some(obj), Ok(list)) = (value.as_object_mut(), serde_json::to_value(&problems)) {
+        obj.insert("effect_status".into(), list);
+    }
+}
+
 fn command_reference(packs: &[renderly_core::packs::LoadedPack]) -> String {
     const DOC: &str = include_str!("../../docs/command-api.md");
     let block = DOC
@@ -1158,9 +1303,9 @@ fn command_reference(packs: &[renderly_core::packs::LoadedPack]) -> String {
         })
         .unwrap_or("(command reference unavailable: docs/command-api.md changed shape)");
 
-    let transitions: Vec<&str> = renderly_core::project::TransitionKind::ALL
-        .iter()
-        .map(|k| k.as_str())
+    let transitions: Vec<String> = renderly_core::compose::builtins::transition_ids()
+        .into_iter()
+        .map(|id| format!("builtin:{id}@1"))
         .collect();
     let styles = renderly_core::captions::BUILTIN_STYLES.join(", ");
 
@@ -1168,41 +1313,81 @@ fn command_reference(packs: &[renderly_core::packs::LoadedPack]) -> String {
     out.push_str(
         "JSON form of a Command: an object whose \"command\" field is the variant name, plus \
          that variant's fields under the same snake_case names. `Id` is a UUID string from \
-         get_project. `Option<T>` fields may be omitted. Times are seconds (f64). Enum values \
+         get_project. `Option<T>` fields may be omitted. Times (`Time`) are integer microseconds, or strings: \"1.5s\", \"1500ms\", \"90f\" (frames at the project rate), \"00:00:01:15\" (timecode); stored values and results are integer microseconds in `*_us` fields. Enum values \
          are lowercase / snake_case strings (TrackKind: \"video\" | \"audio\" | \"caption\").\n\n",
     );
     out.push_str("Examples:\n");
     out.push_str("{\"command\":\"AddTrack\",\"kind\":\"video\",\"name\":\"V2\"}\n");
     out.push_str(
-        "{\"command\":\"AddCaption\",\"track_id\":\"<uuid>\",\"text\":\"Hi\",\"position_secs\":0.0,\
-         \"duration_secs\":2.0,\"style_id\":\"tiktok-box\"}\n",
+        "{\"command\":\"AddCaption\",\"track_id\":\"<uuid>\",\"body\":{\"text\":\"Hi\"},\"start\":0,\
+         \"duration\":\"2s\",\"style\":{\"ref\":\"builtin:tiktok-box@1\"}}\n",
+    );
+    out.push_str(
+        "{\"command\":\"AddText\",\"track_id\":\"<video track uuid>\",\"body\":{\"text\":\"EPISODE 12\"},\
+         \"start\":\"1s\",\"duration\":\"3s\"}\n",
+    );
+    out.push_str(
+        "{\"command\":\"SplitCaptions\",\"track_id\":\"<caption track uuid>\",\"max_chars\":28,\
+         \"max_lines\":2,\"max_duration\":\"4s\"}\n",
     );
     out.push_str(
         "{\"command\":\"TrimClip\",\"track_id\":\"<uuid>\",\"clip_id\":\"<uuid>\",\
-         \"new_source_out_secs\":5.0}\n",
+         \"source_out\":\"5s\"}\n",
     );
     out.push_str(
         "{\"command\":\"SetClipEffects\",\"track_id\":\"<uuid>\",\"clip_id\":\"<uuid>\",\
-         \"effects\":[{\"id\":\"<new uuid>\",\"effect_id\":\"builtin:color_adjust\",\
-         \"enabled\":true,\"params\":{\"saturation\":0.0}}]}\n",
+         \"effects\":[{\"ref\":\"builtin:blur@1\",\"params\":{\"radius\":8}}]}\n",
+    );
+    out.push_str(
+        "{\"command\":\"SetClipEffects\",\"targets\":[{\"track_id\":\"<uuid>\",\"clip_id\":\"<uuid>\"}],\
+         \"filter\":{\"ref\":\"pack:mira.film-looks/print@1\",\"params\":{\"intensity\":0.8}},\
+         \"blend_mode\":\"screen\"}\n",
     );
     out.push_str(
         "{\"command\":\"SetClipTransition\",\"track_id\":\"<uuid>\",\"clip_id\":\"<uuid>\",\
-         \"transition\":{\"kind\":\"crossfade\",\"duration_secs\":0.5}}\n\n",
+         \"ref\":\"builtin:crossfade@1\",\"duration\":\"0.5s\"}\n",
     );
     out.push_str(
-        "SetClipEffects replaces the clip's whole effect list: read the current list from \
-         get_project and send it back with your change. Params left out use their defaults. \
-         Pack effects (LUTs) are \"pack:<pack_id>:lut:<lut_id>\" for packs the project has \
-         loaded.\n\n",
+        "{\"command\":\"SetKeyframeEasing\",\"track_id\":\"<uuid>\",\"clip_id\":\"<uuid>\",\
+         \"property\":\"opacity\",\"time\":\"1s\",\"easing\":\"ease_in_out\"}\n\n",
+    );
+    out.push_str(
+        "Effects are applied by ref (see the catalogue below) into slots, which always run in \
+         this order: filter, key, adjust, effects[] (list order), then the clip mask, then the \
+         composite (blend_mode). SetClipEffects fields are optional: omitted = unchanged, null = \
+         cleared; `effects` replaces the whole effects[] list. Give an instance's `id` to edit it \
+         in place (its keyframes stay); params left out keep their value, and a new instance \
+         without params gets the effect's initial values. `targets` applies one change to many \
+         clips in one undo step. An effect that is not installed shows as `missing` in \
+         get_project's effect_status and renders pass-through, keeping its params. Animate a \
+         param with a SetClipKeyframes track whose property is \
+         \"effect:<instance-id>/<param>\" (a number, or [r,g,b,a] / [x,y] for color / vec2 \
+         params; bool, choice and LUT params cannot be animated).\n\n",
     );
     out.push_str("Effects, filters, transitions and LUTs (also describe_effects):\n");
     out.push_str(&renderly_core::packs::describe::catalogue_text(packs));
-    out.push_str("Transition kinds: ");
+    out.push_str("Builtin transitions (SetClipTransition ref): ");
     out.push_str(&transitions.join(", "));
-    out.push_str("\nCaption style ids: ");
+    out.push_str(
+        "\nText shapes: BodyInput = {\"text\": \"...\", \"runs\"?: [{\"start\": 0, \"end\": 5, \"style\": {...}}], \
+         \"words\"?: [{\"text\", \"start\", \"end\", \"emphasis\"?}]} (word times are Times relative to the clip \
+         start); TextStyleRef = {\"ref\": \"builtin:tiktok-box@1\", \"params\"?: {}, \"overrides\"?: {}}; \
+         MarkerInput = {\"time\", \"label\"?, \"color\"? (#RRGGBB), \"kind\"?: \"user\" | \"beat\"}; \
+         animation phases: in, out, loop, active.\n",
+    );
+    out.push_str("\nCaption / text styles (style.ref `builtin:<id>@1`): ");
     out.push_str(&styles);
-    out.push_str(" (and any from loaded packs)\n\n");
+    out.push_str(
+        " (and any from loaded packs). Captions without a `style` inherit the caption track's \
+         `caption_style` (SetTrackCaptionStyle). A style's `overrides` may set fill (#RRGGBB), \
+         size (fraction of the frame height) and anchor (top, center, bottom) today. `animations` \
+         (phases in, out, loop, active) are stored and validated; they render from the captions \
+         phase. Word timings in `body.words` are relative to the clip start. A magnetic track \
+         keeps its clips contiguous from 0: AddClip, MoveClip, DeleteClip and TrimClip ripple it \
+         (a clip lands where its centre falls); the first video track of a new project is \
+         magnetic, SetTrackFlags {magnetic} turns it on or off. Markers (AddMarkers) are project \
+         level and timeline edits snap to them.\n\n",
+    );
     out.push_str("Variants (Rust syntax, from docs/command-api.md):\n\n");
     out.push_str(block);
     out.push('\n');
@@ -1277,7 +1462,7 @@ mod tests {
         let text = command_reference(&[]);
         assert!(text.contains("pub enum Command {"), "{text}");
         assert!(
-            text.contains("AddCaption {") && text.contains("style_id"),
+            text.contains("AddCaption {") && text.contains("body: BodyInput"),
             "{text}"
         );
         assert!(
@@ -1400,7 +1585,7 @@ mod tests {
             assert_eq!(project.tracks.len(), 1);
             assert_eq!(project.tracks[0].name, "V1");
 
-            let shown = mcp.get_project_impl().unwrap();
+            let shown = mcp.get_project_impl(true).unwrap();
             assert!(shown.contains("\"V1\""));
             std::fs::remove_file(&path).ok();
         });
@@ -1443,7 +1628,7 @@ mod tests {
                 .apply_command_impl(ApplyCommandRequest {
                     command: serde_json::json!({
                         "command": "AddAdjustmentLayer", "track_id": track_id,
-                        "position_secs": 0.0, "duration_secs": 2.0
+                        "start": 0, "duration": "2s"
                     }),
                     ..Default::default()
                 })
@@ -1537,7 +1722,7 @@ mod tests {
 
     fn project_of(mcp: &RenderlyMcp) -> Project {
         // `get_project` returns the project JSON plus `project_revision`; the extra key is ignored.
-        serde_json::from_str(&mcp.get_project_impl().unwrap()).unwrap()
+        serde_json::from_str(&mcp.get_project_impl(true).unwrap()).unwrap()
     }
 
     fn file_project(path: &str) -> Project {
@@ -1764,12 +1949,18 @@ mod tests {
         let e: ExportRequest = serde_json::from_str(r#"{"output_path":"o.mp4"}"#).unwrap();
         assert_eq!(e.preset, "tiktok");
         let s: SilenceDetectRequest = serde_json::from_str(r#"{"media_id":"m"}"#).unwrap();
-        assert_eq!((s.noise_db, s.min_duration_secs), (-30.0, 0.5));
+        assert_eq!(
+            (
+                s.noise_db,
+                s.min_duration_us(renderly_core::time::Fps::new(30, 1))
+            ),
+            (-30.0, 500_000)
+        );
         let c: SceneDetectRequest = serde_json::from_str(r#"{"media_id":"m"}"#).unwrap();
         assert_eq!(c.threshold, 0.4);
         let a: AudioPeaksRequest = serde_json::from_str(r#"{"media_id":"m"}"#).unwrap();
         assert_eq!(a.buckets, 256);
-        let r: RenderFrameRequest = serde_json::from_str(r#"{"time_secs":1.5}"#).unwrap();
+        let r: RenderFrameRequest = serde_json::from_str(r#"{"time":"1.5s"}"#).unwrap();
         assert_eq!(r.preset, "tiktok");
     }
 
@@ -1781,7 +1972,10 @@ mod tests {
             let mcp = RenderlyMcp::new();
             let id = rand_id();
             let results = [
-                ("get_project", mcp.get_project()),
+                (
+                    "get_project",
+                    mcp.get_project(Parameters(GetProjectRequest::default())),
+                ),
                 (
                     "apply_command",
                     mcp.apply_command_impl(ApplyCommandRequest {
@@ -1810,7 +2004,8 @@ mod tests {
                     mcp.detect_silence_tool(Parameters(SilenceDetectRequest {
                         media_id: id.clone(),
                         noise_db: -30.0,
-                        min_duration_secs: 0.5,
+                        min_duration: Some(renderly_core::time::Time::Us(500_000)),
+                        min_duration_secs: None,
                     })),
                 ),
                 (
@@ -1829,12 +2024,16 @@ mod tests {
                 ),
                 (
                     "get_transcript",
-                    mcp.get_transcript(Parameters(TranscriptRequest { media_id: id })),
+                    mcp.get_transcript(Parameters(TranscriptRequest {
+                        media_id: id,
+                        refresh: false,
+                    })),
                 ),
                 (
                     "render_frame",
                     mcp.render_frame(Parameters(RenderFrameRequest {
-                        time_secs: 0.0,
+                        time: Some(renderly_core::time::Time::Us(0)),
+                        time_secs: None,
                         preset: "tiktok".into(),
                     })),
                 ),
@@ -1891,7 +2090,7 @@ mod tests {
             }));
             let summary: serde_json::Value = serde_json::from_str(&out).expect(&out);
             assert_eq!(summary["tracks"], 2);
-            assert_eq!(summary["fps"], 30.0);
+            assert_eq!(summary["fps"], serde_json::json!({"num": 30, "den": 1}));
             // Lossless: the saved file equals the original project, and it is the open one.
             let imported = file_project(&new_path);
             assert_eq!(
@@ -1920,7 +2119,7 @@ mod tests {
                 probe: true,
             }));
             let summary: serde_json::Value = serde_json::from_str(&out).expect(&out);
-            assert_eq!(summary["fps"], 24.0);
+            assert_eq!(summary["fps"], serde_json::json!({"num": 24, "den": 1}));
             assert!(summary["warnings"]
                 .as_array()
                 .unwrap()
@@ -1964,7 +2163,9 @@ mod tests {
                     .into_owned(),
             }));
             assert!(out.starts_with("error:"), "{out}");
-            assert!(mcp.get_project().contains("no project open"));
+            assert!(mcp
+                .get_project(Parameters(GetProjectRequest::default()))
+                .contains("no project open"));
         });
     }
 
@@ -1981,7 +2182,9 @@ mod tests {
                 })
                 .unwrap_err();
             assert!(!err.is_empty());
-            assert!(mcp.get_project().contains("no project open"));
+            assert!(mcp
+                .get_project(Parameters(GetProjectRequest::default()))
+                .contains("no project open"));
             // The bad file is not modified by a failed open.
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),
@@ -2013,6 +2216,85 @@ mod tests {
             assert_eq!(project.name, "t");
             assert_eq!(project.tracks.len(), 1);
             assert_eq!(project.tracks[0].name, "Music");
+        });
+    }
+
+    #[test]
+    fn get_project_summarises_words_and_get_transcript_returns_the_stored_one() {
+        on_worker(|| {
+            let dir = TempDir::new("words");
+            let mcp = open_new(&dir);
+            let track_id = rand_id();
+            apply(
+                &mcp,
+                serde_json::json!({ "command": "AddTrack", "kind": "caption", "name": "Subs",
+                                     "id": track_id }),
+            )
+            .unwrap();
+            apply(
+                &mcp,
+                serde_json::json!({
+                    "command": "AddCaption", "track_id": track_id,
+                    "body": { "text": "one two", "words": [
+                        { "text": "one", "start": 0, "end": "0.4s" },
+                        { "text": "two", "start": "0.5s", "end": "0.9s" }] },
+                    "start": 0, "duration": "2s" }),
+            )
+            .unwrap();
+            let compact: Value =
+                serde_json::from_str(&mcp.get_project(Parameters(GetProjectRequest::default())))
+                    .unwrap();
+            let body = &compact["tracks"][0]["clips"][0]["body"];
+            assert_eq!(body["words_count"], 2);
+            assert!(body.get("words").is_none(), "{body}");
+            assert_eq!(body["text"], "one two");
+            let full: Value =
+                serde_json::from_str(&mcp.get_project(Parameters(GetProjectRequest {
+                    include_words: true,
+                })))
+                .unwrap();
+            assert_eq!(
+                full["tracks"][0]["clips"][0]["body"]["words"][1]["end_us"],
+                900_000
+            );
+
+            // A stored transcript is returned without running Whisper.
+            let media_id = uuid::Uuid::new_v4();
+            mcp.with_session(|session| {
+                session
+                    .project
+                    .transcripts
+                    .push(renderly_core::project::Transcript {
+                        id: uuid::Uuid::new_v4(),
+                        media_id,
+                        language: "en".into(),
+                        model: "m".into(),
+                        words: vec![renderly_core::project::TranscriptWord {
+                            id: "w-1".into(),
+                            text: "hi".into(),
+                            start_us: 0,
+                            end_us: 300_000,
+                            deleted: true,
+                            tags: vec![],
+                        }],
+                    });
+                Ok::<_, String>(())
+            })
+            .unwrap();
+            let text = mcp
+                .get_transcript_impl(TranscriptRequest {
+                    media_id: media_id.to_string(),
+                    refresh: false,
+                })
+                .unwrap();
+            let v: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(v["source"], "project");
+            assert_eq!(v["transcript"]["words"][0]["deleted"], true);
+            let compact: Value =
+                serde_json::from_str(&mcp.get_project(Parameters(GetProjectRequest::default())))
+                    .unwrap();
+            assert_eq!(compact["transcripts"][0]["words_count"], 1);
+            assert_eq!(compact["transcripts"][0]["deleted_count"], 1);
         });
     }
 
@@ -2053,7 +2335,7 @@ mod tests {
             let dir = TempDir::new("apply-fail");
             let mcp = open_new(&dir);
             let bytes_before = std::fs::read(dir.project_path()).unwrap();
-            let json_before = mcp.get_project_impl().unwrap();
+            let json_before = mcp.get_project_impl(true).unwrap();
 
             let err = apply(
                 &mcp,
@@ -2061,16 +2343,16 @@ mod tests {
                     "command": "AddClip",
                     "track_id": rand_id(),
                     "media_id": rand_id(),
-                    "position_secs": 0.0,
-                    "source_in_secs": 0.0,
-                    "source_out_secs": 1.0
+                    "start": 0,
+                    "source_in": 0,
+                    "source_out": "1s"
                 }),
             )
             .unwrap_err();
             assert!(err.contains("not found"), "{err}");
 
             assert_eq!(std::fs::read(dir.project_path()).unwrap(), bytes_before);
-            assert_eq!(mcp.get_project_impl().unwrap(), json_before);
+            assert_eq!(mcp.get_project_impl(true).unwrap(), json_before);
 
             // Through the tool wrapper the same failure is a typed tool error, not a panic.
             let out = mcp.apply_command_tool(Parameters(ApplyCommandRequest {
@@ -2106,10 +2388,10 @@ mod tests {
                     serde_json::json!({
                         "command": "AddCaption",
                         "track_id": track_id,
-                        "text": text,
-                        "position_secs": i as f64 * 2.0,
-                        "duration_secs": 1.5,
-                        "style_id": "default"
+                        "body": { "text": text },
+                        "start": format!("{}s", i * 2),
+                        "duration": "1.5s",
+                        "style": { "ref": "builtin:default@1" }
                     }),
                 )
                 .unwrap();
@@ -2122,10 +2404,10 @@ mod tests {
                 serde_json::json!({
                     "command": "AddCaption",
                     "track_id": track_id,
-                    "text": "overlap",
-                    "position_secs": 0.5,
-                    "duration_secs": 1.0,
-                    "style_id": "default"
+                    "body": { "text": "overlap" },
+                    "start": "0.5s",
+                    "duration": "1s",
+                    "style": { "ref": "builtin:default@1" }
                 }),
             )
             .is_err());
@@ -2138,7 +2420,7 @@ mod tests {
                 .clips
                 .iter()
                 .map(|c| match c {
-                    renderly_core::project::Clip::Caption(c) => c.text.as_str(),
+                    renderly_core::project::Clip::Caption(c) => c.body.text.as_str(),
                     other => panic!("unexpected clip {other:?}"),
                 })
                 .collect();
@@ -2161,7 +2443,8 @@ mod tests {
                 mcp.detect_silence_tool(Parameters(SilenceDetectRequest {
                     media_id: id.into(),
                     noise_db: -30.0,
-                    min_duration_secs: 0.5,
+                    min_duration: Some(renderly_core::time::Time::Us(500_000)),
+                    min_duration_secs: None,
                 }))
             };
             let scenes = |id: &str| {
@@ -2179,6 +2462,7 @@ mod tests {
             let transcript = |id: &str| {
                 mcp.get_transcript(Parameters(TranscriptRequest {
                     media_id: id.into(),
+                    refresh: false,
                 }))
             };
 
@@ -2221,7 +2505,8 @@ mod tests {
             assert!(!dir.join("o.mp4").exists());
 
             let out = mcp.render_frame(Parameters(RenderFrameRequest {
-                time_secs: 0.0,
+                time: Some(renderly_core::time::Time::Us(0)),
+                time_secs: None,
                 preset: "vimeo".into(),
             }));
             assert!(out.starts_with("error: unknown preset 'vimeo'"), "{out}");
@@ -2277,7 +2562,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["width"], 320);
         assert_eq!(v["height"], 240);
-        let dur = v["duration_secs"].as_f64().unwrap();
+        let dur = v["duration_us"].as_f64().unwrap() / 1e6;
         assert!((2.8..=3.3).contains(&dur), "duration {dur}");
     }
 
@@ -2301,7 +2586,7 @@ mod tests {
             let peaks: serde_json::Value = serde_json::from_str(&peaks_json).unwrap();
             let arr = peaks["peaks"].as_array().unwrap();
             assert_eq!(arr.len(), 30, "requested bucket count");
-            assert!(peaks["bucket_secs"].as_f64().unwrap() > 0.0);
+            assert!(peaks["bucket_us"].as_f64().unwrap() > 0.0);
             // The noise is audible at the start; the muted 1.0-2.5s span (buckets 11..24 of 30)
             // must be much quieter than the audible start.
             let v: Vec<f64> = arr.iter().map(|p| p.as_f64().unwrap()).collect();
@@ -2314,15 +2599,16 @@ mod tests {
                 .detect_silence_impl(SilenceDetectRequest {
                     media_id: media_id.clone(),
                     noise_db: -30.0,
-                    min_duration_secs: 0.5,
+                    min_duration: Some(renderly_core::time::Time::Us(500_000)),
+                    min_duration_secs: None,
                 })
                 .unwrap();
             let spans: serde_json::Value = serde_json::from_str(&silence_json).unwrap();
             let spans = spans.as_array().unwrap();
             assert!(!spans.is_empty(), "muted 1.0-2.5s section must be detected");
             let s = &spans[0];
-            let start = s["start_secs"].as_f64().unwrap();
-            let dur = s["duration_secs"].as_f64().unwrap();
+            let start = s["start_us"].as_f64().unwrap() / 1e6;
+            let dur = s["duration_us"].as_f64().unwrap() / 1e6;
             assert!((0.8..=1.3).contains(&start), "start {start}");
             assert!(dur >= 1.0, "duration {dur}");
 
@@ -2331,7 +2617,8 @@ mod tests {
                 .detect_silence_impl(SilenceDetectRequest {
                     media_id: media_id.clone(),
                     noise_db: -30.0,
-                    min_duration_secs: 2.9,
+                    min_duration: Some(renderly_core::time::Time::Us(2_900_000)),
+                    min_duration_secs: None,
                 })
                 .unwrap();
             assert_eq!(
@@ -2373,15 +2660,16 @@ mod tests {
                     "command": "AddClip",
                     "track_id": track_id,
                     "media_id": media_id,
-                    "position_secs": 0.0,
-                    "source_in_secs": 0.0,
-                    "source_out_secs": 2.0
+                    "start": 0,
+                    "source_in": 0,
+                    "source_out": "2s"
                 }),
             )
             .unwrap();
 
             let out = mcp.render_frame(Parameters(RenderFrameRequest {
-                time_secs: 0.5,
+                time: Some(renderly_core::time::Time::Us(500_000)),
+                time_secs: None,
                 preset: "youtube".into(),
             }));
             if out.contains("no suitable GPU adapter") {
@@ -2390,7 +2678,7 @@ mod tests {
             }
             assert!(!out.starts_with("error:"), "{out}");
             let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-            assert_eq!(v["time_secs"], 0.5);
+            assert_eq!(v["time_us"], 500_000);
             let png = base64_decode(v["png_base64"].as_str().unwrap());
             assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
             assert_eq!(v["byte_len"].as_u64().unwrap() as usize, png.len());
@@ -2443,7 +2731,7 @@ mod tests {
         on_worker(|| {
             let dir = TempDir::new("rev");
             let mcp = open_new(&dir);
-            let v: Value = serde_json::from_str(&mcp.get_project_impl().unwrap()).unwrap();
+            let v: Value = serde_json::from_str(&mcp.get_project_impl(true).unwrap()).unwrap();
             assert_eq!(v["project_revision"], 0);
 
             let w = mcp.apply_write_impl(add_caption_track("Subs")).unwrap();
@@ -2452,7 +2740,7 @@ mod tests {
             assert_eq!(w["changed"]["created"].as_array().map(Vec::len), Some(1));
             assert!(w["patch"].as_array().is_some_and(|p| !p.is_empty()));
 
-            let v: Value = serde_json::from_str(&mcp.get_project_impl().unwrap()).unwrap();
+            let v: Value = serde_json::from_str(&mcp.get_project_impl(true).unwrap()).unwrap();
             assert_eq!(v["project_revision"], 1);
             let status: Value =
                 serde_json::from_str(&mcp.get_editor_status_impl().unwrap()).unwrap();

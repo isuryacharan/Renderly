@@ -9,11 +9,14 @@ import {
 } from "../../lib/commands";
 import * as ipc from "../../lib/ipc";
 import type { ExtensionCatalog, RegistryEntry } from "../../lib/ipc";
+import { normalizeFps, snapToFrameUs } from "../../lib/time";
+import { useCatalogueStore } from "../../store/catalogueStore";
 import { useEditorStore } from "../../store/editorStore";
 
 export function ExtensionsPanel() {
   const project = useEditorStore((s) => s.project);
-  const playhead = useEditorStore((s) => s.playhead);
+  const rawPlayhead = useEditorStore((s) => s.playhead);
+  const playhead = snapToFrameUs(normalizeFps(project?.settings.fps), rawPlayhead);
   const dispatch = useEditorStore((s) => s.dispatch);
   const toast = useEditorStore((s) => s.toast);
   const [catalog, setCatalog] = useState<ExtensionCatalog | null>(null);
@@ -28,6 +31,8 @@ export function ExtensionsPanel() {
       ]);
       setCatalog(ext);
       setRegistry(reg);
+      // The effect catalogue (inspector, effect panels, preview pack files) follows the library.
+      void useCatalogueStore.getState().refresh();
     } catch {
       setCatalog(null);
     }
@@ -39,11 +44,7 @@ export function ExtensionsPanel() {
       return;
     }
     void refresh();
-  }, [
-    project,
-    project?.asset_pack_paths?.join("|"),
-    project?.wasm_plugin_paths?.join("|"),
-  ]);
+  }, [project, project?.legacy_pack_paths?.join("|")]);
 
   if (!project) {
     return (

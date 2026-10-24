@@ -1,0 +1,52 @@
+{
+  "schema_version": 5,
+  "id": "55555555-5555-4555-8555-555555555555",
+  "name": "fixture v5",
+  "settings": {
+    "fps": 30.0,
+    "width": 1920,
+    "height": 1080,
+    "sample_rate": 48000,
+    "duck_db": -12.0
+  },
+  "media": [
+    {
+      "id": "a5000000-0000-4000-8000-000000000001",
+      "path": "media/a.mp4",
+      "kind": "video",
+      "duration_secs": 10.0,
+      "width": 1920,
+      "height": 1080,
+      "fps": 30.0
+    }
+  ],
+  "tracks": [
+    {
+      "id": "b5000000-0000-4000-8000-000000000001",
+      "kind": "video",
+      "name": "V1",
+      "clips": [
+        {
+          "type": "video",
+          "id": "c5000000-0000-4000-8000-000000000001",
+          "media_id": "a5000000-0000-4000-8000-000000000001",
+          "position_secs": 0.0,
+          "source_in_secs": 0.0,
+          "source_out_secs": 4.0,
+          "gain_db": 0.0,
+          "enabled": true,
+          "speed": 1.0,
+          "keyframes": [
+            {
+              "property": "speed",
+              "keys": [
+                { "time_secs": 0.0, "value": 0.5, "easing": "linear" },
+                { "time_secs": 2.0, "value": 2.0, "easing": "linear" }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

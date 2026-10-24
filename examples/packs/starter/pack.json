@@ -26,7 +26,7 @@
       "id": "quick-wipe",
       "label": "Quick wipe",
       "kind": "wipe_left",
-      "default_duration_secs": 0.35
+      "default_duration_us": 350000
     }
   ],
   "stickers": [
@@ -34,7 +34,7 @@
       "id": "star",
       "label": "Star",
       "path": "stickers/star.png",
-      "default_duration_secs": 3.0
+      "default_duration_us": 3000000
     }
   ],
   "sfx": [

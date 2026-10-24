@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import * as ipc from "../lib/ipc";
+import { useCatalogueStore } from "../store/catalogueStore";
 import { useEditorStore } from "../store/editorStore";
+import { registerPreviewEngine } from "./previewBridge";
 import { WebviewPreviewEngine } from "./webviewPreviewEngine";
 
 type ContentBounds = { left: number; top: number; width: number; height: number };
@@ -57,6 +59,7 @@ export function WebviewPreview({
     if (!canvas) return;
     const engine = new WebviewPreviewEngine(canvas, ipc.assetUrl, ipc.previewAssetBackend);
     engineRef.current = engine;
+    registerPreviewEngine(engine);
     (globalThis as unknown as { __previewEngine?: WebviewPreviewEngine }).__previewEngine = engine;
     void engine.init().then(() => {
       // Push whatever state accumulated while the mode ladder resolved.
@@ -65,7 +68,13 @@ export function WebviewPreview({
       engine.setActiveSequence(useEditorStore.getState().activeSequenceId);
       engine.seek(useEditorStore.getState().playhead);
     });
+    // The installed library changed (pack installed / updated / removed): refetch pack files.
+    const unsubscribeCatalogue = useCatalogueStore.subscribe((state, prev) => {
+      if (state.epoch !== prev.epoch) engine.invalidatePackItems();
+    });
     return () => {
+      unsubscribeCatalogue();
+      registerPreviewEngine(null);
       engine.dispose();
       engineRef.current = null;
     };
@@ -141,7 +150,7 @@ export function WebviewPreview({
   // Backend playback:tick drift correction (no-op in the browser harness where ticks
   // never fire — see WebviewPreviewEngine.onTick's doc comment).
   useEffect(() => {
-    return ipc.onPlaybackTick((p) => engineRef.current?.onTick(p.time_secs));
+    return ipc.onPlaybackTick((p) => engineRef.current?.onTick(p.time_us));
   }, []);
 
   return <canvas ref={canvasRef} className="preview-webview-canvas" />;

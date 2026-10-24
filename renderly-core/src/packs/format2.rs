@@ -334,7 +334,7 @@ mod native {
                 };
             }
             if let (ItemState::Ok, Some(cube)) = (&item.state, cube) {
-                luts.insert(item.id.clone(), cube);
+                luts.insert(crate::packs::lut_key(&item.id, item.version), cube);
             }
             items.push(item);
         }

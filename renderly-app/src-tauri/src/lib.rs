@@ -155,7 +155,7 @@ pub struct AppState {
     /// since it must be held across `.await` points (the `spawn_blocking` compute step).
     edit_lock: tauri::async_runtime::Mutex<()>,
     /// Last known playhead (secs) for bridge `get_editor_status` / seek bookkeeping.
-    playhead: Mutex<f64>,
+    playhead: Mutex<i64>,
     /// Frontend selection mirrored for bridge status (`{ primary, all }` or null).
     selection: Mutex<Option<serde_json::Value>>,
     /// Sequence open in the frontend timeline (schema v7). While set, audio playback and
@@ -177,18 +177,18 @@ impl AppState {
             matte_cancel: Arc::new(AtomicBool::new(false)),
             matte_running: AtomicBool::new(false),
             edit_lock: tauri::async_runtime::Mutex::new(()),
-            playhead: Mutex::new(0.0),
+            playhead: Mutex::new(0),
             selection: Mutex::new(None),
             active_sequence: Mutex::new(None),
         }
     }
 
-    pub(crate) fn playhead_secs(&self) -> f64 {
+    pub(crate) fn playhead_us(&self) -> i64 {
         *self.playhead.lock()
     }
 
-    pub(crate) fn set_playhead_secs(&self, t: f64) {
-        *self.playhead.lock() = t.max(0.0);
+    pub(crate) fn set_playhead_us(&self, t: i64) {
+        *self.playhead.lock() = t.max(0);
     }
 
     pub(crate) fn selection_json(&self) -> Option<serde_json::Value> {
@@ -274,7 +274,7 @@ impl AppState {
     /// renders at full preset resolution.
     pub(crate) fn render_live_frame_png(
         &self,
-        time_secs: f64,
+        time_us: i64,
         preset_for_aspect: ExportPreset,
     ) -> Result<Vec<u8>, String> {
         let project = self.with_session(|s| Ok(Arc::clone(&s.project)))?;
@@ -286,7 +286,7 @@ impl AppState {
         let mut renderer = FrameRenderer::new(settings, decode_opts).map_err(|e| e.to_string())?;
         renderer.set_preview_overrides(self.preview_overrides.lock().clone());
         let rgba = renderer
-            .render(&project, time_secs)
+            .render(&project, time_us)
             .map_err(|e| e.to_string())?;
         encode_rgba_png(&rgba, settings.width, settings.height).map_err(|e| e.to_string())
     }
@@ -429,7 +429,12 @@ impl AppState {
         };
         tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
             let data = serde_json::to_string_pretty(&*project).map_err(|e| e.to_string())?;
-            std::fs::write(&path, data).map_err(|e| e.to_string())
+            renderly_core::project::backup::save_project_file(
+                &path,
+                &data,
+                renderly_core::project::SCHEMA_VERSION,
+            )
+            .map_err(|e| e.to_string())
         })
         .await
         .map_err(|e| e.to_string())?
@@ -552,7 +557,7 @@ async fn quick_start_project(app: AppHandle, state: State<'_, AppState>) -> Resu
     let project = Project::new(
         name,
         Settings {
-            fps: 60.0,
+            fps: renderly_core::time::Fps::new(60, 1),
             width: 1080,
             height: 1920,
             sample_rate: 48000,
@@ -601,7 +606,7 @@ async fn new_project(
     let project = Project::new(
         name,
         Settings {
-            fps: 60.0,
+            fps: renderly_core::time::Fps::new(60, 1),
             width: 1080,
             height: 1920,
             sample_rate: 48000,
@@ -647,7 +652,19 @@ async fn open_project(
     let project: Project =
         tauri::async_runtime::spawn_blocking(move || -> Result<Project, String> {
             let data = std::fs::read_to_string(&read_path).map_err(|e| e.to_string())?;
-            Project::from_json(&data).map_err(|e| format!("{}: {e}", read_path.display()))
+            let mut project =
+                Project::from_json(&data).map_err(|e| format!("{}: {e}", read_path.display()))?;
+            // A v7 project listed pack folders in the file; v8 stores refs only. Install those
+            // folders into the user library (core's loader never touches it) so the refs the
+            // migration wrote resolve. The cleared list is saved with the next save.
+            let adopted = renderly_core::library::adopt_legacy_paths_default(
+                &mut project,
+                read_path.parent(),
+            );
+            for (folder, why) in &adopted.kept {
+                eprintln!("{folder} stays in legacy_pack_paths: {why}");
+            }
+            Ok(project)
         })
         .await
         .map_err(|e| e.to_string())??;
@@ -693,7 +710,12 @@ async fn save_project(state: State<'_, AppState>) -> Result<(), String> {
     let (path, project) = state.with_session(|s| Ok((s.path.clone(), Arc::clone(&s.project))))?;
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let data = serde_json::to_string_pretty(&*project).map_err(|e| e.to_string())?;
-        std::fs::write(&path, data).map_err(|e| e.to_string())
+        renderly_core::project::backup::save_project_file(
+            &path,
+            &data,
+            renderly_core::project::SCHEMA_VERSION,
+        )
+        .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -789,7 +811,7 @@ async fn import_otio(
 struct ProjectSummary {
     path: String,
     name: String,
-    duration_secs: f64,
+    duration_us: i64,
     modified_ms: u64,
     width: u32,
     height: u32,
@@ -846,11 +868,11 @@ async fn list_projects(app: AppHandle) -> Result<Vec<ProjectSummary>, String> {
             out.push(ProjectSummary {
                 path: path.to_string_lossy().into_owned(),
                 name: project.name.clone(),
-                duration_secs: renderly_core::timeline_duration(&project),
+                duration_us: renderly_core::timeline_duration(&project),
                 modified_ms,
                 width: project.settings.width,
                 height: project.settings.height,
-                fps: project.settings.fps,
+                fps: project.settings.fps.as_f64(),
                 thumb_path: thumb
                     .is_file()
                     .then(|| thumb.to_string_lossy().into_owned()),
@@ -875,7 +897,13 @@ async fn rename_project(path: String, new_name: String) -> Result<(), String> {
         let mut project = Project::from_json(&data).map_err(|e| e.to_string())?;
         project.name = name;
         let out = serde_json::to_string_pretty(&project).map_err(|e| e.to_string())?;
-        std::fs::write(&path, out).map_err(|e| e.to_string())
+        // Through the backup path, so renaming a v7 project keeps its original.
+        renderly_core::project::backup::save_project_file(
+            &path,
+            &out,
+            renderly_core::project::SCHEMA_VERSION,
+        )
+        .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -969,7 +997,7 @@ async fn close_project(app: AppHandle, state: State<'_, AppState>) -> Result<(),
     state.reset_history();
     state.reset_revision();
     state.set_selection_json(None);
-    state.set_playhead_secs(0.0);
+    state.set_playhead_us(0);
     bridge::sync_discovery_project(&app, None);
     Ok(())
 }
@@ -1024,7 +1052,7 @@ async fn get_media_assets(
 struct PackStickerInfo {
     id: String,
     label: String,
-    default_duration_secs: f64,
+    default_duration_us: i64,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -1037,6 +1065,9 @@ struct PackSfxInfo {
 struct PackLutInfo {
     id: String,
     label: String,
+    /// The ref to apply it with: `pack:<pack>/<lut>@<version>`.
+    #[serde(rename = "ref")]
+    item_ref: String,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -1044,7 +1075,10 @@ struct PackTransitionInfo {
     id: String,
     label: String,
     kind: String,
-    default_duration_secs: f64,
+    default_duration_us: i64,
+    /// The ref to apply it with: `pack:<pack>/<item>@<version>`.
+    #[serde(rename = "ref")]
+    item_ref: String,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -1078,6 +1112,9 @@ struct LoadedPluginInfo {
 struct ExtensionCatalog {
     packs: Vec<LoadedPackInfo>,
     plugins: Vec<LoadedPluginInfo>,
+    /// Every effect, filter, transition and LUT that can be applied by ref (builtins first,
+    /// then the installed packs): `ref`, `kind`, `label`, `source`, `state`, `params`.
+    effects: Vec<renderly_core::packs::describe::CatalogueEntry>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -1097,10 +1134,12 @@ struct RegistryEntry {
 #[tauri::command]
 async fn list_extensions(state: State<'_, AppState>) -> Result<ExtensionCatalog, String> {
     let project = state.with_session(|s| Ok(Arc::clone(&s.project)))?;
-    let packs = renderly_core::packs::load_project_packs(&project)
+    let installed = renderly_core::packs::load_installed_packs();
+    let effects = renderly_core::packs::describe::catalogue(&installed);
+    let packs = installed
         .into_iter()
         .map(|p| LoadedPackInfo {
-            id: p.manifest.id.clone(),
+            id: p.canonical_id.clone(),
             name: p.manifest.name.clone(),
             path: p.root.display().to_string(),
             stickers: p
@@ -1110,7 +1149,7 @@ async fn list_extensions(state: State<'_, AppState>) -> Result<ExtensionCatalog,
                 .map(|s| PackStickerInfo {
                     id: s.id.clone(),
                     label: s.label.clone(),
-                    default_duration_secs: s.default_duration_secs,
+                    default_duration_us: s.default_duration_us,
                 })
                 .collect(),
             sfx: p
@@ -1129,6 +1168,7 @@ async fn list_extensions(state: State<'_, AppState>) -> Result<ExtensionCatalog,
                 .map(|l| PackLutInfo {
                     id: l.id.clone(),
                     label: l.label.clone(),
+                    item_ref: format!("pack:{}/{}@1", p.canonical_id, l.id),
                 })
                 .collect(),
             transitions: p
@@ -1139,7 +1179,8 @@ async fn list_extensions(state: State<'_, AppState>) -> Result<ExtensionCatalog,
                     id: t.id.clone(),
                     label: t.label.clone(),
                     kind: t.kind.clone(),
-                    default_duration_secs: t.default_duration_secs,
+                    default_duration_us: t.default_duration_us,
+                    item_ref: format!("pack:{}/{}@1", p.canonical_id, t.id),
                 })
                 .collect(),
             templates: p
@@ -1155,7 +1196,11 @@ async fn list_extensions(state: State<'_, AppState>) -> Result<ExtensionCatalog,
         .collect();
 
     let mut plugins = Vec::new();
-    for path in &project.wasm_plugin_paths {
+    for path in project
+        .legacy_pack_paths
+        .iter()
+        .filter(|p| p.join("plugin.json").is_file())
+    {
         let Ok(manifest) = renderly_core::plugins::load_plugin_manifest(path) else {
             continue;
         };
@@ -1169,7 +1214,11 @@ async fn list_extensions(state: State<'_, AppState>) -> Result<ExtensionCatalog,
         });
     }
 
-    Ok(ExtensionCatalog { packs, plugins })
+    Ok(ExtensionCatalog {
+        packs,
+        plugins,
+        effects,
+    })
 }
 
 #[tauri::command]
@@ -1222,6 +1271,21 @@ async fn get_project(state: State<'_, AppState>) -> Result<ProjectSnapshot, Stri
     })
 }
 
+/// Effects and transitions of the open project that are changed, missing or disabled against
+/// the installed library (`clip_id`, `instance_id` (absent for a transition), `ref`, `status`).
+/// Empty for a healthy project, which is the common case.
+#[tauri::command]
+async fn get_effect_status(
+    state: State<'_, AppState>,
+) -> Result<Vec<renderly_core::packs::status::StatusEntry>, String> {
+    let project = state.with_session(|session| Ok(Arc::clone(&session.project)))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        renderly_core::packs::status::installed_problem_effects(&project)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// The edit-contract envelope from a Tauri call. The webview's own edits are `Caller::User`
 /// (no deletion guard); it may still send `expectedRevision`, `dryRun` and `requestId`.
 fn webview_write_options(
@@ -1234,6 +1298,7 @@ fn webview_write_options(
         dry_run: dry_run.unwrap_or(false),
         request_id,
         allow_deletion: None,
+        deprecations: Vec::new(),
     }
 }
 
@@ -1505,15 +1570,15 @@ async fn cancel_export(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
-/// Start (or resume) playback from `time_secs`. Non-blocking: hands an `Arc<Project>`
+/// Start (or resume) playback from `time_us`. Non-blocking: hands an `Arc<Project>`
 /// off to the playback worker thread and returns immediately — see playback.rs. The
 /// webview owns all video presentation; this only drives the audio clock and
 /// `playback:tick` emission (see playback.rs's module doc comment).
 #[tauri::command]
-async fn play(app: AppHandle, state: State<'_, AppState>, time_secs: f64) -> Result<(), String> {
-    state.set_playhead_secs(time_secs);
+async fn play(app: AppHandle, state: State<'_, AppState>, time_us: i64) -> Result<(), String> {
+    state.set_playhead_us(time_us);
     let project = state.playback_project()?;
-    state.playback.play(app, project, time_secs);
+    state.playback.play(app, project, time_us);
     Ok(())
 }
 
@@ -1522,22 +1587,22 @@ async fn play(app: AppHandle, state: State<'_, AppState>, time_secs: f64) -> Res
 /// same in-flight-premix blocking risk applies here since `pause()` can be called the
 /// instant after `play()` starts.
 #[tauri::command]
-async fn pause(app: AppHandle, state: State<'_, AppState>) -> Result<f64, String> {
+async fn pause(app: AppHandle, state: State<'_, AppState>) -> Result<i64, String> {
     let t = tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().playback.pause())
         .await
         .map_err(|e| e.to_string())?;
-    state.set_playhead_secs(t);
+    state.set_playhead_us(t);
     Ok(t)
 }
 
-/// Jump the playhead to `time_secs`. While playing, this coalesces into the running
+/// Jump the playhead to `time_us`. While playing, this coalesces into the running
 /// playback loop (audio/decoders restart from the new position without a pause/resume
 /// round trip). While paused, the webview canvas repaints itself
 /// (`WebviewPreviewEngine.seek`) — there is no backend-side paused-state render anymore.
 #[tauri::command]
-async fn seek(state: State<'_, AppState>, time_secs: f64) -> Result<(), String> {
-    state.set_playhead_secs(time_secs);
-    state.playback.seek_while_playing(time_secs);
+async fn seek(state: State<'_, AppState>, time_us: i64) -> Result<(), String> {
+    state.set_playhead_us(time_us);
+    state.playback.seek_while_playing(time_us);
     Ok(())
 }
 
@@ -1557,13 +1622,13 @@ async fn refresh_frame(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
-/// Render a short audio blip at `time_secs` (timeline scrub feedback). Non-blocking and
+/// Render a short audio blip at `time_us` (timeline scrub feedback). Non-blocking and
 /// coalesced — safe to call on every pointermove during a drag. The visual scrub redraw
 /// is entirely the webview canvas's own doing; this only drives the audio cue.
 #[tauri::command]
-async fn scrub_audio(state: State<'_, AppState>, time_secs: f64) -> Result<(), String> {
+async fn scrub_audio(state: State<'_, AppState>, time_us: i64) -> Result<(), String> {
     let project = state.playback_project()?;
-    state.playback.request_scrub_audio(project, time_secs);
+    state.playback.request_scrub_audio(project, time_us);
     Ok(())
 }
 
@@ -1667,10 +1732,12 @@ pub fn run() {
             request_media_assets,
             get_media_assets,
             list_extensions,
+            get_effect_status,
             list_registry,
             preview_assets::read_preview_matte,
             preview_assets::preview_matte_stamps,
             preview_assets::read_preview_pack_luts,
+            preview_assets::read_preview_pack_items,
             ml::ml_model_status,
             ml::ml_download_model,
             ml::cancel_background_matte,

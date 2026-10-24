@@ -50,7 +50,7 @@ pub struct ThumbInfo {
     pub rows: u32,
     pub tile_width: u32,
     pub tile_height: u32,
-    pub interval_secs: f64,
+    pub interval_us: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -60,7 +60,7 @@ struct CachedAssets {
     strip_file: Option<String>,
     thumb: Option<ThumbInfo>,
     peaks: Vec<f32>,
-    bucket_secs: f64,
+    bucket_us: i64,
 }
 
 /// Emitted on `media:thumbnails-ready`. `strip_path` is a real filesystem path — the
@@ -74,14 +74,14 @@ struct ThumbnailsReadyEvent {
     rows: u32,
     tile_width: u32,
     tile_height: u32,
-    interval_secs: f64,
+    interval_us: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct WaveformReadyEvent {
     media_id: String,
     peaks: Vec<f32>,
-    bucket_secs: f64,
+    bucket_us: i64,
 }
 
 /// Returned by the `get_media_assets` command — whatever's already cached, synchronously,
@@ -187,7 +187,7 @@ fn to_payload(dir: &Path, cached: &CachedAssets, media_id: &str) -> MediaAssetsP
             rows: thumb.rows,
             tile_width: thumb.tile_width,
             tile_height: thumb.tile_height,
-            interval_secs: thumb.interval_secs,
+            interval_us: thumb.interval_us,
         }),
         _ => None,
     };
@@ -197,7 +197,7 @@ fn to_payload(dir: &Path, cached: &CachedAssets, media_id: &str) -> MediaAssetsP
         Some(WaveformReadyEvent {
             media_id: media_id.to_string(),
             peaks: cached.peaks.clone(),
-            bucket_secs: cached.bucket_secs,
+            bucket_us: cached.bucket_us,
         })
     };
     MediaAssetsPayload {
@@ -248,11 +248,11 @@ fn generate_assets_blocking(
     let wave_path = path.to_path_buf();
     let wave_handle = need_wave.then(|| {
         std::thread::spawn(move || match audio_peaks(&wave_path, WAVEFORM_BUCKETS) {
-            Ok(p) if !p.peaks.is_empty() => (p.peaks, p.bucket_secs),
-            Ok(_) => (Vec::new(), 0.0),
+            Ok(p) if !p.peaks.is_empty() => (p.peaks, p.bucket_us),
+            Ok(_) => (Vec::new(), 0),
             Err(e) => {
                 eprintln!("media assets: waveform generation failed: {e}");
-                (Vec::new(), 0.0)
+                (Vec::new(), 0)
             }
         })
     });
@@ -268,7 +268,7 @@ fn generate_assets_blocking(
                     rows: strip.rows,
                     tile_width: strip.tile_width,
                     tile_height: strip.tile_height,
-                    interval_secs: strip.interval_secs,
+                    interval_us: strip.interval_us,
                 });
                 let _ = write_cached(&meta_path, &cached);
                 emit_thumbnails(app, media_id, dir, &cached);
@@ -278,9 +278,9 @@ fn generate_assets_blocking(
     }
 
     if let Some(handle) = wave_handle {
-        let (peaks, bucket_secs) = handle.join().unwrap_or_else(|_| (Vec::new(), 0.0));
+        let (peaks, bucket_us) = handle.join().unwrap_or_else(|_| (Vec::new(), 0));
         cached.peaks = peaks;
-        cached.bucket_secs = bucket_secs;
+        cached.bucket_us = bucket_us;
         write_cached(&meta_path, &cached)?;
         emit_waveform(app, media_id, dir, &cached);
     } else {

@@ -1,97 +1,184 @@
-//! Builtin effect chain (Phase 3.4), now running on the effect runtime.
+//! The effect stack (Phase 3.4, schema v8 refs and slots), running on the effect runtime.
 //!
-//! Every builtin effect, filter and transition runs through `compose::runtime`, from the items in
-//! `compose::builtins`. This module maps the project's `effect_id`s onto those items, carries
-//! the chain's intermediate pictures between passes, and keeps the clip mask and the
-//! adjustment-layer mix as compositor code: a clip mask is a slot, not an item (see
-//! docs/effect-pack-format.md "Stack slots"). Unknown `effect_id`s are rejected at command
-//! validation; this module skips anything it cannot resolve.
+//! Every effect, filter and transition runs through `compose::runtime`: builtins from
+//! `compose::builtins`, pack items from the packs the host passes in. This module resolves an
+//! instance's `ref` (`builtin:<id>@<v>`, `pack:<pack>/<item>@<v>`) onto those items, carries the
+//! chain's intermediate pictures between passes, and keeps the clip mask and the adjustment-layer
+//! mix as compositor code: a clip mask is a slot, not an item (see docs/effect-pack-format.md
+//! "Stack slots"). A ref that does not resolve renders pass-through and keeps its params; the
+//! caller passes the stack already flattened in render order (filter, key, adjust, `effects[]`)
+//! with animated params evaluated.
 
-use crate::packs::{find_cube_lut, parse_pack_lut_id, LoadedPack};
-use crate::project::{ClipMask, ClipMaskKind, EffectInstance};
-use std::collections::{BTreeMap, HashMap};
+use crate::packs::status::{resolve_target, Target};
+use crate::packs::LoadedPack;
+use crate::project::{
+    ClipMask, ClipMaskKind, EffectInstance, EffectParam, EffectParams, EffectStatus, Id,
+};
+use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
 use super::builtins;
 use super::runtime::lut::{upload_cube, Lut3d};
-use super::runtime::manifest::ParamKind;
+use super::runtime::manifest::{ItemKind, ParamKind};
 use super::runtime::{
-    CompiledEffect, EffectError, EffectExecutor, EffectInputs, EffectOutput, HostValues, ParamValue,
+    CompiledEffect, EffectError, EffectExecutor, EffectInputs, EffectManifest, EffectOutput,
+    HostValues, ParamValue,
 };
-use super::ComposeError;
+use super::{ComposeError, FxTiming};
 
-/// Locked builtin effect ids: the v7 `effect_id` strings the project stores. Each names the
-/// builtin item of the same name in [`builtins::BUILTINS`] (checked by a unit test).
-pub const BUILTIN_EFFECT_IDS: &[&str] = &[
-    "builtin:color_adjust",
-    "builtin:blur",
-    "builtin:lut_contrast",
-    "builtin:lut_warm",
-    "builtin:glitch",
-    "builtin:chroma_key",
+/// The builtin effect refs: each names the builtin item of the same name in
+/// [`builtins::BUILTINS`] at version 1 (checked by a unit test).
+pub const BUILTIN_EFFECT_REFS: &[&str] = &[
+    "builtin:color_adjust@1",
+    "builtin:blur@1",
+    "builtin:lut_contrast@1",
+    "builtin:lut_warm@1",
+    "builtin:glitch@1",
+    "builtin:chroma_key@1",
 ];
 
-/// Public list of builtin effect ids for GUI / CLI discovery.
-pub fn builtin_effect_ids() -> &'static [&'static str] {
-    BUILTIN_EFFECT_IDS
+/// Public list of builtin effect refs for GUI / CLI discovery.
+pub fn builtin_effect_refs() -> &'static [&'static str] {
+    BUILTIN_EFFECT_REFS
 }
 
-pub fn is_builtin_effect_id(effect_id: &str) -> bool {
-    BUILTIN_EFFECT_IDS.contains(&effect_id)
+pub fn is_builtin_effect_ref(item_ref: &str) -> bool {
+    BUILTIN_EFFECT_REFS.contains(&item_ref)
 }
 
-/// The builtin item behind a locked v7 effect id (`builtin:blur` -> `blur`).
-fn builtin_item_for(effect_id: &str) -> Option<&'static str> {
-    BUILTIN_EFFECT_IDS
+/// The builtin manifest behind a `builtin:<id>@<v>` ref.
+fn builtin_manifest_for(item_ref: &str) -> Option<EffectManifest> {
+    match crate::packs::refs::ItemRef::parse(item_ref).ok()? {
+        crate::packs::refs::ItemRef::Builtin { id, version } => {
+            let m = builtins::manifest(&id)?;
+            (m.version == version).then_some(m)
+        }
+        crate::packs::refs::ItemRef::Pack { .. } => None,
+    }
+}
+
+/// The value of a param as the project stores it.
+fn param_to_stored(value: &ParamValue, kind: ParamKind) -> EffectParam {
+    match (value, kind) {
+        (ParamValue::Number(n), ParamKind::Bool) => EffectParam::Bool(*n != 0.0),
+        (ParamValue::Number(n), _) => EffectParam::Number(*n),
+        (ParamValue::Vector(v), _) => EffectParam::Vector(v.clone()),
+        (ParamValue::Lut(s), _) => EffectParam::Text(s.clone()),
+    }
+}
+
+/// A manifest's params as stored values: each param's `default` (the identity: what an absent
+/// param means) or, with `initial`, the value written when a user or agent adds the effect.
+pub fn manifest_params(manifest: &EffectManifest, initial: bool) -> EffectParams {
+    manifest
+        .params
         .iter()
-        .find(|id| **id == effect_id)
-        .and_then(|id| id.strip_prefix("builtin:"))
+        .filter(|p| p.kind != ParamKind::Lut)
+        .map(|p| {
+            let v = if initial { &p.initial } else { &p.default };
+            (p.key.clone(), param_to_stored(v, p.kind))
+        })
+        .collect()
 }
 
-/// Default params of a builtin, read from its manifest (empty if unknown).
-pub fn default_params(effect_id: &str) -> BTreeMap<String, f64> {
-    let mut out = BTreeMap::new();
-    let Some(manifest) = builtin_item_for(effect_id).and_then(builtins::manifest) else {
-        return out;
-    };
-    for p in &manifest.params {
-        if let ParamValue::Number(n) = p.default {
-            out.insert(p.key.clone(), n);
+/// Default params of a builtin ref, read from its manifest (empty if unknown).
+pub fn default_params(item_ref: &str) -> EffectParams {
+    builtin_manifest_for(item_ref)
+        .map(|m| manifest_params(&m, false))
+        .unwrap_or_default()
+}
+
+/// Check `params` against `manifest` and clamp them into range: keys must be declared, values
+/// must have the declared shape, scalars are clamped to `min..max` (ints and choices rounded),
+/// colours to 0..1. Errors name the offending key.
+pub fn validate_params(manifest: &EffectManifest, params: &mut EffectParams) -> Result<(), String> {
+    for (key, value) in params.iter_mut() {
+        let Some(spec) = manifest.params.iter().find(|p| &p.key == key) else {
+            let valid: Vec<&str> = manifest.params.iter().map(|p| p.key.as_str()).collect();
+            return Err(format!(
+                "'{}' has no param '{key}' (valid: {})",
+                manifest.id,
+                valid.join(", ")
+            ));
+        };
+        if !value.is_finite() {
+            return Err(format!("param '{key}' is not finite"));
+        }
+        let wrong = || {
+            format!(
+                "param '{key}' of '{}' expects {}",
+                manifest.id,
+                match spec.kind {
+                    ParamKind::Float => "a number",
+                    ParamKind::Int | ParamKind::Choice => "an integer",
+                    ParamKind::Bool => "true or false",
+                    ParamKind::Color => "[r, g, b, a]",
+                    ParamKind::Vec2 => "[x, y]",
+                    ParamKind::Lut => "a LUT ref string",
+                }
+            )
+        };
+        match (spec.kind, &mut *value) {
+            (ParamKind::Float, EffectParam::Number(n)) => *n = n.clamp(spec.min, spec.max),
+            (ParamKind::Int | ParamKind::Choice, EffectParam::Number(n)) => {
+                *n = n.round().clamp(spec.min, spec.max)
+            }
+            (ParamKind::Bool, EffectParam::Bool(_)) => {}
+            (ParamKind::Bool, EffectParam::Number(n)) => *value = EffectParam::Bool(*n != 0.0),
+            (ParamKind::Color, EffectParam::Vector(v)) if v.len() == 4 => {
+                for c in v.iter_mut() {
+                    *c = c.clamp(0.0, 1.0);
+                }
+            }
+            (ParamKind::Vec2, EffectParam::Vector(v)) if v.len() == 2 => {}
+            (ParamKind::Lut, EffectParam::Text(_)) => {}
+            _ => return Err(wrong()),
         }
     }
-    out
+    Ok(())
 }
 
-/// Clamp known params into their manifest ranges. Unknown keys are left unchanged.
-pub fn clamp_effect_params(effect_id: &str, params: &mut BTreeMap<String, f64>) {
-    let Some(manifest) = builtin_item_for(effect_id).and_then(builtins::manifest) else {
+/// Clamp known numeric params of a builtin ref into their manifest ranges. Unknown keys and
+/// shapes are left unchanged (use [`validate_params`] to reject them).
+pub fn clamp_effect_params(item_ref: &str, params: &mut EffectParams) {
+    let Some(manifest) = builtin_manifest_for(item_ref) else {
         return;
     };
     for (key, value) in params.iter_mut() {
-        if let Some(spec) = manifest.params.iter().find(|p| &p.key == key) {
+        if let (Some(spec), EffectParam::Number(n)) =
+            (manifest.params.iter().find(|p| &p.key == key), &mut *value)
+        {
             if matches!(
                 spec.kind,
                 ParamKind::Float | ParamKind::Int | ParamKind::Choice
             ) {
-                *value = value.clamp(spec.min, spec.max);
+                *n = n.clamp(spec.min, spec.max);
             }
         }
     }
 }
 
+/// True when at least one enabled instance in `effects` resolves to something this build can
+/// run (missing and disabled refs, and `wasm:*` plugins, do not count).
 fn has_enabled_effects(effects: &[EffectInstance], packs: &[LoadedPack]) -> bool {
     effects.iter().any(|e| {
-        if !e.enabled {
-            return false;
-        }
-        if is_builtin_effect_id(&e.effect_id) {
-            return true;
-        }
-        if let Some((pack_id, lut_id)) = parse_pack_lut_id(&e.effect_id) {
-            return find_cube_lut(packs, pack_id, lut_id).is_some();
-        }
-        false
+        e.enabled
+            && !e.is_wasm()
+            && resolve_target(packs, &e.item_ref, e.hash.as_deref())
+                .target
+                .is_some()
     })
+}
+
+/// Whether an instance can run: its status and, if it can, its kind (`effect`, `filter`,
+/// `lut` or `transition`).
+pub fn instance_runs(packs: &[LoadedPack], e: &EffectInstance) -> (EffectStatus, Option<String>) {
+    let r = resolve_target(packs, &e.item_ref, e.hash.as_deref());
+    let kind = r.target.map(|t| match t {
+        Target::Compiled(item) => item.kind.clone(),
+        Target::Lut { .. } => "lut".to_string(),
+    });
+    (r.status, kind)
 }
 
 #[repr(C)]
@@ -113,39 +200,76 @@ struct MixUniform {
     invert: f32,
     mode: u32,
     opacity: f32,
+    blend: u32,
+    _pad: [u32; 3],
 }
 
 fn effect_error(e: EffectError) -> ComposeError {
     ComposeError::Effect(e.to_string())
 }
 
-/// The compiled builtin `name`, loading it on first use.
-pub(super) fn ensure_item<'a>(
-    items: &'a mut HashMap<&'static str, CompiledEffect>,
-    name: &'static str,
-) -> Result<&'a CompiledEffect, ComposeError> {
-    if !items.contains_key(name) {
-        let compiled = builtins::load_builtin(name).map_err(effect_error)?;
-        items.insert(name, compiled);
-    }
-    items
-        .get(name)
-        .ok_or_else(|| ComposeError::Effect(format!("builtin '{name}' did not load")))
+/// Stable per-instance seed: the instance id folded to 32 bits.
+pub(super) fn instance_seed(id: Id) -> u32 {
+    let v = id.as_u128();
+    let folded = v ^ (v >> 64);
+    ((folded as u64) ^ ((folded as u64) >> 32)) as u32
 }
 
-/// Host values of an effect run. Builtins are time-independent; the clip-time values are zero
-/// until schema v8 threads them through the stack.
-fn effect_host(width: u32, height: u32) -> HostValues {
+/// Host values of an effect run.
+pub(super) fn effect_host(width: u32, height: u32, timing: &FxTiming, seed: u32) -> HostValues {
     HostValues {
         width,
         height,
-        time: 0.0,
-        duration: 0.0,
-        progress: 0.0,
-        frame: 0,
-        seed: 0,
-        speed: 1.0,
+        time: timing.time,
+        duration: timing.duration,
+        progress: if timing.duration > 0.0 {
+            (timing.time / timing.duration).clamp(0.0, 1.0)
+        } else {
+            0.0
+        },
+        frame: timing.frame,
+        seed,
+        speed: timing.speed,
     }
+}
+
+/// The stored value of an instance's param as the runtime takes it.
+pub(super) fn stored_to_runtime(value: &EffectParam) -> ParamValue {
+    match value {
+        EffectParam::Number(n) => ParamValue::Number(*n),
+        EffectParam::Bool(b) => ParamValue::Number(if *b { 1.0 } else { 0.0 }),
+        EffectParam::Vector(v) => ParamValue::Vector(v.clone()),
+        EffectParam::Text(s) => ParamValue::Lut(s.clone()),
+    }
+}
+
+fn lut_filter_item() -> Option<std::sync::Arc<CompiledEffect>> {
+    crate::packs::builtin_items()
+        .iter()
+        .find(|i| i.id == "lut_filter" && i.version == 1)
+        .and_then(|i| i.compiled.clone())
+}
+
+fn lut_cache_key(pack: &str, item: &str, version: u32, hash: &Option<String>) -> String {
+    format!(
+        "{pack}/{item}@{version}#{}",
+        hash.as_deref().unwrap_or_default()
+    )
+}
+
+fn ensure_lut(
+    cache: &mut HashMap<String, Lut3d>,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    key: &str,
+    cube: &crate::packs::CubeLut,
+) -> Result<(), ComposeError> {
+    let stale = cache.get(key).is_none_or(|l| l.size() != cube.size as u32);
+    if stale {
+        let lut = upload_cube(device, queue, cube).map_err(effect_error)?;
+        cache.insert(key.to_string(), lut);
+    }
+    Ok(())
 }
 
 /// GPU resources for the effect chain and the compositor-side mask passes (owned by
@@ -160,11 +284,10 @@ pub struct EffectProcessor {
     adjust_mix_bind_group_layout: wgpu::BindGroupLayout,
     /// Unused 16-byte uniform for passes that share the single-texture layout.
     dummy_uniform: wgpu::Buffer,
-    /// Runs every builtin item and LUT filter.
+    /// Runs every builtin and pack item and LUT filter.
     executor: EffectExecutor,
-    /// Compiled builtin items, loaded on first use.
-    items: HashMap<&'static str, CompiledEffect>,
-    /// Uploaded pack LUTs by `effect_id`, re-uploaded when the cube size changes.
+    /// Uploaded pack LUTs by pack, item, version and hash; re-uploaded when the cube size
+    /// changes.
     lut_cache: HashMap<String, Lut3d>,
     matte_cache: HashMap<String, wgpu::TextureView>,
     dummy_matte_view: Option<wgpu::TextureView>,
@@ -338,7 +461,11 @@ impl EffectProcessor {
             device,
             &adjust_mix_pipeline_layout,
             "adjust_mix",
-            include_str!("adjust_mix.wgsl"),
+            &format!(
+                "{}\n{}",
+                include_str!("../blend.wgsl"),
+                include_str!("adjust_mix.wgsl")
+            ),
         );
 
         Self {
@@ -355,7 +482,6 @@ impl EffectProcessor {
                 usage: wgpu::BufferUsages::UNIFORM,
             }),
             executor: EffectExecutor::new(device),
-            items: HashMap::new(),
             lut_cache: HashMap::new(),
             matte_cache: HashMap::new(),
             dummy_matte_view: None,
@@ -378,9 +504,10 @@ impl EffectProcessor {
         has_enabled_effects(effects, packs)
     }
 
-    /// Run enabled effects on `src_view`, then the clip mask. Returns `false` when nothing was
-    /// written (the caller keeps using `src_view`). Passes are recorded in list order; each
-    /// intermediate is recycled once the pass that reads it is recorded.
+    /// Run enabled effects on `src_view`, then the clip mask. `effects` is the stack in render
+    /// order. Returns `false` when nothing was written (the caller keeps using `src_view`).
+    /// Passes are recorded in list order; each intermediate is recycled once the pass that
+    /// reads it is recorded.
     #[allow(clippy::too_many_arguments)]
     pub fn apply(
         &mut self,
@@ -393,6 +520,7 @@ impl EffectProcessor {
         effects: &[EffectInstance],
         mask: Option<&ClipMask>,
         packs: &[LoadedPack],
+        timing: &FxTiming,
     ) -> Result<bool, ComposeError> {
         if !has_enabled_effects(effects, packs) && mask.map(|m| !m.enabled).unwrap_or(true) {
             return Ok(false);
@@ -401,8 +529,9 @@ impl EffectProcessor {
         let mut carry: Option<EffectOutput> = None;
         for effect in effects.iter().filter(|e| e.enabled) {
             let input = carry.as_ref().map_or(src_view, EffectOutput::view);
-            let produced =
-                self.run_effect(device, queue, encoder, effect, input, width, height, packs)?;
+            let produced = self.run_effect(
+                device, queue, encoder, effect, input, width, height, packs, timing,
+            )?;
             if let Some(out) = produced {
                 if let Some(prev) = carry.replace(out) {
                     self.executor.recycle(prev);
@@ -441,8 +570,9 @@ impl EffectProcessor {
         Ok(wrote)
     }
 
-    /// Runs one enabled effect instance. `None` when it resolves to nothing or is bypassed
-    /// (for example blur at radius 0, or a pack LUT whose file is not loaded).
+    /// Runs one enabled effect instance. `None` when it resolves to nothing (missing or
+    /// disabled item, a LUT that is not installed, a `wasm:*` plugin) or is bypassed (for example
+    /// blur at radius 0): the picture passes through and the instance keeps its params.
     #[allow(clippy::too_many_arguments)]
     fn run_effect(
         &mut self,
@@ -454,55 +584,86 @@ impl EffectProcessor {
         width: u32,
         height: u32,
         packs: &[LoadedPack],
+        timing: &FxTiming,
     ) -> Result<Option<EffectOutput>, ComposeError> {
-        let lookup = |key: &str| effect.params.get(key).map(|v| ParamValue::Number(*v));
-        let host = effect_host(width, height);
+        if effect.is_wasm() {
+            return Ok(None);
+        }
+        let Some(target) = resolve_target(packs, &effect.item_ref, effect.hash.as_deref()).target
+        else {
+            return Ok(None);
+        };
+        let lookup = |key: &str| effect.params.get(key).map(stored_to_runtime);
+        let host = effect_host(width, height, timing, instance_seed(effect.id));
         let Self {
             executor,
-            items,
             lut_cache,
             ..
         } = self;
 
-        if let Some((pack_id, lut_id)) = parse_pack_lut_id(&effect.effect_id) {
-            let Some(cube) = find_cube_lut(packs, pack_id, lut_id) else {
-                return Ok(None);
-            };
-            let stale = lut_cache
-                .get(&effect.effect_id)
-                .is_none_or(|l| l.size() != cube.size as u32);
-            if stale {
-                let lut = upload_cube(device, queue, cube).map_err(effect_error)?;
-                lut_cache.insert(effect.effect_id.clone(), lut);
+        match target {
+            Target::Lut { item, pack, cube } => {
+                // A pack LUT is the builtin LUT filter with the LUT bound.
+                let Some(filter) = lut_filter_item() else {
+                    return Ok(None);
+                };
+                if filter.is_bypassed(&lookup).map_err(effect_error)? {
+                    return Ok(None);
+                }
+                let key = lut_cache_key(&pack.canonical_id, &item.id, item.version, &item.hash);
+                ensure_lut(lut_cache, device, queue, &key, cube)?;
+                let Some(lut) = lut_cache.get(&key) else {
+                    return Ok(None);
+                };
+                let mut inputs = EffectInputs::new();
+                inputs.bind("src", input).bind("lut", lut.view());
+                let out = executor
+                    .run(device, queue, encoder, &filter, &inputs, &lookup, &host)
+                    .map_err(effect_error)?;
+                Ok(Some(out))
             }
-            let item = ensure_item(items, "lut_filter")?;
-            if item.is_bypassed(&lookup).map_err(effect_error)? {
-                return Ok(None);
+            Target::Compiled(item) => {
+                let Some(compiled) = item.compiled.as_ref() else {
+                    return Ok(None);
+                };
+                if compiled.manifest().kind == ItemKind::Transition {
+                    return Ok(None);
+                }
+                if compiled.is_bypassed(&lookup).map_err(effect_error)? {
+                    return Ok(None);
+                }
+                // LUT params: every declared LUT must resolve, or the effect passes through.
+                let mut lut_keys: Vec<(String, String)> = Vec::new();
+                for spec in compiled.manifest().lut_params() {
+                    let reference = match effect.params.get(&spec.key) {
+                        Some(EffectParam::Text(r)) => r.clone(),
+                        _ => match &spec.default {
+                            ParamValue::Lut(r) => r.clone(),
+                            _ => String::new(),
+                        },
+                    };
+                    let resolved = resolve_target(packs, &reference, None);
+                    let Some(Target::Lut { item, pack, cube }) = resolved.target else {
+                        return Ok(None);
+                    };
+                    let key = lut_cache_key(&pack.canonical_id, &item.id, item.version, &item.hash);
+                    ensure_lut(lut_cache, device, queue, &key, cube)?;
+                    lut_keys.push((spec.key.clone(), key));
+                }
+                let mut inputs = EffectInputs::new();
+                inputs.bind("src", input);
+                for (name, key) in &lut_keys {
+                    let Some(lut) = lut_cache.get(key) else {
+                        return Ok(None);
+                    };
+                    inputs.bind(name, lut.view());
+                }
+                let out = executor
+                    .run(device, queue, encoder, compiled, &inputs, &lookup, &host)
+                    .map_err(effect_error)?;
+                Ok(Some(out))
             }
-            let Some(lut) = lut_cache.get(&effect.effect_id) else {
-                return Ok(None);
-            };
-            let mut inputs = EffectInputs::new();
-            inputs.bind("src", input).bind("lut", lut.view());
-            let out = executor
-                .run(device, queue, encoder, item, &inputs, &lookup, &host)
-                .map_err(effect_error)?;
-            return Ok(Some(out));
         }
-
-        let Some(name) = builtin_item_for(&effect.effect_id) else {
-            return Ok(None);
-        };
-        let item = ensure_item(items, name)?;
-        if item.is_bypassed(&lookup).map_err(effect_error)? {
-            return Ok(None);
-        }
-        let mut inputs = EffectInputs::new();
-        inputs.bind("src", input);
-        let out = executor
-            .run(device, queue, encoder, item, &inputs, &lookup, &host)
-            .map_err(effect_error)?;
-        Ok(Some(out))
     }
 
     /// Convert a premultiplied-alpha texture into straight alpha (`dest` = `src` with colour
@@ -570,6 +731,7 @@ impl EffectProcessor {
         dest_view: &wgpu::TextureView,
         opacity: f32,
         mask: Option<&ClipMask>,
+        blend: crate::project::BlendMode,
     ) -> Result<(), ComposeError> {
         // A `None`-kind mask means "no restriction" here (there is nothing to restrict by).
         let mask = mask.filter(|m| m.enabled && m.kind != ClipMaskKind::None);
@@ -581,6 +743,8 @@ impl EffectProcessor {
             // 3 = no mask.
             mode: m.map(|m| m.mode).unwrap_or(3),
             opacity,
+            blend: blend.shader_index(),
+            _pad: [0; 3],
         };
         let matte_view = match (m, mask) {
             (Some(m), Some(mask)) if m.mode == 2 => {
@@ -963,15 +1127,14 @@ fn make_effect_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compose::runtime::manifest::ItemKind;
+    use std::collections::BTreeMap;
 
-    /// The locked v7 effect ids are exactly the effect and filter builtins' `builtin:<name>`
-    /// ids: the list agrees with the manifests.
+    /// The builtin effect refs are exactly the effect and filter builtins at version 1: the
+    /// list agrees with the manifests.
     #[test]
-    fn builtin_effect_ids_agree_with_the_builtin_manifests() {
-        for id in BUILTIN_EFFECT_IDS {
-            let name = builtin_item_for(id).unwrap_or_else(|| panic!("{id} is not builtin:<name>"));
-            let m = builtins::manifest(name).unwrap_or_else(|| panic!("no manifest for {name}"));
+    fn builtin_effect_refs_agree_with_the_builtin_manifests() {
+        for id in BUILTIN_EFFECT_REFS {
+            let m = builtin_manifest_for(id).unwrap_or_else(|| panic!("{id} is not a builtin ref"));
             assert!(
                 matches!(m.kind, ItemKind::Effect | ItemKind::Filter),
                 "{id}"
@@ -983,28 +1146,60 @@ mod tests {
                 builtins::manifest(b.name).is_some_and(|m| matches!(m.kind, ItemKind::Effect))
             })
             .count();
-        assert_eq!(effects, BUILTIN_EFFECT_IDS.len());
+        assert_eq!(effects, BUILTIN_EFFECT_REFS.len());
     }
 
     #[test]
     fn default_params_come_from_the_manifests() {
-        assert_eq!(default_params("builtin:blur").get("radius"), Some(&0.0));
-        assert_eq!(default_params("builtin:glitch").get("seed"), Some(&0.0));
         assert_eq!(
-            default_params("builtin:chroma_key").get("key_g"),
-            Some(&1.0)
+            default_params("builtin:blur@1").get("radius"),
+            Some(&EffectParam::Number(0.0))
         );
-        assert!(default_params("builtin:unknown").is_empty());
+        assert_eq!(
+            default_params("builtin:glitch@1").get("seed"),
+            Some(&EffectParam::Number(0.0))
+        );
+        assert_eq!(
+            default_params("builtin:chroma_key@1").get("key_g"),
+            Some(&EffectParam::Number(1.0))
+        );
+        assert!(default_params("builtin:unknown@1").is_empty());
+        assert!(
+            default_params("builtin:blur").is_empty(),
+            "refs carry @version"
+        );
     }
 
     #[test]
     fn clamp_uses_the_manifest_ranges() {
         let mut p = BTreeMap::from([
-            ("exposure".to_string(), 9.0),
-            ("unknown".to_string(), 100.0),
+            ("exposure".to_string(), EffectParam::Number(9.0)),
+            ("unknown".to_string(), EffectParam::Number(100.0)),
         ]);
-        clamp_effect_params("builtin:color_adjust", &mut p);
-        assert_eq!(p["exposure"], 5.0);
-        assert_eq!(p["unknown"], 100.0);
+        clamp_effect_params("builtin:color_adjust@1", &mut p);
+        assert_eq!(p["exposure"], EffectParam::Number(5.0));
+        assert_eq!(p["unknown"], EffectParam::Number(100.0));
+    }
+
+    #[test]
+    fn validate_params_rejects_unknown_keys_and_wrong_shapes() {
+        let m = builtins::manifest("color_adjust").unwrap();
+        let mut ok = BTreeMap::from([("exposure".to_string(), EffectParam::Number(9.0))]);
+        validate_params(&m, &mut ok).unwrap();
+        assert_eq!(ok["exposure"], EffectParam::Number(5.0));
+        let mut unknown = BTreeMap::from([("nope".to_string(), EffectParam::Number(1.0))]);
+        assert!(validate_params(&m, &mut unknown)
+            .unwrap_err()
+            .contains("no param 'nope'"));
+        let mut wrong = BTreeMap::from([("exposure".to_string(), EffectParam::Vector(vec![1.0]))]);
+        assert!(validate_params(&m, &mut wrong)
+            .unwrap_err()
+            .contains("expects a number"));
+    }
+
+    #[test]
+    fn instance_seed_is_stable_per_id() {
+        let id = Id::new_v4();
+        assert_eq!(instance_seed(id), instance_seed(id));
     }
 }

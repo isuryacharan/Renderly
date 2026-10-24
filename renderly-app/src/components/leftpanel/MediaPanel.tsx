@@ -2,24 +2,25 @@ import { useMemo, useRef, useState } from "react";
 import { ExternalLink, Film, Group, Music, Pencil, Plus, Search, Settings2, Trash2 } from "lucide-react";
 import { useEditorStore, type ThumbnailAsset } from "../../store/editorStore";
 import { fileName } from "../../lib/format";
-import { mediaDurationSecs, sequenceMediaName } from "../../lib/types";
+import { mediaDurationUs, sequenceMediaName } from "../../lib/types";
 import { pickAndImportMedia, importFromPath } from "../../lib/projectFlows";
 import { startMediaDrag } from "../../lib/dragMedia";
 import { assetUrl } from "../../lib/ipc";
 import { createSequence, deleteSequence, renameSequence } from "../../lib/commands";
+import { usToSecs } from "../../lib/time";
 import { SequenceSettingsDialog } from "../dialogs/SequenceSettingsDialog";
 import { Tooltip } from "../ui/Tooltip";
 
 /// Filmstrip thumbnail with hover-scrub: moving the mouse across the card selects which
 /// strip tile to show, CapCut-style, instead of a single static frame.
-function FilmstripThumb({ thumb, durationSecs }: { thumb: ThumbnailAsset; durationSecs: number }) {
+function FilmstripThumb({ thumb, durationUs }: { thumb: ThumbnailAsset; durationUs: number }) {
   const [hoverFrac, setHoverFrac] = useState<number | null>(null);
   const tileCount = thumb.cols * thumb.rows;
   const frac = hoverFrac ?? 0;
-  const sourceTime = frac * Math.max(durationSecs, 0);
+  const sourceTime = frac * Math.max(durationUs, 0);
   const tileIndex = Math.max(
     0,
-    Math.min(tileCount - 1, thumb.intervalSecs > 0 ? Math.round(sourceTime / thumb.intervalSecs) : 0),
+    Math.min(tileCount - 1, thumb.intervalUs > 0 ? Math.round(sourceTime / thumb.intervalUs) : 0),
   );
   const col = tileIndex % thumb.cols;
   const row = Math.floor(tileIndex / thumb.cols);
@@ -69,7 +70,7 @@ function WaveformThumb({ peaks }: { peaks: number[] }) {
 
 function mediaMetaLine(item: {
   kind: string;
-  duration_secs?: number | null;
+  duration_us?: number | null;
   width?: number | null;
   height?: number | null;
   fps?: number | null;
@@ -77,7 +78,7 @@ function mediaMetaLine(item: {
   const parts: string[] = [item.kind];
   if (item.width && item.height) parts.push(`${item.width}×${item.height}`);
   if (item.fps) parts.push(`${item.fps.toFixed(0)} fps`);
-  if (item.duration_secs != null) parts.push(`${item.duration_secs.toFixed(1)}s`);
+  if (item.duration_us != null) parts.push(`${usToSecs(item.duration_us).toFixed(1)}s`);
   return parts.join(" · ");
 }
 
@@ -239,13 +240,13 @@ export function MediaPanel() {
           const pendingThumb = item.kind === "video" && !thumb;
           const isSequence = item.kind === "sequence";
           const seqName = project ? sequenceMediaName(project, item) : undefined;
-          const itemDuration = project ? mediaDurationSecs(project, item) : item.duration_secs;
+          const itemDuration = project ? mediaDurationUs(project, item) : item.duration_us;
           return (
             <div
               key={item.id}
               className={`media-item${isSequence ? " media-item-sequence" : ""}`}
               draggable
-              onDragStart={(e) => startMediaDrag(e, item.id, item.kind, itemDuration ?? 5)}
+              onDragStart={(e) => startMediaDrag(e, item.id, item.kind, itemDuration ?? 5_000_000)}
               onClick={() => void placeMediaOnTimeline(item.id, item.kind)}
               onDoubleClick={() => {
                 if (isSequence && item.sequence_id)
@@ -297,7 +298,7 @@ export function MediaPanel() {
                   <Group size={20} strokeWidth={1.5} />
                 </div>
               ) : thumb && thumb.image ? (
-                <FilmstripThumb thumb={thumb} durationSecs={item.duration_secs ?? 0} />
+                <FilmstripThumb thumb={thumb} durationUs={item.duration_us ?? 0} />
               ) : item.kind === "audio" && waveform?.peaks?.length ? (
                 <WaveformThumb peaks={waveform.peaks} />
               ) : item.kind === "image" ? (
@@ -347,7 +348,7 @@ export function MediaPanel() {
                 )}
                 <div className="sub">
                   {mediaMetaLine(
-                    project ? { ...item, duration_secs: itemDuration } : item,
+                    project ? { ...item, duration_us: itemDuration } : item,
                   )}
                   {pendingThumb ? " · generating…" : ""}
                 </div>

@@ -1,51 +1,112 @@
 # Command API
 
-Status: **current** (matches project schema v7). This is the source of truth for the `Command` enum and
+Status: **current** (matches project schema v8). This is the source of truth for the `Command` enum and
 `apply_command` in `renderly-core`. GUI, CLI, and MCP must all dispatch through this exact
 set (see AGENTS.md §0.1) — none of them may mutate `Project` state any other way.
+
+## Time
+
+Every time in a command is a `Time`: JSON accepts
+
+| Form | Example | Meaning |
+|---|---|---|
+| integer | `1500000` | microseconds |
+| `"<n>s"` | `"1.5s"` | seconds (decimal allowed) |
+| `"<n>ms"` | `"1500ms"` | milliseconds |
+| `"<n>f"` | `"90f"` | frame index at the project's frame rate |
+| `"HH:MM:SS:FF"` | `"00:00:01:15"` | non-drop timecode at the project's frame rate |
+
+Negative times are rejected. Floats are not accepted as bare numbers: write `"1.5s"`.
+Stored times and every result are integer microseconds in `*_us` fields (see
+[project-schema.md](project-schema.md) "Time").
+
+**Frame snapping.** Commands that position, trim or split by time (`AddClip`, `SplitClip`,
+`TrimClip`, `MoveClip`, `AddCaption`/`SetCaption` start and duration, `AddAdjustmentLayer`/
+`SetAdjustmentLayer`, `AddStickerFromPack`, `AddSfxFromPack`, `GenerateVoiceover`,
+`GenerateSticker`, `ApplyTemplate`) snap the resolved time to the nearest frame boundary of the
+project rate (`Fps::frame_start`), so one frame is always one microsecond value whichever surface
+sent it; values that are already frame starts are unchanged, and a positive duration never snaps
+below one frame. Fades, `timeline_offset`, keyframe times and transition durations are not
+snapped.
+
+**Deprecated aliases.** The v7 parameter names that took float seconds are still accepted for one
+release and are mapped to `Time` (`1.5` becomes `"1.5s"`): `position_secs`/`new_position_secs`
+-> `start`, `at_secs` -> `at`, `source_in_secs`/`new_source_in_secs` -> `source_in`,
+`source_out_secs`/`new_source_out_secs` -> `source_out`, `duration_secs` -> `duration`,
+`fade_in_secs` -> `fade_in`, `fade_out_secs` -> `fade_out`, `timeline_offset_secs` ->
+`timeline_offset`. Each use adds a deprecation line to the write result's `warnings`. If both the
+old and the new name are sent, the new one wins.
+
+**Deprecated v7 effect and transition shapes** (accepted for one release, with a `warnings` line
+each; see the commands below):
+
+- `SetClipEffects { effects: [{ effect_id, params }] }`, where `effect_id` is `builtin:<id>` or
+  `pack:<pack>:lut:<lut>`, replaces the clip's **whole** stack, as it always did: it is converted
+  to `ref`s (`builtin:blur@1`, `pack:local.<pack>/<lut>@1`), a LUT in first position goes to
+  `filter`, `key` and `adjust` are cleared, and the rest is `effects[]` in the same order.
+- `SetClipTransition { transition: { kind, duration_us } | null }` is `{ ref: "builtin:<kind>@1",
+  duration }` / `{ ref: null }`.
+- Keyframes with `easing: "ease_in" | "ease_out"` become the exact `bezier` handles of the same
+  curve.
+- `LoadAssetPack` / `UnloadAssetPack` install into / remove from the user library instead of
+  recording a path on the project.
 
 ## Shape
 
 ```rust
 pub enum Command {
     ImportMedia { path: String },
-    AddTrack { kind: TrackKind, name: String, id: Option<Id>, sequence_id: Option<Id> },
-    AddClip { track_id: Id, media_id: Id, position_secs: f64, source_in_secs: f64, source_out_secs: f64 },
-    SplitClip { track_id: Id, clip_id: Id, at_secs: f64 },
-    TrimClip { track_id: Id, clip_id: Id, new_source_in_secs: Option<f64>, new_source_out_secs: Option<f64> },
-    MoveClip { track_id: Id, clip_id: Id, new_position_secs: f64, new_track_id: Option<Id> },
+    AddTrack { kind: TrackKind, name: String, id: Option<Id>, sequence_id: Option<Id>, magnetic: Option<bool> },
+    AddClip { track_id: Id, media_id: Id, start: Time, source_in: Time, source_out: Time },
+    SplitClip { track_id: Id, clip_id: Id, at: Time },
+    TrimClip { track_id: Id, clip_id: Id, source_in: Option<Time>, source_out: Option<Time> },
+    MoveClip { track_id: Id, clip_id: Id, start: Time, new_track_id: Option<Id> },
     DeleteClip { track_id: Id, clip_id: Id, ripple: bool },
-    AddCaption { track_id: Id, text: String, position_secs: f64, duration_secs: f64, style_id: String },
-    SetCaption { track_id: Id, clip_id: Id, text: Option<String>, position_secs: Option<f64>, duration_secs: Option<f64>, style_id: Option<String> },
+    AddCaption { track_id: Id, body: BodyInput, start: Time, duration: Time, style: Option<TextStyleRef>, animations: Option<TextAnimations> },
+    SetCaption { track_id: Id, clip_id: Id, body: Option<BodyInput>, start: Option<Time>, duration: Option<Time>, style: Option<Option<TextStyleRef>> /* null = inherit the track */, animations: Option<TextAnimations> },
+    AddText { track_id: Id, body: BodyInput, start: Time, duration: Time, style: Option<TextStyleRef>, animations: Option<TextAnimations> },
+    SetTextTiming { track_id: Id, clip_id: Id, start: Option<Time>, duration: Option<Time> },
+    SetTextBody { track_id: Option<Id>, clip_id: Option<Id>, targets: Vec<ClipRef>, text: Option<String>, runs: Option<Vec<TextRun>> },
+    SetTextStyle { track_id: Option<Id>, clip_id: Option<Id>, targets: Vec<ClipRef>, ref: Option<Option<String>>, hash: Option<Option<String>>, params: Option<Map<String, Value>>, overrides: Option<Map<String, Value>> },
+    SetTextAnimation { track_id: Option<Id>, clip_id: Option<Id>, targets: Vec<ClipRef>, phase: String /* in | out | loop | active */, ref: Option<String> /* required; null clears */, hash: Option<String>, params: Option<Map<String, Value>>, duration: Option<Time> },
+    SetTrackCaptionStyle { track_id: Id, style: Option<TextStyleRef> /* required; null clears */, reset_clips: bool },
+    SetCaptionWords { track_id: Id, clip_id: Id, words: Vec<WordInput> },
+    SetWordEmphasis { track_id: Id, clip_id: Id, indices: Vec<usize>, emphasis: bool /* default true */ },
+    SplitCaptions { track_id: Id, max_chars: usize /* 32 */, max_lines: usize /* 2 */, max_duration: Time /* 5s */ },
+    AddMarkers { markers: Vec<MarkerInput> },
+    RemoveMarkers { ids: Vec<Id>, kind: Option<MarkerKind> },
+    ApplyTranscriptCuts { transcript_id: Id, word_ids: Vec<String>, tags: Vec<String> },
+    RestoreTranscriptWords { transcript_id: Id, word_ids: Vec<String> },
     SetAudioGain { track_id: Id, clip_id: Id, gain_db: f64 },
-    GenerateCaptions { media_id: Id, track_id: Id, style_id: String, timeline_offset_secs: f64 },
-    GenerateVoiceover { text: String, track_id: Id, position_secs: f64, output_path: String, provider: VoiceoverProvider },
-    SetAudioFade { track_id: Id, clip_id: Id, fade_in_secs: f64, fade_out_secs: f64 },
+    GenerateCaptions { media_id: Id, track_id: Id, style: Option<TextStyleRef>, timeline_offset: Time },
+    GenerateVoiceover { text: String, track_id: Id, start: Time, output_path: String, provider: VoiceoverProvider },
+    SetAudioFade { track_id: Id, clip_id: Id, fade_in: Time, fade_out: Time },
     SetTrackAudioRole { track_id: Id, role: Option<TrackAudioRole> },
-    SetProjectSettings { width: Option<u32>, height: Option<u32>, fps: Option<f64> },
-    SetTrackFlags { track_id: Id, muted: Option<bool>, locked: Option<bool>, hidden: Option<bool> },
+    SetProjectSettings { width: Option<u32>, height: Option<u32>, fps: Option<Fps> },
+    SetTrackFlags { track_id: Id, muted: Option<bool>, locked: Option<bool>, hidden: Option<bool>, magnetic: Option<bool> },
     RenameTrack { track_id: Id, name: String },
     DeleteTrack { track_id: Id },
     MoveTrack { track_id: Id, new_index: usize },
     SetClipEnabled { track_id: Id, clip_id: Id, enabled: bool },
-    SetClipTransform { track_id: Id, clip_id: Id, transform: ClipTransform },
+    SetClipTransform { track_id: Option<Id>, clip_id: Option<Id>, targets: Vec<ClipRef>, transform: ClipTransform },
     SetClipKeyframes { track_id: Id, clip_id: Id, keyframes: Vec<KeyframeTrack> },
-    SetClipEffects { track_id: Id, clip_id: Id, effects: Vec<EffectInstance> },
-    SetClipTransition { track_id: Id, clip_id: Id, transition: Option<ClipTransition> },
+    SetKeyframeEasing { track_id: Id, clip_id: Id, property: TrackProperty, time: Time, easing: EasingChoice },
+    SetClipEffects { track_id: Option<Id>, clip_id: Option<Id>, targets: Vec<ClipRef>, filter: Option<Option<EffectSpec>>, key: Option<Option<EffectSpec>>, adjust: Option<Option<EffectSpec>>, effects: Option<Vec<EffectSpec>>, blend_mode: Option<BlendMode> },
+    SetClipTransition { track_id: Option<Id>, clip_id: Option<Id>, targets: Vec<ClipRef>, ref: Option<String> /* required; null clears */, duration: Option<Time>, params: Option<EffectParams>, easing: Option<Option<ProgressEasing>> },
     SetClipSpeed { track_id: Id, clip_id: Id, speed: f64 },
     LoadAssetPack { path: String },
     UnloadAssetPack { pack_id: String },
     LoadWasmPlugin { path: String },
     UnloadWasmPlugin { plugin_id: String },
-    AddStickerFromPack { pack_id: String, sticker_id: String, track_id: Id, position_secs: f64 },
-    AddSfxFromPack { pack_id: String, sfx_id: String, track_id: Id, position_secs: f64 },
+    AddStickerFromPack { pack_id: String, sticker_id: String, track_id: Id, start: Time },
+    AddSfxFromPack { pack_id: String, sfx_id: String, track_id: Id, start: Time },
     SetClipMask { track_id: Id, clip_id: Id, mask: Option<ClipMask> },
     SetClipBackgroundRemoval { track_id: Id, clip_id: Id, config: Option<BackgroundRemoval> },
     GenerateBackgroundMatte { track_id: Id, clip_id: Id },
     AttachBackgroundMatte { track_id: Id, clip_id: Id, cache_dir: PathBuf },
     SetClipAudioDenoise { track_id: Id, clip_id: Id, config: Option<AudioDenoise> },
-    ApplyTemplate { pack_id: String, template_id: String, position_secs: f64 },
-    GenerateSticker { prompt: String, track_id: Id, position_secs: f64, output_path: String },
+    ApplyTemplate { pack_id: String, template_id: String, start: Time },
+    GenerateSticker { prompt: String, track_id: Id, start: Time, output_path: String },
     CreateMulticamGroup { name: String, clip_ids: Vec<Id> },
     SetMulticamAngle { group_id: Id, active_angle: usize },
     TrackMotion { track_id: Id, clip_id: Id, sample_count: u32, region: Option<TrackRegion>, track_rotation_scale: bool, target: Option<ClipRef> },
@@ -57,12 +118,29 @@ pub enum Command {
     DeleteSequence { sequence_id: Id },
     NestClips { clips: Vec<ClipRef>, name: String },
     UnnestClip { track_id: Id, clip_id: Id },
-    AddAdjustmentLayer { track_id: Id, position_secs: f64, duration_secs: f64 },
-    SetAdjustmentLayer { track_id: Id, clip_id: Id, position_secs: Option<f64>, duration_secs: Option<f64>, opacity: Option<f64> },
+    AddAdjustmentLayer { track_id: Id, start: Time, duration: Time },
+    SetAdjustmentLayer { track_id: Id, clip_id: Id, start: Option<Time>, duration: Option<Time>, opacity: Option<f64> },
     Export { output_path: String, preset: ExportPreset },
 }
 
 pub struct ClipRef { pub track_id: Id, pub clip_id: Id }
+
+/// The text of a caption or title. `runs` / `words` omitted = empty on a new clip, unchanged on an existing one.
+pub struct BodyInput { pub text: String, pub runs: Option<Vec<TextRun>>, pub words: Option<Vec<WordInput>> }
+
+/// A recognised word; `start` / `end` are `Time`s relative to the clip start.
+pub struct WordInput { pub text: String, pub start: Time, pub end: Time, pub emphasis: bool, pub word_id: Option<String> }
+
+/// `{ "ref": "builtin:tiktok-box@1", "params": {}, "overrides": {} }`
+pub struct TextStyleRef { pub ref: String /* JSON field name */, pub hash: Option<String>, pub params: Map<String, Value>, pub overrides: Map<String, Value> }
+
+pub struct MarkerInput { pub id: Option<Id>, pub time: Time, pub label: String, pub color: String /* #RRGGBB */, pub kind: MarkerKind /* user | beat */ }
+
+/// An effect to put in a slot. Only `ref` is required.
+pub struct EffectSpec { pub id: Option<Id>, pub ref: String /* JSON field name */, pub hash: Option<String>, pub enabled: bool /* default true */, pub params: Option<EffectParams> }
+
+/// "linear" | "hold" | "auto" | "ease_in" | "ease_out" | "ease_in_out" | { "bezier": [x1, y1, x2, y2] }
+pub enum EasingChoice { /* … */ }
 
 pub fn apply_command(project: &mut Project, cmd: Command) -> Result<CommandOutcome, CommandError>;
 ```
@@ -113,46 +191,51 @@ one); the GUI supplies it for CapCut-style auto-track-on-drop, where an `AddTrac
 following `AddClip{track_id}` in the same `apply_commands` batch need to agree on the new
 track's id before the server has actually created it (see "Batch application" below).
 
+`magnetic` sets the track's magnetic flag (see "Magnetic tracks" below). Omitted, it is `true` for
+the **first video track of the root timeline** (a new project's main track) and `false` for every
+other track.
+
 - Errors: caller-supplied `id` collides with an existing track id (in the root timeline or
-  any sequence), `sequence_id` not found (`SequenceNotFound`), or a `caption` track requested
-  inside a sequence (`UnsupportedForSequence` — caption tracks are root-only in v7).
+  any sequence), `sequence_id` not found (`SequenceNotFound`), a `caption` track requested
+  inside a sequence (`UnsupportedForSequence` — caption tracks are root-only in v7), or a
+  magnetic caption track.
 
 ### `AddClip`
 Adds a `VideoClip`/`AudioClip` (matching the target track's kind) referencing `media_id` to
-`track_id`, placed at `position_secs`, sourced from `[source_in_secs, source_out_secs)` of
+`track_id`, placed at `start`, sourced from `[source_in, source_out)` of
 the media. **Sequence media** (schema v7, `kind: "sequence"`) may go on a video track (its
 picture) or an audio track (its mixed sound); the source range is in the sequence's own time
 and is checked against its derived duration.
 
 - Errors: `track_id`/`media_id` not found, track kind doesn't match media kind, resulting
-  clip overlaps an existing clip on that track, `source_out_secs <= source_in_secs`, or the
+  clip overlaps an existing clip on that track, `source_out <= source_in`, or the
   source range exceeds the media's probed duration (skipped if duration is unknown — see
   project-schema.md), or placing the sequence would make it contain itself, directly or
   through other sequences (`SequenceCycle`).
 
 ### `SplitClip`
-Splits the clip at timeline position `at_secs` into two clips with adjusted
-`source_in_secs`/`source_out_secs`, both keeping the same `media_id`. New clip on the right
+Splits the clip at timeline position `at` into two clips with adjusted
+`source_in`/`source_out`, both keeping the same `media_id`. New clip on the right
 gets a fresh id; the left retains the original id. Media clips copy `transform`; keyframes
 are split at the cut (left keeps `t < split`, right remaps `t' = t - split`); effects are
 copied with new instance ids on the right clip. Adjustment layers split the same way
-(`duration_secs` divided at the cut, opacity keyframes split, effects re-id'd).
+(`duration` divided at the cut, opacity keyframes split, effects re-id'd).
 
-- Errors: `at_secs` not strictly inside the clip's timeline span.
+- Errors: `at` not strictly inside the clip's timeline span.
 
 ### `TrimClip`
-Adjusts `source_in_secs` and/or `source_out_secs` in place (ripple is not implied — this
+Adjusts `source_in` and/or `source_out` in place (ripple is not implied — this
 only changes which part of the source plays, not other clips' positions). At least one of
 the two optional fields must be `Some`.
 
 - Errors: `clip_id` is a caption clip (trim only applies to media clips) or an adjustment
   layer (`TrimAdjustment` — it has no source range; use `SetAdjustmentLayer`), resulting
-  `source_out_secs <= source_in_secs`, new range exceeds media bounds, or the resulting
+  `source_out <= source_in`, new range exceeds media bounds, or the resulting
   on-timeline span (position unchanged, duration recomputed from the new range) overlaps a
   neighboring clip on the same track.
 
 ### `MoveClip`
-Changes a clip's `position_secs`, optionally moving it to a different track
+Changes a clip's `start`, optionally moving it to a different track
 (`new_track_id`, which may be in another timeline — root or a sequence). Used for reordering
 clips to match the script. Works on adjustment layers (video tracks only).
 
@@ -167,20 +250,141 @@ close the gap; if `false`, a gap is left in place.
 - Errors: clip not found on track.
 
 ### `AddCaption`
-Adds a `CaptionClip` with `text` at `position_secs` for `duration_secs`, tagged with
-`style_id` (a built-in style name in v0; asset-pack-provided styles come in Phase 3). Target
-track must be `kind: "caption"`.
+Adds a `CaptionClip` with `body` at `start` for `duration`. `body` is `{ "text": ..., "runs"?, "words"? }`
+(`words` use the `Time` grammar, relative to the clip start; they are stored as integer µs).
+`style` is a `TextStyleRef`; omitted, the caption has no style of its own and **inherits the
+caption track's `caption_style`** (or the default, `tiktok-bold-yellow`). `animations` maps
+phases to animations; they are stored, not rendered yet. Target track must be `kind: "caption"`.
 
-- Errors: track kind mismatch, `duration_secs <= 0`, overlap with existing caption clip on
-  that track.
+Deprecated aliases (accepted for one release, each use adds a warning): `text` for `body.text`,
+`style_id: "tiktok-box"` for `style: { "ref": "builtin:tiktok-box@1" }`.
 
-### `SetCaption` (Phase 2)
-Updates an existing `CaptionClip` on a caption track. At least one of `text`,
-`position_secs`, `duration_secs`, or `style_id` must be `Some`. Omitted fields are left
-unchanged. Used by the GUI caption inspector.
+- Errors: track kind mismatch, `duration <= 0`, overlap with an existing caption clip on that
+  track, an invalid body (a word outside the clip, words out of order, a run past the text), an
+  invalid style (malformed `ref`, `params` on a builtin style, an unknown or ill-typed
+  `overrides` key), an invalid animation (malformed `ref`, `duration_us <= 0`).
+
+### `SetCaption` (Phase 2, body and style in v8)
+Updates an existing `CaptionClip`. At least one of `body`, `start`, `duration`, `style`,
+`animations` must be given; omitted fields are unchanged. `body.text` replaces the displayed
+text; `body.runs` / `body.words`, when given, replace those lists, and **otherwise the words are
+kept** (word timing is evidence from the audio, not a copy of the text). `style: null` makes the
+caption inherit the track's style again. `text` and `style_id` are deprecated aliases as in
+`AddCaption`. Used by the GUI caption inspector.
 
 - Errors: track/clip not found, track kind mismatch, no fields to change, resulting
-  `duration_secs <= 0`, or resulting overlap with another caption on the same track.
+  `duration <= 0` or a word that no longer fits, resulting overlap with another caption on the
+  same track, invalid style/animation.
+
+### `AddText` (schema v8)
+Adds a `TextClip` (a title) to a **video** track at `start` for `duration`. It is a layer like a
+media clip: move it with `SetClipTransform`, animate it with `SetClipKeyframes`, put effects on it
+with `SetClipEffects` (`filter`, `adjust`, `effects`; no `key`, no WASM plugins), set `blend_mode`,
+`SetClipMask`, `SetClipTransition`, `SetClipEnabled`, `SplitClip`, `MoveClip`, `DeleteClip`,
+`NestClips`. `style` omitted: `builtin:tiktok-minimal@1` with `anchor: "center"`. Body, style and
+animations are validated as for captions. On a magnetic track the title is inserted like any clip.
+
+- Errors: not a video track, `duration <= 0`, overlap on a non-magnetic track, invalid body, style
+  or animation.
+
+### `SetTextTiming` (schema v8)
+Moves and/or resizes a text clip (`start`, `duration`; at least one).
+
+- Errors: clip is not a text clip, `duration <= 0`, overlap on a non-magnetic track, a word of the
+  body that no longer fits.
+
+### `SetTextBody`, `SetTextStyle`, `SetTextAnimation` (schema v8)
+Edit the text of **caption and text clips** alike. Each takes `track_id` + `clip_id`, or `targets`
+to apply one change to many clips of either kind in one undo step; all targets are checked first,
+so a batch applies to every clip or to none.
+
+- `SetTextBody { text?, runs? }`: change the displayed text and/or its style runs (at least one).
+  Words are never touched.
+- `SetTextStyle { ref?, hash?, params?, overrides? }`: omitted = unchanged. `ref` switches the
+  style (its `params` / `overrides` are kept unless given); `ref: null` clears it (a caption
+  inherits its track again, a text clip returns to the default style). `params` and `overrides`
+  **replace** the stored maps. At least one field is required.
+- `SetTextAnimation { phase, ref, hash?, params?, duration? }`: `phase` is `in`, `out`, `loop` or
+  `active`; `ref` is required and `null` clears the phase; re-sending the same `ref` keeps the
+  stored `hash`, `params` and `duration` that are not given. Animations are stored and validated
+  now and rendered from the captions phase.
+
+- Errors: a target is not a caption or text clip (`InvalidText`), invalid body/style/animation.
+
+### `SetTrackCaptionStyle` (schema v8)
+Sets (or, with `style: null`, clears) the `caption_style` of a caption track: the style every
+caption without its own `style` inherits. `reset_clips: true` also clears the clips' own styles, so
+the whole track follows the new style.
+
+- Errors: not a caption track, invalid style.
+
+### `SetCaptionWords`, `SetWordEmphasis` (schema v8)
+- `SetCaptionWords { words }` replaces a caption's word timings (imports, manual timing). Words
+  must be in order, not overlap and lie inside the clip; the text is not changed.
+- `SetWordEmphasis { indices, emphasis }` marks (default) or unmarks the words at those positions
+  of `body.words` as key words.
+
+### `SplitCaptions` (schema v8)
+Rebuilds the word-timed captions of a caption track as **pages**. The words of every caption that
+has them are laid on the timeline in order and cut into pages of at most `max_lines` lines of
+`max_chars` characters (greedy line fill; a word longer than a line sits alone), no page longer
+than `max_duration` from its first word's start to its last word's end; a page always holds at
+least one word. A page's clip runs from its first word's start to its last word's end (snapped to
+frames, never overlapping the previous page), its `text` is the lines joined with `\n`, its words
+are stored relative to the page start, and it takes the `style` and `animations` of the caption
+its first word came from. A page whose words all carry `word_id`s from one transcript gets a
+`transcript_ref`. Captions without words (typed text) are left as they are. Deterministic: the
+same words and limits give the same pages, so running it twice changes nothing.
+
+- Errors: not a caption track, `max_chars` or `max_lines` is 0, `max_duration <= 0`, a typed
+  caption would overlap a page (`Overlap`).
+
+### `AddMarkers`, `RemoveMarkers` (schema v8)
+`AddMarkers { markers: [{ id?, time, label?, color?, kind? }] }` adds markers to the root timeline
+(kept sorted by time; times are stored as given, not frame-snapped). `RemoveMarkers { ids?, kind? }`
+removes the listed ids and/or every marker of a kind (`user` | `beat`). Markers are part of
+snapping: `Project::snap_points()` is the sorted set of root-timeline clip edges and markers.
+
+- Errors (`InvalidMarker`): no markers, negative time, a colour that is not `#RRGGBB`, an id that
+  already exists, an id to remove that does not exist, neither `ids` nor `kind`.
+
+### `ApplyTranscriptCuts`, `RestoreTranscriptWords` (schema v8)
+The transcript of a media item (`transcripts[]`, source media time) is the record of what the
+speaker said; deleting words **cuts the timeline** (one model of the timeline).
+
+- `ApplyTranscriptCuts { transcript_id, word_ids?, tags? }` marks the given words (and every word
+  carrying one of `tags`, such as `filler`) `deleted`, then removes every deleted range from every
+  video/audio clip of that media (root timeline and sequences). A range is a run of consecutive
+  deleted words, from the first word's start to the last word's end, snapped to frames; the
+  silence around it stays. The clip is split at the range ends (with the usual split rules for
+  effects and keyframes) and the middle piece deleted with ripple, so the gap closes on each
+  track the clip is on (clips of other media on those tracks shift too; other tracks are not
+  touched). Already-cut ranges are skipped, so repeating the command is a no-op.
+- `RestoreTranscriptWords { transcript_id, word_ids? }` clears `deleted` (all deleted words when
+  `word_ids` is empty) and puts their ranges back: after the clip whose source ends nearest before
+  it (extending that clip when they touch, else as a new clip with its settings but no keyframes
+  or transition), or before the first clip when none does, shifting everything after it later.
+
+- Errors (`InvalidTranscript`): unknown transcript or word id, no words selected / no deleted
+  words, or a clip of that media is retimed (speed other than 1, or speed keyframes), because the
+  cuts are in source time. Agents need `allow_deletion` for a write that removes whole clips.
+
+### Magnetic tracks (schema v8)
+On a track with `magnetic: true` the clips stay contiguous from time 0, frame-snapped. The
+engine enforces it, so every caller gets the same result in one undo step:
+
+| Command | On a magnetic track |
+|---|---|
+| `AddClip`, `AddText`, `AddStickerFromPack` | the clip is inserted where its **centre** falls among the clips already there (after every clip whose centre is at or before its own); a `start` past the end appends; later clips shift right |
+| `MoveClip` (same track) | reorders by the same rule; the others move to close and open space |
+| `MoveClip` (to another track) | the source track closes the gap; a magnetic target inserts by centre |
+| `DeleteClip` | always ripples, whatever `ripple` says |
+| `TrimClip`, `SetClipSpeed`, `SetClipKeyframes` (speed), `SetTextTiming`, `SetAdjustmentLayer` | the clip changes length, later clips follow |
+| `SplitClip` | the pieces stay contiguous |
+| `NestClips`, `UnnestClip`, `ApplyTemplate`, `ApplyTranscriptCuts`, `RestoreTranscriptWords` | the track is packed afterwards |
+| `SetTrackFlags { magnetic: true }` | packs the track once; `false` leaves the clips where they are |
+
+Overlap checks do not apply (nothing can overlap). Caption tracks cannot be magnetic.
 
 ### `SetAudioGain`
 Sets `gain_db` on an audio-bearing clip (`AudioClip`, or a `VideoClip` with embedded audio
@@ -191,9 +395,19 @@ once that's modeled — v0 audio gain applies to `AudioClip` only).
 ### `GenerateCaptions` (Phase 1)
 Runs local Whisper STT on `media_id` (video or audio) and adds one `CaptionClip` per
 transcript segment to `track_id` (must be a caption track). Segments are placed at
-`timeline_offset_secs + segment.start_secs` with duration `segment.end - segment.start`.
-Uses `style_id` for export burn-in (built-in: `tiktok-bold-yellow`, `tiktok-minimal`,
-`tiktok-box`, `youtube-lower-thirds`).
+`timeline_offset + segment.start_us` with duration `segment.end - segment.start`. `style`
+(optional) gives the new captions their own style; omitted, they inherit the track's
+`caption_style`. Built-in styles: `builtin:tiktok-bold-yellow@1`, `builtin:tiktok-minimal@1`,
+`builtin:tiktok-box@1`, `builtin:youtube-lower-thirds@1`. (`style_id` is a deprecated alias.)
+
+**Word timing.** whisper.cpp is run with `-ojf -ml 60 -sow` (full JSON with per-token offsets;
+segments split on word boundaries into lines of at most 60 characters). The tokens are grouped
+into words (a token starting with a space starts a word; word pieces and punctuation extend it;
+special tokens are skipped). The command then fills **both** `transcripts[]` (one transcript per
+media item, replaced on a new run: words `w-1`, `w-2`, … in source media time, `deleted: false`)
+and each new caption's `body.words` (relative to the caption start, each with its `word_id`) and
+`transcript_ref`. A whisper.cpp build that rejects those flags is run again with plain `-oj`:
+sentence-level segments and **no words** (`words` empty, no transcript stored).
 
 Requires `whisper-cli` (or `whisper`) on PATH and `RENDERLY_WHISPER_MODEL` pointing at a
 ggml model file.
@@ -202,7 +416,7 @@ ggml model file.
 
 ### `GenerateVoiceover` (Phase 1)
 Synthesizes narration from `text` using `provider` and writes WAV to `output_path`, then
-imports it and places a clip on `track_id` at `position_secs`. Returns `VoiceoverGenerated`
+imports it and places a clip on `track_id` at `start`. Returns `VoiceoverGenerated`
 with `media_id` and `clip_id`.
 
 `VoiceoverProvider` variants (JSON tag `provider`):
@@ -213,7 +427,7 @@ with `media_id` and `clip_id`.
 - Errors: track not found or not audio, TTS unavailable, overlap, probe/import failure.
 
 ### `SetAudioFade` (Phase 1)
-Sets `fade_in_secs` and `fade_out_secs` on an audio clip. Applied during export via FFmpeg
+Sets `fade_in` and `fade_out` on an audio clip. Applied during export via FFmpeg
 `afade`.
 
 - Errors: clip not found, not audio, negative fade durations.
@@ -229,15 +443,15 @@ export applies sidechain ducking using `settings.duck_db` (default −12 dB).
 Changes project-level output settings (`width`, `height`, `fps` — e.g. an aspect-ratio
 switch in the GUI). At least one field must be `Some`.
 
-- Errors: no fields given, resulting `width`/`height` is `0`, or resulting `fps <= 0`.
+- Errors: no fields given, resulting `width`/`height` is `0`, or `fps` with a zero numerator or denominator. `fps` is the rational `{ "num": 30000, "den": 1001 }`; a plain number (`29.97`) is still accepted as a deprecated alias and snapped to the nearest standard rational (within 0.01), exactly as the v7 -> v8 migration does.
 
 ### `SetTrackFlags` (GUI rebuild M1)
-Sets `muted`, `locked`, and/or `hidden` on a track. At least one field must be `Some`;
+Sets `muted`, `locked`, `hidden` and/or `magnetic` on a track. At least one field must be `Some`;
 omitted fields are left unchanged. `muted`/`hidden` are enforced by the engine (export and
 playback both skip muted/hidden tracks); `locked` is GUI-honored only — this command does
 not itself reject edits to a locked track (see project-schema.md's `Track` note).
 
-- Errors: track not found, no fields given.
+- Errors: track not found, no fields given, `magnetic: true` on a caption track.
 
 ### `RenameTrack` (GUI rebuild M1)
 Sets a track's `name`.
@@ -272,34 +486,103 @@ Replaces the static `transform` on a media clip (video or audio). Finite numbers
 sliders dispatch this command; keyframes of `fit_x` / `fit_y` go through `SetClipKeyframes`
 (values in `-1..=1`).
 
+Give `track_id` + `clip_id` for one clip, or `targets: [{track_id, clip_id}, ...]` to set the same
+transform on several clips in **one command and one undo step** ("apply to all"). Every target
+is checked first, so a batch applies to all of them or to none.
+
 - Errors: track/clip not found, not a media clip, or non-finite transform fields.
 
-### `SetClipKeyframes` (Phase 3.1)
-Replaces all keyframe tracks on a media clip. Validates unique properties, non-negative
-finite times, finite values, opacity keys in `0..=1`; sorts keys by time on write. On an
-adjustment layer only `opacity` keyframes are accepted.
+### `SetClipKeyframes` (Phase 3.1, extended in v8)
+Replaces all keyframe tracks on a media clip or adjustment layer. A track's `property` is a
+string: a transform/audio property (`pos_x`, `pos_y`, `scale_x`, `scale_y`, `rotation`, `opacity`,
+`volume`, `speed`, `fit_x`, `fit_y`) or **`effect:<instance-id>/<param>`**, a parameter of one of
+the clip's effect instances. `value` is a number, or an array for `color` (`[r, g, b, a]`) and
+`vec2` (`[x, y]`) parameters. Validates unique properties, non-negative finite times (no two keys
+at one time), opacity keys in `0..=1`, speed keys in `0.25..=4`; sorts keys by time on write.
 
-- Errors: track/clip not found, not a media clip or adjustment layer, invalid keyframe data,
-  or a non-opacity property on an adjustment layer (`InvalidKeyframes`).
+For an effect-parameter track the instance must exist on the clip, the parameter must be declared
+by the effect, and it must be animatable: `bool`, `choice` and LUT parameters (and parameters the
+effect declares `animatable: false`) are a validation error, as is an array of the wrong length.
+On an adjustment layer `opacity` and effect-parameter tracks are accepted.
 
-### `SetClipEffects` (Phase 3.1 / 3.4 / 3)
-Replaces the effect-instance list on a media clip. Validates unique instance ids, known
-`effect_id`s (builtins, loaded `pack:…:lut:…`, loaded `wasm:…`), finite params, and clamps
-known params. GPU builtins and pack `.cube` LUTs run in the compositor; WASM frame effects run on the CPU
-frame before upload. Also accepted on adjustment layers (schema v7), where the chain runs on
-the composited picture beneath the layer; **WASM plugin effects are rejected there**
-(`InvalidEffects`) because they need CPU pixels of a decoded frame and an adjustment layer's
-input exists only on the GPU.
+A key added strictly inside an existing `bezier` span, with a value on the current curve and no
+handles, splits the curve (de Casteljau) so the motion does not change: the new key and its
+neighbours get the handles of the two halves. (Follow with `SetKeyframeEasing` to change a span.)
 
-- Errors: track/clip not found, not a media clip or adjustment layer, or invalid effect list.
+- Errors: track/clip not found, not a media clip or adjustment layer, invalid keyframe data
+  (`InvalidKeyframes`: unknown instance or parameter, not animatable, wrong value shape, a
+  transform property on an adjustment layer).
 
-### `SetClipTransition` (Phase 3.5 / 3)
-Sets or clears (`None`) the outgoing `ClipTransition` on a video media clip. Supports all
-ten builtin kinds (`crossfade`, `fade_black`, `wipe_*`, `slide_*`, `iris`, `blur_dissolve`).
-Requires a following clip; duration must be `> 0` and ≤ half of each adjacent clip's
-*timeline* duration (honors `speed`).
+### `SetKeyframeEasing` (schema v8)
+`{ track_id, clip_id, property, time, easing }` sets how the span **after** the key at `time` is
+interpolated. `easing` is `"linear"`, `"hold"`, `"auto"` (smooth monotone cubic, no handles), a
+preset `"ease_in"` / `"ease_out"` / `"ease_in_out"`, or `{"bezier": [x1, y1, x2, y2]}` (CSS
+control points). Curves are **written as `bezier` handles**: ease-in `(0.42, 0, 1, 1)`, ease-out
+`(0, 0, 0.58, 1)`, ease-in-out `(0.42, 0, 0.58, 1)`, scaled to the span, so a preset is a starting
+point the user can then drag. `linear`, `hold` and `auto` clear that span's handles. `time` picks
+the nearest key within half a frame.
 
-- Errors: not a video track, no following clip, invalid duration.
+- Errors: no such track `property` on the clip, no key at `time` (the message lists the key
+  times), or the last key (it has no span after it).
+
+### `SetClipEffects` (Phase 3.1 / 3.4 / 3, slots in v8)
+Sets the effect slots of a media clip or adjustment layer. Effects are applied **by ref**:
+`builtin:<id>@<version>`, `pack:<pack-id>/<item>@<version>` (effects, filters and LUTs), or
+`wasm:<plugin>`; `describe_commands` / `describe_effects` list what is available, with each
+item's params and usual slot.
+
+```jsonc
+{ "command": "SetClipEffects", "track_id": "…", "clip_id": "…",
+  "filter":  { "ref": "pack:mira.film-looks/print@1", "params": { "intensity": 0.8 } },
+  "key":     { "ref": "builtin:chroma_key@1" },
+  "adjust":  { "ref": "builtin:color_adjust@1", "params": { "exposure": 0.2 } },
+  "effects": [ { "ref": "builtin:blur@1", "params": { "radius": 8 } } ],
+  "blend_mode": "screen" }
+```
+
+- Every field except the target is optional: **omitted = unchanged, `null` = cleared**
+  (`blend_mode` has no `null`; send `"normal"`). `effects` replaces the whole `effects[]` list.
+  At least one field must be present.
+- Slots run in the order filter, key, adjust, `effects[]`, whatever order they are sent in.
+  `filter` accepts filters and LUTs, `key` the chroma key, `adjust` the colour adjustment (an item
+  that does not fit is an error naming the slot); `effects[]` takes any single-input effect,
+  filter or LUT. Adjustment layers have no `key`. Audio clips take only `effects[]`.
+- An instance is `{ ref, id?, hash?, enabled?, params? }`. Give an existing instance's `id` (with
+  the same `ref`) to edit it in place: its keyframe tracks stay, and omitted `params` keep their
+  values. A new instance gets a fresh id; without `params` it gets the effect's `initial` values
+  (so a new blur is visible). Params are checked against the effect's declaration (unknown key,
+  wrong shape: error) and clamped into range; a LUT param must name an installed LUT.
+- The `hash` of a pack item is recorded when it is applied. A ref that is not installed is an
+  error, except that an instance already on the clip (same `id` and `ref`) whose item has gone
+  missing stays editable: it keeps its params and renders pass-through.
+- Removing an instance (it is absent from the new slots) deletes its keyframe tracks.
+- `targets: [{track_id, clip_id}, ...]` (instead of `track_id` + `clip_id`) applies the same
+  change to every listed clip in **one command, one undo step**; each clip gets fresh instance ids
+  (given `id`s are ignored) and a failure on any target changes none of them.
+- GPU effects run in the compositor; `wasm:*` plugins run on the CPU frame before upload and are
+  rejected on adjustment layers (`InvalidEffects`: they need CPU pixels of a decoded frame).
+
+Deprecated: `effects: [{ effect_id, params }]` (see "Deprecated v7 effect and transition shapes").
+
+- Errors: track/clip not found, not a media clip or adjustment layer, or an invalid effect
+  (`InvalidEffects`: malformed or uninstalled ref, wrong slot, bad params, duplicate instance id).
+
+### `SetClipTransition` (Phase 3.5 / 3, refs in v8)
+`{ track_id, clip_id, ref, duration?, params?, easing? }` sets or clears the outgoing transition
+of a video media clip. `ref` is **required**: a transition ref (`builtin:crossfade@1`,
+`builtin:fade_black@1`, `builtin:wipe_left@1` / `_right` / `_up` / `_down`,
+`builtin:slide_left@1` / `_right`, `builtin:iris@1`, `builtin:blur_dissolve@1`, or an installed
+pack transition), or `null` to clear. `duration` is a `Time`, required when setting a new
+transition (an existing one keeps its duration), `> 0` and at most half of each adjacent clip's
+*timeline* duration (honors `speed`); it is snapped to the project's frames. `params` are the
+transition's control values (omitted: the existing ones if the ref is unchanged, else the
+item's initial values). `easing` is `"linear"`, `"ease_in"` / `"ease_out"` / `"ease_in_out"`
+(written as Bezier control points), `{"bezier": [x1, y1, x2, y2]}`, `null` for the transition's
+declared default, or omitted to keep the current one. Requires a following clip. `targets`
+works as for `SetClipEffects` ("apply to all", one undo step).
+
+- Errors: not a video track, no following clip, invalid duration, a ref that is malformed, not
+  installed or not a transition (`InvalidTransition`).
 
 ### `SetClipSpeed` (Phase 3)
 Sets constant base playback `speed` on a media clip (`0.25`..`4.0`) used when no Speed
@@ -308,16 +591,21 @@ pitch-preserving `atempo`. Rejects overlaps caused by a longer timeline span whe
 down. Speed keyframes (`SetClipKeyframes` with `AnimProperty::Speed`) override via integral
 mapping (schema v5).
 
-### `LoadAssetPack` / `UnloadAssetPack` (Phase 3)
-Load or unload a declarative pack directory (`pack.json`). Paths are stored on the project.
+### `LoadAssetPack` / `UnloadAssetPack` (Phase 3, deprecated in v8)
+Packs live in the **user library**, not in the project (schema v8), so these now install a pack
+directory (`pack.json`) into the library, or uninstall a pack from it (the same as
+`renderly pack install` / `uninstall`; `UnloadAssetPack` accepts the id with or without the
+`local.` publisher). They do not change the project, so they are not part of undo. Apply the
+installed items by ref.
 
 ### `LoadWasmPlugin` / `UnloadWasmPlugin` (Phase 3)
-Load or unload a WASM plugin directory (`plugin.json` + `.wasm`). Plugins may export frame
-`process` and/or audio `process_audio`.
+Load or unload a WASM plugin directory (`plugin.json` + `.wasm`); the folder is recorded in the
+project's `legacy_pack_paths` (plugins are not library items yet). Plugins may export frame
+`process` and/or audio `process_audio`, and are applied as `wasm:<plugin-id>` refs.
 
 ### `AddStickerFromPack` / `AddSfxFromPack` (Phase 3 deferred)
 Import a pack sticker (image → video track) or SFX (audio → audio track) and place a clip
-at `position_secs`. Requires the pack to be loaded.
+at `start`. Requires the pack to be loaded.
 
 ### `TrackMotion` (Phase 4)
 Tracks a region of a video clip and writes keyframes describing where it goes.
@@ -338,7 +626,7 @@ Algorithm: Shi-Tomasi corners inside the region (grid-distributed), pyramidal Lu
 flow with a forward-backward consistency check, RANSAC fit of translation (or similarity) per
 frame pair so features on a different-moving foreground are rejected, region carried along with
 the estimate, features re-detected when fewer than half survive. Frames are decoded
-sequentially at <= 360 px tall via one `VideoReader`; clip `speed`, `source_in_secs` and Speed
+sequentially at <= 360 px tall via one `VideoReader`; clip `speed`, `source_in` and Speed
 keyframes are honoured when mapping timeline time to source frames.
 
 Output convention (matches the compositor): `PosX`/`PosY` are the tracked point's position as
@@ -364,7 +652,7 @@ screen. Still images are a no-op (`Applied`, nothing written).
   - Offset (one behaviour, by design): the target's `PosX` = `P.x + target.transform.x` and
     `PosY` = `P.y + target.transform.y`, i.e. the target's **static** `x`/`y` is kept as a
     user-placed offset from the tracked point. Re-tracking does not accumulate it.
-  - Times: keyframe times are target-local (`timeline - target.position_secs`). The
+  - Times: keyframe times are target-local (`timeline - target.start_us`). The
     `sample_count` keys are spread evenly over the **overlap** of the two clips, so every key
     lies inside the target's span and the first/last keys sit on the overlap's ends.
   - `track_rotation_scale`: `Rotation` = `target.transform.rotation_deg + Δθ`, `ScaleX` =
@@ -535,15 +823,15 @@ elsewhere; `DeleteSequence` removes it). Atomic.
 
 ### `AddAdjustmentLayer` (schema v7)
 Adds an adjustment layer (`Clip::Adjustment`, `opacity 1`, no effects) to a video track at
-`position_secs` for `duration_secs`. Give it effects with `SetClipEffects`, a mask with
+`start` for `duration`. Give it effects with `SetClipEffects`, a mask with
 `SetClipMask`, opacity with `SetAdjustmentLayer` / opacity keyframes. Returns `ClipAdded`.
 
 - Errors: `TrackNotFound`, `TrackKindMismatch` (not a video track), `Overlap` with another
-  clip on the track, `InvalidDuration` (`duration_secs <= 0`), `InvalidAdjustment`
-  (`position_secs` negative or not finite).
+  clip on the track, `InvalidDuration` (`duration <= 0`), `InvalidAdjustment`
+  (`start` negative).
 
 ### `SetAdjustmentLayer` (schema v7)
-Updates an adjustment layer's `position_secs`, `duration_secs` and/or `opacity` (`0..=1`).
+Updates an adjustment layer's `start`, `duration` and/or `opacity` (`0..=1`).
 At least one field must be `Some`; omitted fields are unchanged (like `SetCaption`).
 
 - Errors: `SetAdjustmentLayerRequiresChange`, `TrackNotFound`, `ClipNotFound`,
@@ -611,7 +899,7 @@ clips unchanged.
 
 ### `Export`
 Renders the current `Project` timeline to `output_path` using `preset` (e.g.
-`TikTok9x16`, `Youtube16x9`, or a `Custom { width, height, fps }` variant). Muxes mixed
+`TikTok9x16`, `Youtube16x9`, or a `Custom { width, height, fps }` variant, with `fps` rational like the project rate). Muxes mixed
 audio (with fades and optional music ducking) and burns caption clips. Video layers honor
 evaluated transform+opacity, speed, transitions, and effects (builtin / pack / wasm).
 
@@ -870,5 +1158,27 @@ remain follow-ups on top of the Phase 4 command surface above.
   `InvalidAdjustment`, `SetAdjustmentLayerRequiresChange`, `TrimAdjustment`; new outcomes
   `SequenceCreated`, `ClipsNested`. See [schema-v7-design.md](schema-v7-design.md).
 
+- **Schema v8, stage 3** (breaking for caption commands; the old shapes are accepted for one
+  release with a deprecation warning): `AddCaption` / `SetCaption` take `body` and `style`
+  (`text` and `style_id` are aliases), `GenerateCaptions` takes `style` and stores word-level
+  transcripts; new `AddText`, `SetTextTiming`, `SetTextBody`, `SetTextStyle`, `SetTextAnimation`,
+  `SetTrackCaptionStyle`, `SetCaptionWords`, `SetWordEmphasis`, `SplitCaptions`, `AddMarkers`,
+  `RemoveMarkers`, `ApplyTranscriptCuts`, `RestoreTranscriptWords`; `AddTrack` and `SetTrackFlags`
+  gained `magnetic` (enforced ripple on magnetic tracks, on by default for a new project's first
+  video track); text clips take `SetClipTransform` / `SetClipKeyframes` / `SetClipEffects` /
+  `SetClipTransition` / `SetClipMask` / `SetClipEnabled` / `SplitClip` / `MoveClip` like media
+  clips; new errors `InvalidText`, `InvalidMarker`, `InvalidTranscript`. See
+  [project-schema.md](project-schema.md) "Text, captions and transcripts".
+
 - **Phase 3.4** (non-breaking): `SetClipEffects` validates known builtin ids + param
   clamps; compositor executes `builtin:color_adjust` / `blur` / `lut_contrast` / `lut_warm`.
+
+- **Schema v8, stage 2** (breaking for effect and transition commands; the old shapes are accepted
+  for one release with a deprecation warning): `SetClipEffects` takes the slots `filter` / `key` /
+  `adjust` / `effects` / `blend_mode` (omitted = unchanged, `null` = cleared) with effects applied
+  by versioned `ref` and typed params, and a `targets` batch; `SetClipTransition` takes a `ref`,
+  `duration`, `params` and `easing`; `SetClipKeyframes` accepts `effect:<instance-id>/<param>`
+  properties and array values; new `SetKeyframeEasing`; `SetClipTransform` gained `targets`;
+  `LoadAssetPack` / `UnloadAssetPack` install into / remove from the user library. See
+  [project-schema.md](project-schema.md) for the stored shapes.
+

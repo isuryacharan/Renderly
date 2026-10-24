@@ -44,8 +44,9 @@ No host imports in v1. The module must not require WASI.
 
 ## Host flow
 
-1. `LoadWasmPlugin { path }` validates the manifest, compiles the module, stores the path
-   on the project.
+1. `LoadWasmPlugin { path }` validates the manifest, compiles the module, records the folder
+   in the project's `legacy_pack_paths` (plugins are not library items yet). Effects name a
+   plugin by the ref `wasm:<plugin-id>`; they stay in a clip's `effects[]` list.
 2. **Video:** during preview/export, after decode and before GPU upload, enabled `wasm:*`
    frame effects run through `PluginHost::apply_effects`.
 3. **Audio:** before FFmpeg amix, clips with audio-capable `wasm:*` effects are decoded to

@@ -222,7 +222,7 @@ mod tests {
         let id = Id::new_v4();
         let not_found = EditError::from_command_error(&CommandError::TrackNotFound(id));
         assert_eq!(not_found.code, EditErrorCode::NotFound);
-        let overlap = EditError::from_command_error(&CommandError::Overlap(0.0, 1.0, id));
+        let overlap = EditError::from_command_error(&CommandError::Overlap(0, 1000000, id));
         assert_eq!(overlap.code, EditErrorCode::InvalidCommand);
         let model = EditError::from_command_error(&CommandError::ModelNotAvailable {
             model_id: "x".into(),

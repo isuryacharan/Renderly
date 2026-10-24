@@ -226,7 +226,7 @@ media file ──► <video> / WebCodecs VideoDecoder (HW decode, browser-schedu
     - `set_project(json)`: serde-parses the store's project JSON (same schema as the
       project file), rebuilds the core `Compositor` via `Compositor::with_device` when the
       output resolution changes.
-    - `render(time_secs, sources)`: `sources` is a JS object mapping media-id →
+    - `render(time_us, sources)`: `sources` is a JS object mapping media-id →
       `HTMLVideoElement`/`HTMLImageElement`. Runs `compose::eval::active_layers`, copies
       each active layer's element into a pooled per-media `Rgba8Unorm` texture with
       `Queue::copy_external_image_to_texture` (zero CPU readback; dest usage
@@ -235,7 +235,7 @@ media file ──► <video> / WebCodecs VideoDecoder (HW decode, browser-schedu
       `compose_to_texture`, blits to the canvas surface, presents via `queue.present`.
       Not-ready elements are skipped for the frame (same policy as P1). File-backed mattes
       and pack LUTs arrive via the host-asset flow (P4b, below).
-    - `debug_layers(time_secs, sources)`: QA introspection used by the harness (layer
+    - `debug_layers(time_us, sources)`: QA introspection used by the harness (layer
       count, per-layer element resolution, transition progress).
   - Build: `npm run build:wasm` in renderly-app runs
     `wasm-pack build ../renderly-wasm --target web --release --out-dir
@@ -353,6 +353,16 @@ media file ──► <video> / WebCodecs VideoDecoder (HW decode, browser-schedu
     text, style_id, or project resolution changes. Pushed onto `compose_layers` as the
     topmost layer(s), identity `ClipTransform` (caption bitmaps are already rendered at
     output resolution, same as export — `compose::cover_uv` is then a no-op).
+  - **Schema v8 (stage 3).** A caption's style comes from its own `style` or its track's
+    `caption_style` (`Project::caption_style_for`); `ActiveCaption` carries the render style id
+    (the item part of the ref) and the style's `overrides` (`fill`, `size`, `anchor` are read),
+    and the texture cache key includes the overrides. **Text clips** (titles on video tracks) are
+    ordinary layers of `eval::active_steps`: their `ActiveSource::Text` is turned into a
+    texture by `SceneHost::text_layer` (the wasm host rasterizes with `render_caption_styled`
+    into the same cache, native export with `render_caption_for_project`), and then goes through
+    `ComposeLayer::from_active` like a video layer, so transform, effects, blend mode, mask and
+    transitions apply. No `<video>` / `<img>` element is involved: `active_media_layers` and
+    `required_assets` never list a text layer, and the host needs no new asset.
   - Font: wasm32 has no filesystem, so `captions::load_font()` embeds
     `renderly-wasm/assets/Roboto-Bold.ttf` (Apache-2.0, `LICENSE-Roboto.txt` alongside it)
     via `include_bytes!` on that target only; native `load_font()` is unchanged
@@ -535,12 +545,17 @@ disk ──► Tauri command (project-scoped read) ──► JS (previewAssets.t
   returns JSON from `renderly_core::mask::project_matte_requests` (every `Raster` / `Generated`
   mask plus background-removal with a baked `matte_cache_dir`, keyed by
   `mask::matte_cache_key`, file = the raster path or `<cache_dir>/matte.png`) and
-  `renderly_core::packs::referenced_pack_luts` (`pack:<id>:lut:<id>` effect ids).
+  `renderly_core::packs::referenced_pack_items` (every `pack:<pack>/<item>@<v>` ref of an
+  effect, filter, LUT or transition, with the hash stored where it was applied).
 - **Bytes** come from three Tauri commands in `src-tauri/src/preview_assets.rs`:
   `read_preview_matte(path)` (raw encoded image via `tauri::ipc::Response`),
   `preview_matte_stamps(paths)` (mtimes, so a matte regenerated in place at the same path
-  is noticed), `read_preview_pack_luts(wanted)` (`.cube` text). Each serves only what the
-  open project references, so no asset-protocol scope is touched (the "runtime scope or
+  is noticed), `read_preview_pack_items(wanted)` (a pack item's files: a LUT's `.cube` text, or an
+  effect's `effect.json`, WGSL and texture files; `read_preview_pack_luts` is the older LUT-only
+  command). Each serves only what the
+  open project references (hover preview passes `include_installed` to also fetch installed
+  items the project does not use yet, resolved by ref against the user's library), so no
+  asset-protocol scope is touched (the "runtime scope or
   blank" gotcha does not apply — there is no `<img src>` of these files). The browser harness
   gets synthetic fixtures from `dev/tauriMock.ts`.
 - **Mattes**: `previewAssets.ts` decodes the image with `createImageBitmap`
@@ -553,15 +568,21 @@ disk ──► Tauri command (project-scoped read) ──► JS (previewAssets.t
   mask (as in export, via the shared `mask::cached_background_mask`), and a file-backed matte
   not yet registered renders unmasked instead of failing the frame. Luma bytes are retained
   in the wasm struct and re-registered if the compositor is rebuilt (resolution change).
-- **Pack LUTs**: `.cube` text -> `WasmCompositor::set_pack_lut(pack, lut, text)` ->
-  `packs::parse_cube_text` (the parser native `load_pack` uses, now `&str`-based and
-  cross-target) -> `LoadedPack::from_luts` -> the pack slice passed to `compose_to_texture`,
-  so `pack_lut.wgsl` runs as in export. The compositor's uploaded 3D-texture cache is cleared
-  whenever the pack data changes.
+- **Pack items** (LUTs, effects, filters, transitions): the host fetches each ref in
+  `required_assets().pack_items` and calls `WasmCompositor::set_pack_item(item_json, textures)`
+  (`item_json`: `pack_id`, `item_id`, `version`, `kind`, `hash`, and `cube` or `manifest` +
+  `shaders`; `textures`: `[{path, width, height, rgba}]` decoded by the webview). A LUT goes
+  through `packs::parse_cube_text`; an effect through `LoadedItem::from_sources`, the same
+  `CompiledEffect::load` native packs use, so naga validates its WGSL on the way in. Both end up
+  in the `LoadedPack`s (`LoadedPack::from_parts`) passed to `compose_to_texture`, and the same
+  runtime runs them as in export. An item that fails to compile is kept as an error item and
+  renders pass-through. Builtins are compiled into the wasm build and need nothing from the host.
+  `set_pack_lut(pack, lut, text)` is the older LUT-only entry point. The compositor's uploaded
+  3D-texture cache is cleared whenever the pack data changes.
 - **Refresh**: `PreviewAssetSync.sync()` runs after every `set_project` (coalesced; zero IPC
   unless a project references file-backed data). It drops mattes no longer referenced, reloads
-  a matte whose mtime changed, and rebuilds the LUT set when `asset_pack_paths` changes or a
-  LUT stops being used.
+  a matte whose mtime changed, and rebuilds the pack-item set when the project's refs or the installed library change or an item
+  stops being used.
 - **Parity evidence**: `renderly-core/tests/golden_frames.rs`'s `PreviewPipeline` plays the
   host through the same core entry points (not the compositor's native `image::open`
   fallback) and the all-scenes parity test now includes `mask_raster_matte`,
@@ -612,7 +633,7 @@ id; root-timeline layers keep their `<media id>` / `<media id>#incoming` keys un
 
 `WasmCompositor::active_media_layers(t)` returns, as JSON, every media element the frame needs:
 `[{ key, media_id, source_time, rate, nested, incoming }]` - the `sources` key to fill, the media
-time to show, and the media-seconds-per-timeline-second rate (clip speed x enclosing sequence
+time to show (integer µs), and the media-time-per-timeline-time rate (clip speed x enclosing sequence
 clips' speeds, measured by evaluating the Rust timeline a hair later, so JS never re-derives
 trim/speed math). `webviewPreviewEngine.ts` keeps one `<video>` per nested instance key
 (`nestedPool`: lazily created, seeked/rate-matched/played from that list, pre-seeked from a

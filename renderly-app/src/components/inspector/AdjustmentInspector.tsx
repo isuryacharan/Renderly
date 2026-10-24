@@ -2,12 +2,14 @@ import { useEffect, useState } from "react";
 import { Trash2 } from "lucide-react";
 import { useEditorStore } from "../../store/editorStore";
 import { deleteClip, setAdjustmentLayer, setClipEnabled } from "../../lib/commands";
-import { MIN_ADJUSTMENT_SECS } from "../../lib/container";
+import { MIN_ADJUSTMENT_US } from "../../lib/container";
+import { normalizeFps, secsToUs, snapToFrameUs, usToSecs } from "../../lib/time";
 import type { AdjustmentClip, Track } from "../../lib/types";
 import { Tooltip } from "../ui/Tooltip";
 import { KeyframeEditor } from "./KeyframeEditor";
 import { EffectStackSection } from "./EffectStackSection";
 import { MaskSection } from "./MaskSection";
+import { BlendModeControl } from "./BlendModeControl";
 
 /// Inspector for an adjustment layer (schema v7): timing, opacity (the mix between the
 /// unadjusted and adjusted picture), opacity keyframes, the effect stack and a mask. The
@@ -22,14 +24,16 @@ export function AdjustmentInspector({ track, clip }: { track: Track; clip: Adjus
 
   const opacityNow = clip.opacity ?? 1;
   const [opacity, setOpacity] = useState(opacityNow);
-  const [position, setPosition] = useState(clip.position_secs);
-  const [duration, setDuration] = useState(clip.duration_secs);
+  const fps = normalizeFps(useEditorStore((s) => s.project?.settings.fps));
+  // The timing fields are edited in seconds and committed as frame-snapped integer µs.
+  const [position, setPosition] = useState(usToSecs(clip.start_us));
+  const [duration, setDuration] = useState(usToSecs(clip.duration_us));
 
   useEffect(() => {
     setOpacity(clip.opacity ?? 1);
-    setPosition(clip.position_secs);
-    setDuration(clip.duration_secs);
-  }, [clip.id, clip.opacity, clip.position_secs, clip.duration_secs]);
+    setPosition(usToSecs(clip.start_us));
+    setDuration(usToSecs(clip.duration_us));
+  }, [clip.id, clip.opacity, clip.start_us, clip.duration_us]);
 
   const hasOpacityKeys = (clip.keyframes ?? []).some((k) => k.property === "opacity" && k.keys.length > 0);
   // Release commits one undo step; the drag itself is a render-only override (no command).
@@ -77,10 +81,10 @@ export function AdjustmentInspector({ track, clip }: { track: Track; clip: Adjus
               disabled={track.locked}
               onChange={(e) => setPosition(parseFloat(e.target.value) || 0)}
               onBlur={(e) => {
-                const v = Math.max(0, parseFloat(e.target.value) || 0);
-                setPosition(v);
-                if (v !== clip.position_secs)
-                  void dispatch(setAdjustmentLayer(track.id, clip.id, { positionSecs: v }));
+                const us = snapToFrameUs(fps, secsToUs(Math.max(0, parseFloat(e.target.value) || 0)));
+                setPosition(usToSecs(us));
+                if (us !== clip.start_us)
+                  void dispatch(setAdjustmentLayer(track.id, clip.id, { startUs: us }));
               }}
             />
           </label>
@@ -89,15 +93,18 @@ export function AdjustmentInspector({ track, clip }: { track: Track; clip: Adjus
             <input
               type="number"
               step={0.1}
-              min={MIN_ADJUSTMENT_SECS}
+              min={usToSecs(MIN_ADJUSTMENT_US)}
               value={Number.isFinite(duration) ? duration : 0}
               disabled={track.locked}
               onChange={(e) => setDuration(parseFloat(e.target.value) || 0)}
               onBlur={(e) => {
-                const v = Math.max(MIN_ADJUSTMENT_SECS, parseFloat(e.target.value) || 0);
-                setDuration(v);
-                if (v !== clip.duration_secs)
-                  void dispatch(setAdjustmentLayer(track.id, clip.id, { durationSecs: v }));
+                const us = Math.max(
+                  MIN_ADJUSTMENT_US,
+                  snapToFrameUs(fps, clip.start_us + secsToUs(parseFloat(e.target.value) || 0)) - clip.start_us,
+                );
+                setDuration(usToSecs(us));
+                if (us !== clip.duration_us)
+                  void dispatch(setAdjustmentLayer(track.id, clip.id, { durationUs: us }));
               }}
             />
           </label>
@@ -126,6 +133,7 @@ export function AdjustmentInspector({ track, clip }: { track: Track; clip: Adjus
             onKeyUp={(e) => commitOpacity(parseFloat((e.target as HTMLInputElement).value))}
           />
         </label>
+        <BlendModeControl track={track} clip={clip} />
         {hasOpacityKeys && (
           <p className="empty-hint">Opacity keyframes are set - they animate this value over the layer.</p>
         )}

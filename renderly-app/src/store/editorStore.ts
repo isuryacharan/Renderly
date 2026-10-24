@@ -1,15 +1,23 @@
 import { create } from "zustand";
 import { applyPatch, type Operation } from "fast-json-patch";
 import * as ipc from "../lib/ipc";
+import { hoverStack, initialParams } from "../lib/effects";
+import { ensurePreviewPackItems } from "../preview/previewBridge";
+import { normalizeFps, snapToFrameUs, usToSecs } from "../lib/time";
 import {
   addAdjustmentLayer,
   addCaption,
   addClip,
+  addMarkers,
+  addText,
   addTrack,
+  bodyArg,
   nestClips,
+  setTrackFlags,
   unnestClip,
 } from "../lib/commands";
-import { timelineDuration, TRACK_LABEL_W, maxScrollX, maxScrollY, clipLeft } from "../timeline/layout";
+import { DEFAULT_TEXT_STYLE_REF, magnetTargetTrack, titleStyleFor } from "../lib/text";
+import { timelineDurationUs, TRACK_LABEL_W, maxScrollX, maxScrollY, clipLeft } from "../timeline/layout";
 import {
   activeTracks,
   containerView,
@@ -19,11 +27,10 @@ import {
   pathForBreadcrumb,
 } from "../lib/container";
 import {
-  clipDurationSecs,
-  mediaDurationSecs,
+  clipDurationUs,
+  mediaDurationUs,
   sequenceMediaName,
   type Clip,
-  type EffectInstance,
   type MediaKind,
   type Project,
   type Selection,
@@ -51,6 +58,9 @@ export interface ToastItem {
 }
 
 let nextToastId = 1;
+
+/// Length of a title added from the panel / shortcut (µs).
+const DEFAULT_TITLE_US = 3_000_000;
 
 /// Mutation ids this tab has issued to the backend but hasn't finished applying yet.
 /// `dispatch`/`dispatchBatch`/`undo`/`redo` apply the returned JSON Patch themselves;
@@ -111,12 +121,14 @@ export interface ThumbnailAsset {
   rows: number;
   tileWidth: number;
   tileHeight: number;
-  intervalSecs: number;
+  /** Microseconds between thumbnail tiles (source time). */
+  intervalUs: number;
 }
 
 export interface WaveformAsset {
   peaks: number[];
-  bucketSecs: number;
+  /** Microseconds of audio per peak bucket. */
+  bucketUs: number;
 }
 
 export interface MediaAssetEntry {
@@ -127,8 +139,8 @@ export interface MediaAssetEntry {
 export interface DragGhost {
   mediaId: string;
   kind: MediaKind;
-  durationSecs: number;
-  positionSecs: number;
+  durationUs: number;
+  startUs: number;
   /// Index into the open container's tracks (`activeTracks`) to drop into, or `null` to auto-create a new track (drop
   /// above the topmost overlay lane or below the bottommost lane — see
   /// `layout.dropTargetAtY`).
@@ -185,8 +197,10 @@ export interface EditorStore {
   dragGhost: DragGhost | null;
   /** C4: junction highlighted while dragging a transition onto the timeline. */
   transitionDropTarget: TransitionDropTarget | null;
-  contextMenu: { x: number; y: number; trackId: string; clipId: string; atSecs: number } | null;
-  snapGuideSecs: number | null;
+  contextMenu: { x: number; y: number; trackId: string; clipId: string; atUs: number } | null;
+  /** Right-click menu of a ruler marker (rename / colour / delete). */
+  markerMenu: { x: number; y: number; markerId: string } | null;
+  snapGuideUs: number | null;
   /// True while a timeline mouse drag (move/trim) is in progress — set by
   /// `timeline/interactions.ts`. Lets `project:changed`'s handler skip refetching mid-drag
   /// so a concurrent backend event (e.g. a slow GenerateVoiceover/GenerateCaptions/Export
@@ -237,11 +251,13 @@ export interface EditorStore {
   setDragGhost(ghost: DragGhost | null): void;
   setTransitionDropTarget(target: TransitionDropTarget | null): void;
   dropMediaOnTimeline(): Promise<void>;
-  openContextMenu(x: number, y: number, trackId: string, clipId: string, atSecs: number): void;
+  openContextMenu(x: number, y: number, trackId: string, clipId: string, atUs: number): void;
   closeContextMenu(): void;
-  setSnapGuide(secs: number | null): void;
+  openMarkerMenu(x: number, y: number, markerId: string): void;
+  closeMarkerMenu(): void;
+  setSnapGuide(us: number | null): void;
   setLeftTab(tab: LeftTab): void;
-  setPlayheadLocal(secs: number): void;
+  setPlayheadLocal(us: number): void;
   setDragging(dragging: boolean): void;
   onThumbnailsReady(payload: ipc.ThumbnailsReadyPayload): void;
   onWaveformReady(payload: ipc.WaveformReadyPayload): void;
@@ -266,8 +282,14 @@ export interface EditorStore {
   previewOverrides: Record<string, ipc.PreviewOverride>;
   setPreviewOverride(clipId: string, over: ipc.PreviewOverride): void;
   clearPreviewOverride(clipId: string): void;
-  /** Hover preview: show `effectId` on the selected clips without a command or undo record. */
-  previewEffectOnSelection(effectId: string, params: Record<string, number>): void;
+  /** Hover preview: show catalogue item `entry` (effect or filter) on the selected clips,
+   *  with its `initial` params, without a command or undo record. */
+  previewEffectOnSelection(entry: Pick<ipc.CatalogueEntry, "ref" | "params">): void;
+  /** Hover preview of a transition on the selected video clips' outgoing junction. */
+  previewTransitionOnSelection(
+    entry: Pick<ipc.CatalogueEntry, "ref" | "params">,
+    durationUs: number,
+  ): void;
   clearEffectPreview(): void;
   /** Close the backend's merge gesture (call on mouse-up or key-up after a live edit). */
   endGesture(): void;
@@ -280,11 +302,25 @@ export interface EditorStore {
   /** `UnnestClip` on a nested clip (defaults to the primary selection); errors surface as toasts. */
   unnestClip(trackId?: string, clipId?: string): Promise<void>;
   /**
-   * `AddAdjustmentLayer` of `durationSecs` (default 5) at the playhead on `trackId`, else the
+   * `AddAdjustmentLayer` of `durationUs` (default 5 s) at the playhead on `trackId`, else the
    * selected video track, else the topmost video track (created when the container has none).
    * Selects the new layer. An overlapping clip surfaces the engine's overlap error.
    */
-  addAdjustmentLayerAtPlayhead(trackId?: string, durationSecs?: number): Promise<void>;
+  addAdjustmentLayerAtPlayhead(trackId?: string, durationUs?: number): Promise<void>;
+
+  /**
+   * `AddText` of a title at the playhead (default 3 s): on the selected non-magnetic video
+   * track, else the first non-magnetic video track with room, else a new "Titles" track
+   * (above a new main track when the container has no video track yet). Selects the title.
+   */
+  addTitleAtPlayhead(
+    text?: string,
+    opts?: { styleRef?: string; durationUs?: number },
+  ): Promise<void>;
+  /** `AddMarkers` at the playhead on the root timeline; selects nothing, toasts the result. */
+  addMarkerAtPlayhead(): Promise<void>;
+  /** Flip `magnetic` on `trackId`, else the selected video track, else the first video track. */
+  toggleMagnet(trackId?: string): Promise<void>;
 
   ensureStarterTracks(quiet?: boolean): Promise<void>;
   ensureTrack(kind: TrackKind, name: string): Promise<Track>;
@@ -293,11 +329,11 @@ export interface EditorStore {
 
   startPlayback(): Promise<void>;
   stopPlayback(): void;
-  seekTo(secs: number): Promise<void>;
-  scrubAt(secs: number): void;
+  seekTo(us: number): Promise<void>;
+  scrubAt(us: number): void;
 
-  onPlaybackTick(payload: { time_secs: number; playing: boolean }): void;
-  onPlaybackState(payload: { playing: boolean; time_secs: number }): void;
+  onPlaybackTick(payload: { time_us: number; playing: boolean }): void;
+  onPlaybackState(payload: { playing: boolean; time_us: number }): void;
   onPlaybackPerf(payload: ipc.PlaybackPerfPayload): void;
   togglePerfHud(): void;
   bumpThemeEpoch(): void;
@@ -327,7 +363,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   dragGhost: null,
   transitionDropTarget: null,
   contextMenu: null,
-  snapGuideSecs: null,
+  markerMenu: null,
+  snapGuideUs: null,
   isDragging: false,
   previewOverrides: {},
   mediaAssets: {},
@@ -415,9 +452,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const canvas = document.getElementById("timeline");
     if (!canvas) return;
     const availableWidth = canvas.clientWidth - TRACK_LABEL_W - 16;
-    const duration = timelineDuration(containerView(project, get().activeSequenceId));
+    const duration = timelineDurationUs(containerView(project, get().activeSequenceId));
     if (duration <= 0 || availableWidth <= 0) return;
-    get().setZoom(availableWidth / duration);
+    get().setZoom(availableWidth / usToSecs(duration));
     get().setScroll(0, get().scrollY);
   },
   setScroll(scrollX, scrollY) {
@@ -452,8 +489,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   setLeftTab(tab) {
     set({ leftTab: tab });
   },
-  setPlayheadLocal(secs) {
-    set({ playhead: Math.max(0, secs) });
+  setPlayheadLocal(us) {
+    set({ playhead: Math.max(0, Math.round(us)) });
   },
   setDragging(dragging) {
     set({ isDragging: dragging });
@@ -465,7 +502,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       rows: payload.rows,
       tileWidth: payload.tile_width,
       tileHeight: payload.tile_height,
-      intervalSecs: payload.interval_secs,
+      intervalUs: payload.interval_us,
     };
     const image = new Image();
     image.onload = () => {
@@ -493,7 +530,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         ...s.mediaAssets,
         [payload.media_id]: {
           ...s.mediaAssets[payload.media_id],
-          waveform: { peaks: payload.peaks, bucketSecs: payload.bucket_secs },
+          waveform: { peaks: payload.peaks, bucketUs: payload.bucket_us },
         },
       },
     }));
@@ -505,7 +542,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   setTransitionDropTarget(target) {
     set({ transitionDropTarget: target });
   },
-  openContextMenu(x, y, trackId, clipId, atSecs) {
+  openContextMenu(x, y, trackId, clipId, atUs) {
     const sel = { trackId, clipId };
     const { selections } = get();
     const already =
@@ -515,11 +552,11 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       // Keep multi-selection; promote the right-clicked clip to primary.
       const rest = selections.filter((s) => !(s.trackId === trackId && s.clipId === clipId));
       const next = [sel, ...rest];
-      set({ contextMenu: { x, y, trackId, clipId, atSecs }, selection: sel, selections: next });
+      set({ contextMenu: { x, y, trackId, clipId, atUs }, selection: sel, selections: next });
       void ipc.setEditorSelection({ primary: sel, all: next });
     } else {
       set({
-        contextMenu: { x, y, trackId, clipId, atSecs },
+        contextMenu: { x, y, trackId, clipId, atUs },
         selection: sel,
         selections: [sel],
       });
@@ -529,8 +566,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   closeContextMenu() {
     set({ contextMenu: null });
   },
-  setSnapGuide(secs) {
-    set({ snapGuideSecs: secs });
+  openMarkerMenu(x, y, markerId) {
+    set({ markerMenu: { x, y, markerId }, contextMenu: null });
+  },
+  closeMarkerMenu() {
+    set({ markerMenu: null });
+  },
+  setSnapGuide(us) {
+    set({ snapGuideUs: us });
   },
 
   async dropMediaOnTimeline() {
@@ -539,7 +582,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     if (!project || !dragGhost || !dragGhost.valid) return;
     const tracks = activeTracks(project, activeSequenceId);
 
-    if (dragGhost.durationSecs <= 0) {
+    if (dragGhost.durationUs <= 0) {
       get().toast("That sequence is empty - add clips inside it first", "error");
       return;
     }
@@ -551,7 +594,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     if (existingTrack) {
       await get().dispatch(
-        addClip(existingTrack.id, dragGhost.mediaId, dragGhost.positionSecs, 0, dragGhost.durationSecs),
+        addClip(existingTrack.id, dragGhost.mediaId, dragGhost.startUs, 0, dragGhost.durationUs),
       );
       return;
     }
@@ -571,7 +614,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const newTrackId = crypto.randomUUID();
     await get().dispatchBatch([
       addTrack(trackKind, trackName, newTrackId, activeSequenceId),
-      addClip(newTrackId, dragGhost.mediaId, dragGhost.positionSecs, 0, dragGhost.durationSecs),
+      addClip(newTrackId, dragGhost.mediaId, dragGhost.startUs, 0, dragGhost.durationUs),
     ]);
   },
 
@@ -689,7 +732,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     void ipc.clearPreviewOverride(clipId).catch(() => {});
   },
 
-  previewEffectOnSelection(effectId, params) {
+  previewEffectOnSelection(entry) {
     const { project, selections, activeSequenceId } = get();
     if (!project) return;
     const tracks = activeTracks(project, activeSequenceId);
@@ -697,15 +740,39 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     for (const sel of selections) {
       const clip = tracks.find((t) => t.id === sel.trackId)?.clips.find((c) => c.id === sel.clipId);
       if (!clip || clip.type === "caption") continue;
-      const instance: EffectInstance = {
-        id: crypto.randomUUID(),
-        effect_id: effectId,
-        enabled: true,
-        params: { ...params },
-      };
-      get().setPreviewOverride(clip.id, { effects: [...(clip.effects ?? []), instance] });
+      get().setPreviewOverride(clip.id, {
+        ...get().previewOverrides[clip.id],
+        effects: hoverStack(clip, entry, crypto.randomUUID()),
+      });
       targets.push(clip.id);
     }
+    ensurePreviewPackItems([entry.ref]);
+    for (const id of effectPreviewTargets) {
+      if (!targets.includes(id)) get().clearPreviewOverride(id);
+    }
+    effectPreviewTargets = targets;
+  },
+
+  previewTransitionOnSelection(entry, durationUs) {
+    const { project, selections, activeSequenceId } = get();
+    if (!project) return;
+    const tracks = activeTracks(project, activeSequenceId);
+    const targets: string[] = [];
+    for (const sel of selections) {
+      const track = tracks.find((t) => t.id === sel.trackId);
+      const clip = track?.clips.find((c) => c.id === sel.clipId);
+      if (!clip || (clip.type !== "video" && clip.type !== "text")) continue;
+      get().setPreviewOverride(clip.id, {
+        transition: {
+          ref: entry.ref,
+          duration_us: Math.round(durationUs),
+          params: initialParams(entry),
+          easing: null,
+        },
+      });
+      targets.push(clip.id);
+    }
+    ensurePreviewPackItems([entry.ref]);
     for (const id of effectPreviewTargets) {
       if (!targets.includes(id)) get().clearPreviewOverride(id);
     }
@@ -853,7 +920,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   async pasteAtPlayhead() {
     const { project, clipboard, playhead } = get();
     if (!project || !clipboard || clipboard.items.length === 0) return;
-    const anchor = Math.min(...clipboard.items.map((i) => i.clip.position_secs));
+    const anchor = Math.min(...clipboard.items.map((i) => i.clip.start_us));
     const commands: Record<string, unknown>[] = [];
     const tracks = activeTracks(project, get().activeSequenceId);
     for (const item of clipboard.items) {
@@ -866,8 +933,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         get().toast(`No ${item.trackKind} track to paste onto`, "error");
         return;
       }
-      const pos = playhead + (item.clip.position_secs - anchor);
-      commands.push(pasteCommand(item.clip, track.id, Math.max(0, pos)));
+      const pos = playhead + (item.clip.start_us - anchor);
+      commands.push(pasteCommand(item.clip, track.id, frameSnapped(project, Math.max(0, pos))));
     }
     if (commands.length === 1) await get().dispatch(commands[0]!);
     else await get().dispatchBatch(commands);
@@ -882,7 +949,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       const track = tracks.find((t) => t.id === sel.trackId);
       const clip = track?.clips.find((c) => c.id === sel.clipId);
       if (!track || !clip) continue;
-      commands.push(pasteCommand(clip, track.id, clip.position_secs + clipDurationSecs(clip)));
+      commands.push(pasteCommand(clip, track.id, clip.start_us + clipDurationUs(clip)));
     }
     if (commands.length === 0) return;
     if (commands.length === 1) await get().dispatch(commands[0]!);
@@ -921,7 +988,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }
   },
 
-  async addAdjustmentLayerAtPlayhead(trackId, durationSecs = 5) {
+  async addAdjustmentLayerAtPlayhead(trackId, durationUs = 5_000_000) {
     const { project, activeSequenceId, selection, playhead } = get();
     if (!project) return;
     const tracks = activeTracks(project, activeSequenceId);
@@ -937,7 +1004,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }
     if (target) {
       const before = new Set(target.clips.map((c) => c.id));
-      const ok = await get().dispatch(addAdjustmentLayer(target.id, playhead, durationSecs));
+      const ok = await get().dispatch(addAdjustmentLayer(target.id, frameSnapped(project, playhead), durationUs));
       if (!ok) return;
       const created = activeTracks(get().project, activeSequenceId)
         .find((t) => t.id === target.id)
@@ -949,11 +1016,82 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const newTrackId = crypto.randomUUID();
     const ok = await get().dispatchBatch([
       addTrack("video", `Video ${tracks.length + 1}`, newTrackId, activeSequenceId),
-      addAdjustmentLayer(newTrackId, playhead, durationSecs),
+      addAdjustmentLayer(newTrackId, frameSnapped(project, playhead), durationUs),
     ]);
     if (!ok) return;
     const created = activeTracks(get().project, activeSequenceId).find((t) => t.id === newTrackId)?.clips[0];
     if (created) get().select({ trackId: newTrackId, clipId: created.id });
+  },
+
+  async addTitleAtPlayhead(text = "Title", opts = {}) {
+    const { project, activeSequenceId, selection } = get();
+    if (!project) return;
+    const durationUs = opts.durationUs ?? DEFAULT_TITLE_US;
+    const style = titleStyleFor(opts.styleRef ?? DEFAULT_TEXT_STYLE_REF);
+    const start = frameSnapped(project, get().playhead);
+    const tracks = activeTracks(project, activeSequenceId);
+    const free = (t: Track) =>
+      !t.locked &&
+      !t.magnetic &&
+      !t.clips.some((c) => start < c.start_us + clipDurationUs(c) && c.start_us < start + durationUs);
+    const videoTracks = tracks.filter((t) => t.kind === "video");
+    // Selected video track first, then from the topmost lane down.
+    const ordered = [
+      ...videoTracks.filter((t) => t.id === selection?.trackId),
+      ...[...videoTracks].reverse().filter((t) => t.id !== selection?.trackId),
+    ];
+    const target = ordered.find(free);
+    let created: { trackId: string; before: Set<string> };
+    if (target) {
+      created = { trackId: target.id, before: new Set(target.clips.map((c) => c.id)) };
+      if (!(await get().dispatch(addText(target.id, text, start, durationUs, style)))) return;
+    } else {
+      const newTrackId = crypto.randomUUID();
+      const commands: Record<string, unknown>[] = [];
+      // No video track yet: the first one is the (magnetic) main track, titles go above it.
+      if (videoTracks.length === 0) {
+        commands.push(addTrack("video", "Video 1", null, activeSequenceId));
+      }
+      commands.push(
+        addTrack("video", "Titles", newTrackId, activeSequenceId, false),
+        addText(newTrackId, text, start, durationUs, style),
+      );
+      created = { trackId: newTrackId, before: new Set() };
+      if (!(await get().dispatchBatch(commands))) return;
+    }
+    const clip = activeTracks(get().project, activeSequenceId)
+      .find((t) => t.id === created.trackId)
+      ?.clips.find((c) => !created.before.has(c.id));
+    if (clip) get().select({ trackId: created.trackId, clipId: clip.id });
+  },
+
+  async addMarkerAtPlayhead() {
+    const { project, activeSequenceId, playhead } = get();
+    if (!project) return;
+    if (activeSequenceId) {
+      get().toast("Markers belong to the main timeline - leave the nested sequence first", "info");
+      return;
+    }
+    const at = frameSnapped(project, playhead);
+    if ((project.markers ?? []).some((m) => m.time_us === at)) {
+      get().toast("There is already a marker here", "info");
+      return;
+    }
+    await get().dispatch(addMarkers([{ timeUs: at, label: "" }]));
+  },
+
+  async toggleMagnet(trackId) {
+    const { project, activeSequenceId, selection } = get();
+    if (!project) return;
+    const tracks = activeTracks(project, activeSequenceId);
+    const track = trackId
+      ? tracks.find((t) => t.id === trackId)
+      : magnetTargetTrack(tracks, selection?.trackId);
+    if (!track || track.kind === "caption") {
+      get().toast("Add a video track to use the magnet", "info");
+      return;
+    }
+    await get().dispatch(setTrackFlags(track.id, { magnetic: !track.magnetic }));
   },
 
   async ensureStarterTracks(quiet = false) {
@@ -1005,7 +1143,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const media = project.media.find((m) => m.id === mediaId);
     if (!media) return;
     const trackKind: TrackKind = kind === "audio" ? "audio" : "video";
-    const dur = mediaDurationSecs(project, media) ?? 5;
+    const dur = mediaDurationUs(project, media) ?? 5_000_000;
     if (media.kind === "sequence" && dur <= 0) {
       if (!quiet) get().toast("That sequence is empty - add clips inside it first", "error");
       return;
@@ -1016,21 +1154,21 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     // existing clip on this track (e.g. clicking an already-placed media item again),
     // fall back to appending after the last clip instead of failing with an overlap
     // error — CapCut-style "just make it fit" rather than a dead-end command failure.
-    const desired = get().playhead;
+    const desired = frameSnapped(project, get().playhead);
     const overlaps = track.clips.some(
-      (c) => desired < c.position_secs + clipDurationSecs(c) && c.position_secs < desired + dur,
+      (c) => desired < c.start_us + clipDurationUs(c) && c.start_us < desired + dur,
     );
     const position = overlaps
-      ? track.clips.reduce((end, c) => Math.max(end, c.position_secs + clipDurationSecs(c)), 0)
+      ? track.clips.reduce((end, c) => Math.max(end, c.start_us + clipDurationUs(c)), 0)
       : desired;
 
     const ok = await get().dispatch({
       command: "AddClip",
       track_id: track.id,
       media_id: mediaId,
-      position_secs: position,
-      source_in_secs: 0,
-      source_out_secs: dur,
+      start: position,
+      source_in: 0,
+      source_out: dur,
     });
     if (ok && !quiet) {
       const label = sequenceMediaName(project, media) ?? basename(media.path);
@@ -1053,12 +1191,12 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     set({ playing: false });
     ipc
       .pause()
-      .then((timeSecs) => set({ playhead: timeSecs }))
+      .then((timeUs) => set({ playhead: timeUs }))
       .catch(() => {});
   },
 
-  async seekTo(secs) {
-    const clamped = Math.max(0, secs);
+  async seekTo(us) {
+    const clamped = Math.max(0, Math.round(us));
     set({ playhead: clamped });
     try {
       await ipc.seek(clamped);
@@ -1067,20 +1205,20 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }
   },
 
-  scrubAt(secs) {
-    const clamped = Math.max(0, secs);
+  scrubAt(us) {
+    const clamped = Math.max(0, Math.round(us));
     set({ playhead: clamped });
     void ipc.scrubAudio(clamped).catch(() => {});
   },
 
   onPlaybackTick(payload) {
-    set({ playhead: payload.time_secs });
+    set({ playhead: payload.time_us });
     get().ensurePlayheadVisible();
   },
   onPlaybackState(payload) {
     set({
       playing: payload.playing,
-      playhead: payload.time_secs,
+      playhead: payload.time_us,
       // Perf samples are only meaningful mid-playback — clear on stop so the HUD doesn't
       // keep showing a frozen last-second-of-playback reading forever while paused.
       perfSample: payload.playing ? get().perfSample : null,
@@ -1174,9 +1312,10 @@ function errMsg(e: unknown): string {
 export function formatCommandError(e: unknown, fallbackPrefix = "Edit failed"): string {
   const msg = errMsg(e).trim();
   if (!msg) return fallbackPrefix;
-  const overlap = /clip range \[([\d.]+), ([\d.]+)\) overlaps an existing clip on track [0-9a-f-]{36}/i.exec(msg);
+  // The engine reports the range in integer microseconds.
+  const overlap = /clip range \[(-?\d+), (-?\d+)\) overlaps an existing clip on track [0-9a-f-]{36}/i.exec(msg);
   if (overlap) {
-    const secs = (v: string) => `${Number(v).toFixed(1)}s`;
+    const secs = (v: string) => `${(Number(v) / 1_000_000).toFixed(1)}s`;
     return `Can't place it there: ${secs(overlap[1])}–${secs(overlap[2])} overlaps another clip on that track`;
   }
   // Engine errors that carry a bare UUID read badly in a toast; say what to do instead.
@@ -1192,14 +1331,22 @@ function basename(path: string): string {
   return path.split(/[/\\]/).pop() ?? path;
 }
 
-function pasteCommand(clip: Clip, trackId: string, positionSecs: number): Record<string, unknown> {
+/// Nearest frame boundary of the project rate (µs).
+function frameSnapped(project: Project, us: number): number {
+  return snapToFrameUs(normalizeFps(project.settings.fps), us);
+}
+
+function pasteCommand(clip: Clip, trackId: string, startUs: number): Record<string, unknown> {
   if (clip.type === "caption") {
-    return addCaption(trackId, clip.text, positionSecs, clip.duration_secs, clip.style_id);
+    return addCaption(trackId, bodyArg(clip.body), startUs, clip.duration_us, clip.style, clip.animations);
+  }
+  if (clip.type === "text") {
+    return addText(trackId, bodyArg(clip.body), startUs, clip.duration_us, clip.style, clip.animations);
   }
   if (clip.type === "adjustment") {
-    return addAdjustmentLayer(trackId, positionSecs, clip.duration_secs);
+    return addAdjustmentLayer(trackId, startUs, clip.duration_us);
   }
-  return addClip(trackId, clip.media_id, positionSecs, clip.source_in_secs, clip.source_out_secs);
+  return addClip(trackId, clip.media_id, startUs, clip.source_in_us, clip.source_out_us);
 }
 
 /// Wires backend events (playback + project mutation) into the store. Call once at app
@@ -1231,7 +1378,7 @@ export function connectStoreToBackendEvents(): () => void {
   const unsubWaveform = ipc.onWaveformReady((p) => useEditorStore.getState().onWaveformReady(p));
   const unsubPerf = ipc.onPlaybackPerf((p) => useEditorStore.getState().onPlaybackPerf(p));
   const unsubBridgePlayhead = ipc.onBridgePlayhead((p) => {
-    void useEditorStore.getState().seekTo(p.time_secs);
+    void useEditorStore.getState().seekTo(p.time_us);
   });
   return () => {
     unsubTick();

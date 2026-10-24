@@ -3,9 +3,12 @@
 // docs/architecture.md). No DOM/event handling here either — see interactions.ts.
 
 import { fileName, formatTimecode } from "../lib/format";
+import { bodyLabel } from "../lib/text";
+import { usToPx, usToSecs } from "../lib/time";
 import {
-  clipDurationSecs,
+  clipDurationUs,
   sequenceMediaName,
+  type Marker,
   type Project,
   type Selection,
   type Track,
@@ -17,8 +20,8 @@ import {
   displayOrder,
   listTransitionJunctions,
   RULER_H,
-  secsFromCanvasX,
-  timelineDuration,
+  usFromCanvasX,
+  timelineDurationUs,
   trackLayout,
   TRACK_LABEL_W,
 } from "./layout";
@@ -27,7 +30,7 @@ import type { DragGhost, MediaAssetEntry, ThumbnailAsset, WaveformAsset } from "
 
 export interface TimelineRenderState {
   project: Project | null;
-  playheadSecs: number;
+  playheadUs: number;
   selection: Selection | null;
   /** C3: all selected clips (borders drawn for each). Falls back to `[selection]`. */
   selections?: Selection[];
@@ -37,7 +40,7 @@ export interface TimelineRenderState {
   dragGhost?: DragGhost | null;
   /** C4: highlighted junction while dragging a transition from the panel. */
   transitionDropTarget?: { trackId: string; clipId: string; valid: boolean } | null;
-  snapGuideSecs?: number | null;
+  snapGuideUs?: number | null;
   mediaAssets?: Record<string, MediaAssetEntry>;
   /** Full clip ids an agent edit just touched; drawn with a short dashed outline. */
   highlightClipIds?: string[];
@@ -45,32 +48,32 @@ export interface TimelineRenderState {
 
 /// Tiles the strip image across the clip's rectangle, sampling the tile nearest each
 /// on-screen column's source time — the same "filmstrip" look CapCut uses. Correctly
-/// reflects trimming: `clip.source_in_secs`/`source_out_secs` (not the whole media) map
+/// reflects trimming: `clip.source_in_us`/`source_out_us` (not the whole media) map
 /// onto the drawn range, so a trimmed clip shows only its trimmed sub-range of tiles.
 function drawVideoThumbnails(
   ctx: CanvasRenderingContext2D,
-  sourceInSecs: number,
-  sourceOutSecs: number,
+  sourceInUs: number,
+  sourceOutUs: number,
   thumb: ThumbnailAsset,
   x: number,
   y: number,
   cw: number,
   ch: number,
 ) {
-  if (!thumb.image || thumb.intervalSecs <= 0) return;
+  if (!thumb.image || thumb.intervalUs <= 0) return;
   const tileCount = thumb.cols * thumb.rows;
   const aspect = thumb.tileWidth / thumb.tileHeight;
   const drawH = ch;
   const drawW = Math.max(4, drawH * aspect);
-  const duration = Math.max(sourceOutSecs - sourceInSecs, 1e-6);
+  const duration = Math.max(sourceOutUs - sourceInUs, 1);
 
   ctx.save();
   ctx.beginPath();
   ctx.rect(x, y, cw, ch);
   ctx.clip();
   for (let dx = 0; dx < cw; dx += drawW) {
-    const sourceTime = sourceInSecs + (dx / cw) * duration;
-    const tileIndex = Math.max(0, Math.min(tileCount - 1, Math.round(sourceTime / thumb.intervalSecs)));
+    const sourceTime = sourceInUs + (dx / cw) * duration;
+    const tileIndex = Math.max(0, Math.min(tileCount - 1, Math.round(sourceTime / thumb.intervalUs)));
     const tileX = (tileIndex % thumb.cols) * thumb.tileWidth;
     const tileY = Math.floor(tileIndex / thumb.cols) * thumb.tileHeight;
     ctx.drawImage(
@@ -88,13 +91,13 @@ function drawVideoThumbnails(
   ctx.restore();
 }
 
-/// `peaks` covers the whole source media at a fixed `bucketSecs` stride regardless of
-/// trim — slices out just the buckets in `[sourceInSecs, sourceOutSecs)` so a trimmed
+/// `peaks` covers the whole source media at a fixed `bucketUs` stride regardless of
+/// trim — slices out just the buckets in `[sourceInUs, sourceOutUs)` so a trimmed
 /// clip's waveform matches what will actually play.
 function drawWaveform(
   ctx: CanvasRenderingContext2D,
-  sourceInSecs: number,
-  sourceOutSecs: number,
+  sourceInUs: number,
+  sourceOutUs: number,
   wave: WaveformAsset,
   x: number,
   y: number,
@@ -102,10 +105,10 @@ function drawWaveform(
   ch: number,
   color: string,
 ) {
-  const { peaks, bucketSecs } = wave;
-  if (peaks.length === 0 || bucketSecs <= 0) return;
-  const startIdx = Math.max(0, Math.floor(sourceInSecs / bucketSecs));
-  const endIdx = Math.min(peaks.length, Math.ceil(sourceOutSecs / bucketSecs));
+  const { peaks, bucketUs } = wave;
+  if (peaks.length === 0 || bucketUs <= 0) return;
+  const startIdx = Math.max(0, Math.floor(sourceInUs / bucketUs));
+  const endIdx = Math.min(peaks.length, Math.ceil(sourceOutUs / bucketUs));
   const count = endIdx - startIdx;
   if (count <= 0) return;
 
@@ -144,9 +147,11 @@ function roundRect(
 
 function clipColors(
   kind: Track["kind"],
-  special?: "adjustment" | "sequence",
+  special?: "adjustment" | "sequence" | "text",
 ): { fill: string; edge: string } {
   const theme = getTimelineTheme();
+  // A title is text on a video lane: tinted like a caption so it never reads as media.
+  if (special === "text") return { fill: theme.clipCaptionBg, edge: theme.clipCaptionEdge };
   // Adjustment layers and nested sequences get their own tint so they never read as media.
   if (special === "adjustment") return { fill: theme.clipAdjustmentBg, edge: theme.clipAdjustmentEdge };
   if (special === "sequence") return { fill: theme.clipSequenceBg, edge: theme.clipSequenceEdge };
@@ -308,8 +313,8 @@ function drawDragGhost(
   scrollY = 0,
 ) {
   const theme = getTimelineTheme();
-  const x = clipLeft(ghost.positionSecs, pxPerSec, scrollX);
-  const cw = Math.max(ghost.durationSecs * pxPerSec, 8);
+  const x = clipLeft(ghost.startUs, pxPerSec, scrollX);
+  const cw = Math.max(usToPx(ghost.durationUs, pxPerSec), 8);
   const color = ghost.valid ? theme.accent : theme.danger;
 
   const rowCount = displayOrder(project).length;
@@ -370,10 +375,10 @@ function syncCanvasSize(
 }
 
 export interface TimelineOverlayState {
-  playheadSecs: number;
+  playheadUs: number;
   pxPerSec: number;
   scrollX?: number;
-  snapGuideSecs?: number | null;
+  snapGuideUs?: number | null;
   /// Suppress drawing entirely when there's no project/timeline (matches the "Import
   /// media…" empty state the main canvas shows instead of a grid).
   hasProject: boolean;
@@ -392,10 +397,10 @@ export function renderTimelineOverlay(canvas: HTMLCanvasElement, state: Timeline
   if (!state.hasProject) return;
 
   const theme = getTimelineTheme();
-  const { playheadSecs, pxPerSec, snapGuideSecs, scrollX = 0 } = state;
+  const { playheadUs, pxPerSec, snapGuideUs, scrollX = 0 } = state;
 
-  if (snapGuideSecs != null) {
-    const gx = clipLeft(snapGuideSecs, pxPerSec, scrollX);
+  if (snapGuideUs != null) {
+    const gx = clipLeft(snapGuideUs, pxPerSec, scrollX);
     if (gx >= TRACK_LABEL_W && gx <= w) {
       ctx.save();
       ctx.strokeStyle = theme.snapGuide;
@@ -410,7 +415,7 @@ export function renderTimelineOverlay(canvas: HTMLCanvasElement, state: Timeline
   }
 
   // Playhead — polished marker with ruler head + shadow line
-  const phx = clipLeft(playheadSecs, pxPerSec, scrollX);
+  const phx = clipLeft(playheadUs, pxPerSec, scrollX);
   if (phx >= TRACK_LABEL_W - 8 && phx <= w + 8) {
     ctx.save();
     ctx.shadowColor = theme.clipShadow;
@@ -432,6 +437,67 @@ export function renderTimelineOverlay(canvas: HTMLCanvasElement, state: Timeline
     // Accent notch
     ctx.fillStyle = theme.accent;
     ctx.fillRect(phx - 1, 6, 2, headH - 4);
+    ctx.restore();
+  }
+}
+
+/// Markers (schema v8): a flag on the ruler (user) or a small diamond (beat), with a faint line
+/// down through the lanes. Colour is the marker's own `#RRGGBB`, else the accent.
+function drawMarkers(
+  ctx: CanvasRenderingContext2D,
+  markers: readonly Marker[],
+  pxPerSec: number,
+  scrollX: number,
+  w: number,
+  h: number,
+) {
+  if (markers.length === 0) return;
+  const theme = getTimelineTheme();
+  for (const m of markers) {
+    const x = clipLeft(m.time_us, pxPerSec, scrollX);
+    if (x < TRACK_LABEL_W - 2 || x > w + 2) continue;
+    const color = m.color || theme.accent;
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.28;
+    ctx.lineWidth = 1;
+    ctx.setLineDash(m.kind === "beat" ? [2, 4] : []);
+    ctx.beginPath();
+    ctx.moveTo(x + 0.5, RULER_H);
+    ctx.lineTo(x + 0.5, h);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    if (m.kind === "beat") {
+      // Beat markers: a small hollow diamond so a dense run of them stays quiet.
+      const cy = RULER_H - 6;
+      ctx.beginPath();
+      ctx.moveTo(x, cy - 4);
+      ctx.lineTo(x + 4, cy);
+      ctx.lineTo(x, cy + 4);
+      ctx.lineTo(x - 4, cy);
+      ctx.closePath();
+      ctx.lineWidth = 1.25;
+      ctx.stroke();
+    } else {
+      // User markers: a filled pennant hanging from the ruler's lower edge.
+      ctx.beginPath();
+      ctx.moveTo(x, RULER_H - 1);
+      ctx.lineTo(x - 5, RULER_H - 11);
+      ctx.lineTo(x + 5, RULER_H - 11);
+      ctx.closePath();
+      ctx.fill();
+      if (m.label) {
+        ctx.font = "600 9.5px var(--font-ui), Segoe UI, sans-serif";
+        const maxW = 96;
+        let text = m.label;
+        while (text.length > 1 && ctx.measureText(text).width > maxW) text = text.slice(0, -1);
+        if (text !== m.label) text = `${text.slice(0, -1)}…`;
+        ctx.fillStyle = theme.rulerText;
+        ctx.fillText(text, x + 8, RULER_H - 3);
+      }
+    }
     ctx.restore();
   }
 }
@@ -466,7 +532,7 @@ export function renderTimeline(canvas: HTMLCanvasElement, state: TimelineRenderS
     return;
   }
 
-  const duration = timelineDuration(project);
+  const duration = timelineDurationUs(project);
   const order = displayOrder(project);
   const { trackH, laneTop } = trackLayout(h, order.length, scrollY);
 
@@ -486,13 +552,15 @@ export function renderTimeline(canvas: HTMLCanvasElement, state: TimelineRenderS
 
   ctx.fillStyle = theme.rulerText;
   ctx.font = "500 10px var(--font-ui), Segoe UI, sans-serif";
-  const step = pxPerSec >= 120 ? 0.5 : pxPerSec >= 60 ? 1 : pxPerSec >= 30 ? 2 : 5;
-  const t0 = Math.max(0, Math.floor(secsFromCanvasX(TRACK_LABEL_W, pxPerSec, scrollX) / step) * step);
-  const t1 = secsFromCanvasX(w + 40, pxPerSec, scrollX);
+  // Ruler ticks are integer µs: every step divides a second, so ticks are exact.
+  const step = (pxPerSec >= 120 ? 0.5 : pxPerSec >= 60 ? 1 : pxPerSec >= 30 ? 2 : 5) * 1_000_000;
+  const majorEvery = step >= 1_000_000 ? 5_000_000 : 1_000_000;
+  const t0 = Math.max(0, Math.floor(usFromCanvasX(TRACK_LABEL_W, pxPerSec, scrollX) / step) * step);
+  const t1 = usFromCanvasX(w + 40, pxPerSec, scrollX);
   for (let t = t0; t <= Math.max(duration, t1); t += step) {
     const x = clipLeft(t, pxPerSec, scrollX);
     if (x < TRACK_LABEL_W - 2 || x > w + 2) continue;
-    const major = Math.abs(t % (step >= 1 ? 5 : 1)) < 1e-6 || Math.abs(t) < 1e-9;
+    const major = t % majorEvery === 0;
     // Approved redesign: lanes stay quiet — only major ticks continue below the ruler,
     // and only as a barely-there stripe. Minor ticks live on the ruler alone.
     if (major) {
@@ -514,6 +582,8 @@ export function renderTimeline(canvas: HTMLCanvasElement, state: TimelineRenderS
     }
   }
 
+  drawMarkers(ctx, project.markers ?? [], pxPerSec, scrollX, w, h);
+
   // Track labels/mute/lock/hide/delete are a real DOM column (components/timeline/
   // TrackHeaders.tsx), overlaid on top of the TRACK_LABEL_W gutter reserved here — not
   // drawn on canvas, so they can be actual interactive controls (dbl-click rename,
@@ -533,8 +603,8 @@ export function renderTimeline(canvas: HTMLCanvasElement, state: TimelineRenderS
     ctx.stroke();
 
     for (const clip of track.clips) {
-      const x = clipLeft(clip.position_secs, pxPerSec, scrollX);
-      const cw = Math.max(clipDurationSecs(clip) * pxPerSec, 8);
+      const x = clipLeft(clip.start_us, pxPerSec, scrollX);
+      const cw = Math.max(usToPx(clipDurationUs(clip), pxPerSec), 8);
       if (x + cw < TRACK_LABEL_W || x > w) continue;
       const cy = y + CLIP_TOP_PAD;
       const ch = trackH - CLIP_TOP_PAD - CLIP_BOTTOM_PAD;
@@ -546,7 +616,13 @@ export function renderTimeline(canvas: HTMLCanvasElement, state: TimelineRenderS
           : undefined;
       const colors = clipColors(
         track.kind,
-        clip.type === "adjustment" ? "adjustment" : clipMedia?.kind === "sequence" ? "sequence" : undefined,
+        clip.type === "adjustment"
+          ? "adjustment"
+          : clip.type === "text"
+            ? "text"
+            : clipMedia?.kind === "sequence"
+              ? "sequence"
+              : undefined,
       );
 
       // Card: soft drop shadow, kind-colored fill, 1px edge stroke.
@@ -567,7 +643,7 @@ export function renderTimeline(canvas: HTMLCanvasElement, state: TimelineRenderS
           ctx.save();
           roundRect(ctx, x, cy, cw, ch, CLIP_RADIUS);
           ctx.clip();
-          drawVideoThumbnails(ctx, clip.source_in_secs, clip.source_out_secs, thumb, x, cy, cw, ch);
+          drawVideoThumbnails(ctx, clip.source_in_us, clip.source_out_us, thumb, x, cy, cw, ch);
           ctx.restore();
         }
       } else if (clip.type === "audio") {
@@ -578,8 +654,8 @@ export function renderTimeline(canvas: HTMLCanvasElement, state: TimelineRenderS
           ctx.clip();
           drawWaveform(
             ctx,
-            clip.source_in_secs,
-            clip.source_out_secs,
+            clip.source_in_us,
+            clip.source_out_us,
             waveform,
             x,
             cy + 3,
@@ -597,14 +673,14 @@ export function renderTimeline(canvas: HTMLCanvasElement, state: TimelineRenderS
       ctx.stroke();
       ctx.restore();
 
-      if (clip.type === "caption") {
-        // Caption pill: text vertically centered, no chip.
+      if (clip.type === "caption" || clip.type === "text") {
+        // Caption / title pill: text vertically centered, no chip.
         ctx.save();
         roundRect(ctx, x, cy, cw, ch, CLIP_RADIUS);
         ctx.clip();
         ctx.fillStyle = theme.clipLabelText;
         ctx.font = "500 10.5px var(--font-ui), Segoe UI, sans-serif";
-        if (cw > 24) ctx.fillText(clip.text.slice(0, Math.floor(cw / 6)), x + 8, cy + ch / 2 + 3.5);
+        if (cw > 24) ctx.fillText(bodyLabel(clip.body, Math.floor(cw / 6)), x + 8, cy + ch / 2 + 3.5);
         ctx.restore();
       } else {
         const media = clipMedia;
@@ -623,7 +699,7 @@ export function renderTimeline(canvas: HTMLCanvasElement, state: TimelineRenderS
           ctx.font = "500 9px Consolas, monospace";
           ctx.fillStyle = theme.clipLabelText;
           ctx.globalAlpha = 0.75;
-          const dur = `${clipDurationSecs(clip).toFixed(1)}s`;
+          const dur = `${usToSecs(clipDurationUs(clip)).toFixed(1)}s`;
           ctx.fillText(dur, x + cw - ctx.measureText(dur).width - 6, cy + ch - 5);
           ctx.restore();
         }

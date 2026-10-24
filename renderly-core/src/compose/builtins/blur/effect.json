@@ -6,7 +6,7 @@
   "label": "Blur",
   "category": "blur",
   "params": [
-    { "key": "radius", "type": "float", "label": "Radius", "min": 0, "max": 64, "default": 0 }
+    { "key": "radius", "type": "float", "label": "Radius", "min": 0, "max": 64, "default": 0, "initial": 8 }
   ],
   "bypass": "radius < 0.5",
   "derived": [

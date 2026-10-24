@@ -327,7 +327,7 @@ fn stdio_project_flag_opens_the_project_at_startup() {
     let project = renderly_core::project::Project::new(
         "pinned-at-startup".to_string(),
         renderly_core::project::Settings {
-            fps: 30.0,
+            fps: renderly_core::time::Fps::new(30, 1),
             width: 640,
             height: 360,
             sample_rate: 48000,
@@ -358,7 +358,7 @@ fn stdio_permission_prompt_denies_when_the_app_is_not_live() {
     let project = renderly_core::project::Project::new(
         "perm".to_string(),
         renderly_core::project::Settings {
-            fps: 30.0,
+            fps: renderly_core::time::Fps::new(30, 1),
             width: 640,
             height: 360,
             sample_rate: 48000,
@@ -599,7 +599,7 @@ fn stdio_does_not_attach_to_the_app_without_an_open_project() {
             "apply_command",
             json!({ "command": { "command": "AddTrack", "kind": "video", "name": "V1" } }),
         ),
-        ("render_frame", json!({ "time_secs": 0.0 })),
+        ("render_frame", json!({ "time": 0 })),
         (
             "export",
             json!({ "output_path": dir.0.join("x.mp4").to_string_lossy() }),

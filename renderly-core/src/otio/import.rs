@@ -5,16 +5,17 @@
 //! express *and* the exact (un-snapped) times: a stored time is used only while it still
 //! rounds to the OTIO value, so an edit made in another tool always wins.
 
-use super::time::{clean, read_range, read_rt, Range, Rt};
+use super::time::{read_range, read_rt, Range, Rt};
 use super::url::{self, file_url_to_path, is_absolute_path, path_to_file_url};
 use super::{
     ImportOptions, OtioError, OtioWarning, WarningKind, CAPTION_GENERATOR_KIND,
-    RENDERLY_METADATA_KEY,
+    RENDERLY_METADATA_KEY, TEXT_GENERATOR_KIND,
 };
 use crate::project::{
     clamp_clip_speed, AdjustmentClip, AnimProperty, CaptionClip, Clip, ClipTransition,
-    EffectInstance, Id, MediaClip, MediaItem, MediaKind, MulticamGroup, Project, Sequence,
-    Settings, Track, TrackAudioRole, TrackKind, TransitionKind, MAX_SEQUENCE_DEPTH, SCHEMA_VERSION,
+    EffectInstance, Id, Marker, MarkerKind, MediaClip, MediaItem, MediaKind, MulticamGroup,
+    Project, Sequence, Settings, TextBody, TextClip, TextStyleRef, Track, TrackAudioRole,
+    TrackKind, Transcript, MAX_SEQUENCE_DEPTH, SCHEMA_VERSION,
 };
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -23,7 +24,7 @@ use std::path::PathBuf;
 const DEFAULT_WIDTH: u32 = 1920;
 const DEFAULT_HEIGHT: u32 = 1080;
 const DEFAULT_SAMPLE_RATE: u32 = 48_000;
-const EPS: f64 = 1e-9;
+const EPS: i64 = 0;
 
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff"];
 const AUDIO_EXTS: &[&str] = &[
@@ -48,19 +49,19 @@ pub fn import_otio(
     let rates = tally_rates(&source.stack);
     let fps = choose_fps(
         options,
-        meta_settings.as_ref().map(|s| s.fps),
+        meta_settings.as_ref().map(|s| s.fps.as_f64()),
         source.global_start.map(|g| g.rate),
         &rates,
         &mut warnings,
     );
     if let Some(g) = source.global_start {
-        if g.value.abs() > EPS {
+        if g.us().abs() > EPS {
             warnings.push(OtioWarning {
                 kind: WarningKind::Other,
                 path: "global_start_time".into(),
                 message: format!(
                     "global_start_time of {:.3}s is ignored; the project timeline starts at 0",
-                    g.secs()
+                    g.us() as f64 / 1e6
                 ),
             });
         }
@@ -69,7 +70,7 @@ pub fn import_otio(
     let mut imp = Importer {
         opts: options,
         warnings,
-        fps,
+        fps: crate::time::Fps::from_f64(fps),
         meta_media: HashMap::new(),
         meta_seq_media: HashMap::new(),
         media: Vec::new(),
@@ -102,6 +103,7 @@ pub fn import_otio(
     }
 
     let tracks = imp.tracks_from_stack(&source.stack, "tracks", 0);
+    let markers = imp.markers_from(&source.stack);
 
     // Sequences that exist in the project but are not placed anywhere have no OTIO
     // structure; Renderly stores them whole in the timeline metadata.
@@ -150,7 +152,7 @@ pub fn import_otio(
     }
 
     let settings = Settings {
-        fps,
+        fps: crate::time::Fps::from_f64(fps),
         width: options
             .width
             .or(meta_settings.map(|s| s.width))
@@ -201,17 +203,29 @@ pub fn import_otio(
         .sequences
         .sort_by_key(|s| media_order.get(&s.id).copied().unwrap_or(usize::MAX));
     if let Some(m) = renderly {
-        project.asset_pack_paths = field(m, "asset_pack_paths").unwrap_or_default();
-        project.wasm_plugin_paths = field(m, "wasm_plugin_paths").unwrap_or_default();
+        // Older exports (schema 7) listed pack and plugin folders separately.
+        let mut legacy: Vec<std::path::PathBuf> = field(m, "legacy_pack_paths").unwrap_or_default();
+        for key in ["asset_pack_paths", "wasm_plugin_paths"] {
+            for p in field::<Vec<std::path::PathBuf>>(m, key).unwrap_or_default() {
+                if !legacy.contains(&p) {
+                    legacy.push(p);
+                }
+            }
+        }
+        project.legacy_pack_paths = legacy;
         project.multicam_groups =
             field::<Vec<MulticamGroup>>(m, "multicam_groups").unwrap_or_default();
         project.segmentation_model_path = field(m, "segmentation_model_path").unwrap_or(None);
+    }
+    project.markers = markers;
+    if let Some(m) = renderly {
+        project.transcripts = field::<Vec<Transcript>>(m, "transcripts").unwrap_or_default();
     }
     project.validate()?;
     Ok((project, imp.warnings))
 }
 
-/// Fill `duration_secs` / `width` / `height` / `fps` of imported media from the files that
+/// Fill `duration_us` / `width` / `height` / `fps` of imported media from the files that
 /// exist on disk (ffprobe). Missing files are left untouched. Relative paths resolve against
 /// `base_dir`. Returns one warning per file that could not be probed.
 #[cfg(not(target_arch = "wasm32"))]
@@ -232,8 +246,8 @@ pub fn probe_media(project: &mut Project, base_dir: Option<&std::path::Path>) ->
         }
         match crate::media::probe(&path) {
             Ok(p) => {
-                if p.duration_secs.is_some() {
-                    item.duration_secs = p.duration_secs;
+                if p.duration_us.is_some() {
+                    item.duration_us = p.duration_us;
                 }
                 if item.kind != MediaKind::Audio {
                     item.width = p.width.or(item.width);
@@ -495,35 +509,43 @@ enum Body {
     Adjustment(Box<AdjustmentClip>),
     Caption {
         text: String,
-        style_id: String,
-        snap: Option<CaptionClip>,
+        style_ref: Option<String>,
+        snap: Option<Box<CaptionClip>>,
+    },
+    /// A title (`renderly.text` generator).
+    Text {
+        text: String,
+        style_ref: Option<String>,
+        snap: Option<Box<TextClip>>,
     },
     /// A media clip or (when `media_id` is a sequence's media item) a nested sequence.
     Clip {
         media_id: Id,
-        /// Seconds into the source, file-relative.
-        src_in: f64,
+        /// µs into the source, file-relative.
+        src_in: i64,
         speed: f64,
         enabled: bool,
         snap: Option<Box<MediaClip>>,
-        effects: Vec<EffectInstance>,
+        /// `(slot, instance)` in render order: `filter`, `key`, `adjust` or `effects`.
+        effects: Vec<(String, EffectInstance)>,
     },
 }
 
 #[derive(Debug, Clone)]
 struct TransitionIr {
-    kind: TransitionKind,
-    /// `in_offset + out_offset`, seconds.
-    total: f64,
+    /// The transition item ref (`builtin:crossfade@1`, ...).
+    item_ref: String,
+    /// `in_offset + out_offset`, µs.
+    total: i64,
     snap: Option<ClipTransition>,
 }
 
 #[derive(Debug, Clone)]
 struct Item {
-    start: f64,
-    dur: f64,
-    /// Unrounded end of the item, so positions accumulate without rounding drift.
-    end_raw: f64,
+    start: i64,
+    dur: i64,
+    /// End of the item (µs), so the next item starts where this one ends.
+    end_raw: i64,
     body: Body,
     transition: Option<TransitionIr>,
     path: String,
@@ -531,14 +553,14 @@ struct Item {
 
 impl Item {
     fn is_clip(&self) -> bool {
-        matches!(self.body, Body::Clip { .. })
+        matches!(self.body, Body::Clip { .. } | Body::Text { .. })
     }
 }
 
 struct Importer<'a> {
     opts: &'a ImportOptions,
     warnings: Vec<OtioWarning>,
-    fps: f64,
+    fps: crate::time::Fps,
     meta_media: HashMap<Id, MediaItem>,
     meta_seq_media: HashMap<Id, MediaItem>,
     media: Vec<MediaItem>,
@@ -563,10 +585,16 @@ impl Importer<'_> {
     }
 
     /// `exact` when it still rounds to `native` (within `tol_frames`), else `native`.
-    fn pick(&self, native: f64, exact: Option<f64>, tol_frames: f64) -> f64 {
+    fn pick(&self, native: i64, exact: Option<i64>, tol_frames: f64) -> i64 {
         match exact {
-            Some(e) if e.is_finite() && (e - native).abs() * self.fps <= tol_frames + 1e-6 => e,
-            _ => native,
+            Some(e)
+                if ((e - native).abs() as f64) * self.fps.as_f64() / 1e6 <= tol_frames + 1e-6 =>
+            {
+                e
+            }
+            // Converted from rational frames, so it can be 1 µs off the project's frame grid
+            // (rounding vs the floor-based frame boundary): land it on the boundary.
+            _ => crate::time::snap_within(native, self.fps, 2),
         }
     }
 
@@ -579,6 +607,44 @@ impl Importer<'_> {
     }
 
     // ---- tracks ----
+
+    /// Markers on the root stack. A marker Renderly wrote comes back exactly (its snapshot,
+    /// while it still sits on the frame it was written at); a foreign one becomes a `user`
+    /// marker at its start, with its OTIO colour.
+    fn markers_from(&mut self, stack: &Value) -> Vec<Marker> {
+        let mut out: Vec<Marker> = Vec::new();
+        let list = stack.get("markers").and_then(Value::as_array);
+        for (i, m) in list.into_iter().flatten().enumerate() {
+            let Some(range) = m.get("marked_range").and_then(read_range) else {
+                self.warn(
+                    WarningKind::MarkersIgnored,
+                    &format!("tracks.markers[{i}]"),
+                    "marker has no usable marked_range; dropped",
+                );
+                continue;
+            };
+            let snap = renderly_of(m)
+                .and_then(|r| r.get("marker"))
+                .and_then(|s| serde_json::from_value::<Marker>(s.clone()).ok());
+            let time_us = self.pick(range.start.max(0), snap.as_ref().map(|s| s.time_us), 0.5);
+            let wanted = snap.as_ref().map(|s| s.id);
+            let id = wanted
+                .filter(|w| !out.iter().any(|x| x.id == *w))
+                .unwrap_or_else(Id::new_v4);
+            out.push(match snap {
+                Some(s) => Marker { id, time_us, ..s },
+                None => Marker {
+                    id,
+                    time_us,
+                    label: str_of(m, "name").to_string(),
+                    color: super::marker_color_from_otio(str_of(m, "color")),
+                    kind: MarkerKind::User,
+                },
+            });
+        }
+        out.sort_by_key(|m| m.time_us);
+        out
+    }
 
     fn tracks_from_stack(&mut self, stack: &Value, path: &str, depth: usize) -> Vec<Track> {
         let mut out = Vec::new();
@@ -657,7 +723,7 @@ impl Importer<'_> {
         }
 
         let mut items: Vec<Item> = Vec::new();
-        let mut cursor = 0.0_f64;
+        let mut cursor = 0_i64;
         let children = v.get("children").and_then(Value::as_array);
         for (i, child) in children.into_iter().flatten().enumerate() {
             let p = format!("{path}.children[{i}]");
@@ -705,8 +771,8 @@ impl Importer<'_> {
                             path,
                             format!(
                                 "track source_range starts at {:.3}s: content is shifted {} by that amount",
-                                r.start,
-                                if r.start > 0.0 { "earlier (head cut)" } else { "later" }
+                                r.start as f64 / 1e6,
+                                if r.start > 0 { "earlier (head cut)" } else { "later" }
                             ),
                         );
                     }
@@ -719,9 +785,12 @@ impl Importer<'_> {
             .and_then(|m| m.get("kind"))
             .and_then(|k| serde_json::from_value(k.clone()).ok());
         let has_caption = items.iter().any(|i| matches!(i.body, Body::Caption { .. }));
-        let has_visual = items
-            .iter()
-            .any(|i| matches!(i.body, Body::Clip { .. } | Body::Adjustment(_)));
+        let has_visual = items.iter().any(|i| {
+            matches!(
+                i.body,
+                Body::Clip { .. } | Body::Adjustment(_) | Body::Text { .. }
+            )
+        });
         let kind = match snap_kind {
             Some(TrackKind::Caption) => TrackKind::Caption,
             _ if has_caption && !has_visual => TrackKind::Caption,
@@ -777,6 +846,14 @@ impl Importer<'_> {
             muted,
             locked: flag("locked").unwrap_or(false),
             hidden,
+            magnetic: kind != TrackKind::Caption && flag("magnetic").unwrap_or(false),
+            caption_style: if kind == TrackKind::Caption {
+                rmeta
+                    .and_then(|m| m.get("caption_style"))
+                    .and_then(|s| serde_json::from_value::<TextStyleRef>(s.clone()).ok())
+            } else {
+                None
+            },
         })
     }
 
@@ -786,14 +863,17 @@ impl Importer<'_> {
         if v.get("enabled").and_then(Value::as_bool) == Some(false) {
             return None;
         }
-        let secs = |k: &str| v.get(k).and_then(read_rt).map_or(0.0, Rt::secs);
-        let total = clean(secs("in_offset") + secs("out_offset"));
+        let secs = |k: &str| v.get(k).and_then(read_rt).map_or(0, Rt::us);
+        let total = secs("in_offset") + secs("out_offset");
         let snap: Option<ClipTransition> = renderly_of(v)
             .and_then(|m| m.get("transition"))
             .and_then(|t| serde_json::from_value(t.clone()).ok());
         let ttype = str_of(v, "transition_type");
-        let kind = match &snap {
-            Some(s) => s.kind,
+        let name = str_of(v, "name");
+        let item_ref = match &snap {
+            Some(s) => s.item_ref.clone(),
+            // A name that is itself a transition ref survives a missing snapshot.
+            None if crate::packs::refs::ItemRef::parse(name).is_ok() => name.to_string(),
             None => {
                 if !ttype.eq_ignore_ascii_case("SMPTE_Dissolve")
                     && !ttype.to_ascii_lowercase().contains("dissolve")
@@ -804,26 +884,30 @@ impl Importer<'_> {
                         format!("transition type {ttype:?} approximated as a crossfade"),
                     );
                 }
-                TransitionKind::Crossfade
+                "builtin:crossfade@1".to_string()
             }
         };
-        Some(TransitionIr { kind, total, snap })
+        Some(TransitionIr {
+            item_ref,
+            total,
+            snap,
+        })
     }
 
     fn item(
         &mut self,
         v: &Value,
         path: &str,
-        start: f64,
+        start: i64,
         parent: TrackKind,
         depth: usize,
     ) -> Option<Item> {
         let kind = schema_name(v);
         let range = v.get("source_range").and_then(read_range);
-        let mk = |dur: f64, body: Body| {
+        let mk = |dur: i64, body: Body| {
             (dur > EPS).then(|| Item {
-                start: clean(start),
-                dur: clean(dur),
+                start,
+                dur,
                 end_raw: start + dur,
                 body,
                 transition: None,
@@ -842,7 +926,7 @@ impl Importer<'_> {
         }
         match kind {
             Some("Gap" | "Filler") => {
-                let dur = range.map_or(0.0, |r| r.dur);
+                let dur = range.map_or(0, |r| r.dur);
                 if let Some(adj) = renderly_of(v)
                     .and_then(|m| m.get("adjustment"))
                     .and_then(|a| serde_json::from_value::<AdjustmentClip>(a.clone()).ok())
@@ -854,7 +938,7 @@ impl Importer<'_> {
             Some("Clip") => self.clip_item(v, path, range, start, parent, mk),
             Some("Stack" | "Track" | "Sequence") => {
                 let dur = range.map_or_else(|| composition_duration(v), |r| r.dur);
-                let src_in = range.map_or(0.0, |r| r.start);
+                let src_in = range.map_or(0, |r| r.start);
                 let (speed, _) = self.time_warp(v, path);
                 if depth >= MAX_SEQUENCE_DEPTH {
                     self.warn(
@@ -872,7 +956,7 @@ impl Importer<'_> {
                     dur,
                     Body::Clip {
                         media_id,
-                        src_in: clean(src_in),
+                        src_in: (src_in),
                         speed,
                         enabled: v.get("enabled").and_then(Value::as_bool).unwrap_or(true),
                         snap,
@@ -889,7 +973,7 @@ impl Importer<'_> {
                         other.unwrap_or("(none)")
                     ),
                 );
-                mk(range.map_or(0.0, |r| r.dur), Body::Gap)
+                mk(range.map_or(0, |r| r.dur), Body::Gap)
             }
         }
     }
@@ -899,9 +983,9 @@ impl Importer<'_> {
         v: &Value,
         path: &str,
         range: Option<Range>,
-        _start: f64,
+        _start: i64,
         parent: TrackKind,
-        mk: impl Fn(f64, Body) -> Option<Item>,
+        mk: impl Fn(i64, Body) -> Option<Item>,
     ) -> Option<Item> {
         let name = str_of(v, "name").to_string();
         let reference = active_reference(v);
@@ -912,32 +996,54 @@ impl Importer<'_> {
         let dur = match (range, avail) {
             (Some(r), _) => r.dur,
             (None, Some(a)) => a.dur,
-            (None, None) => 0.0,
+            (None, None) => 0,
         };
 
-        // Renderly captions: a generator reference of our own kind.
+        // Renderly captions and titles: a generator reference of our own kind.
         if ref_schema == Some("GeneratorReference") {
             let r = reference?;
-            if str_of(r, "generator_kind") == CAPTION_GENERATOR_KIND {
+            let generator = str_of(r, "generator_kind");
+            if generator == CAPTION_GENERATOR_KIND || generator == TEXT_GENERATOR_KIND {
                 let params = r.get("parameters");
                 let text = params
                     .and_then(|p| p.get("text"))
                     .and_then(Value::as_str)
                     .unwrap_or(&name)
                     .to_string();
-                let style_id = params
-                    .and_then(|p| p.get("style_id"))
+                let style_ref = params
+                    .and_then(|p| p.get("style_ref"))
                     .and_then(Value::as_str)
-                    .unwrap_or("tiktok-bold-yellow")
-                    .to_string();
+                    .map(str::to_string)
+                    .or_else(|| {
+                        // Written by schema 7: a bare style id.
+                        params
+                            .and_then(|p| p.get("style_id"))
+                            .and_then(Value::as_str)
+                            .map(|id| format!("builtin:{id}@1"))
+                    });
+                if generator == TEXT_GENERATOR_KIND {
+                    let snap = renderly_of(v)
+                        .and_then(|m| m.get("text"))
+                        .and_then(|c| serde_json::from_value::<TextClip>(c.clone()).ok())
+                        .map(Box::new);
+                    return mk(
+                        dur,
+                        Body::Text {
+                            text,
+                            style_ref,
+                            snap,
+                        },
+                    );
+                }
                 let snap = renderly_of(v)
                     .and_then(|m| m.get("caption"))
-                    .and_then(|c| serde_json::from_value::<CaptionClip>(c.clone()).ok());
+                    .and_then(|c| serde_json::from_value::<CaptionClip>(c.clone()).ok())
+                    .map(Box::new);
                 return mk(
                     dur,
                     Body::Caption {
                         text,
-                        style_id,
+                        style_ref,
                         snap,
                     },
                 );
@@ -1005,7 +1111,7 @@ impl Importer<'_> {
         let mut src_in = match (range, avail) {
             (Some(r), Some(a)) => r.start - a.start,
             (Some(r), None) => r.start,
-            (None, _) => 0.0,
+            (None, _) => 0,
         };
         if src_in < -EPS {
             self.warn(
@@ -1016,14 +1122,14 @@ impl Importer<'_> {
                     -src_in
                 ),
             );
-            src_in = 0.0;
+            src_in = 0;
         }
         let (speed, effects) = self.time_warp(v, path);
         mk(
             dur,
             Body::Clip {
                 media_id,
-                src_in: clean(src_in.max(0.0)),
+                src_in: src_in.max(0),
                 speed,
                 enabled: v.get("enabled").and_then(Value::as_bool).unwrap_or(true),
                 snap,
@@ -1034,7 +1140,7 @@ impl Importer<'_> {
 
     /// Product of the item's enabled time warps (clamped to Renderly's range) and its
     /// importable native effects. Everything else is dropped with a warning.
-    fn time_warp(&mut self, v: &Value, path: &str) -> (f64, Vec<EffectInstance>) {
+    fn time_warp(&mut self, v: &Value, path: &str) -> (f64, Vec<(String, EffectInstance)>) {
         let mut speed = 1.0_f64;
         let mut effects = Vec::new();
         let mut dropped: Vec<String> = Vec::new();
@@ -1072,14 +1178,20 @@ impl Importer<'_> {
                     // Our own effect entries carry their parameters; they only matter when
                     // the clip's metadata snapshot is gone.
                     let name = str_of(e, "effect_name");
-                    if name.starts_with("builtin:") {
+                    if name.starts_with("builtin:") || name.starts_with("pack:") {
                         if let Some(rm) = renderly_of(e) {
-                            effects.push(EffectInstance {
-                                id: field(rm, "id").unwrap_or_else(Id::new_v4),
-                                effect_id: name.to_string(),
-                                enabled: true,
-                                params: field(rm, "params").unwrap_or_default(),
-                            });
+                            let slot: String =
+                                field(rm, "slot").unwrap_or_else(|| "effects".into());
+                            effects.push((
+                                slot,
+                                EffectInstance {
+                                    id: field(rm, "id").unwrap_or_else(Id::new_v4),
+                                    item_ref: name.to_string(),
+                                    hash: field(rm, "hash").unwrap_or(None),
+                                    enabled: true,
+                                    params: field(rm, "params").unwrap_or_default(),
+                                },
+                            ));
                             continue;
                         }
                     }
@@ -1178,8 +1290,8 @@ impl Importer<'_> {
         }
         if let Some(&id) = self.media_by_key.get(&media_key) {
             if let (Some(a), Some(m)) = (avail, self.media.iter_mut().find(|m| m.id == id)) {
-                if m.duration_secs.is_some_and(|d| a.dur > d) {
-                    m.duration_secs = Some(clean(a.dur));
+                if m.duration_us.is_some_and(|d| a.dur > d) {
+                    m.duration_us = Some(a.dur);
                 }
             }
             return Some(id);
@@ -1191,7 +1303,7 @@ impl Importer<'_> {
             id,
             path: PathBuf::from(abs),
             kind,
-            duration_secs: avail.map(|a| clean(a.dur)).filter(|d| *d > 0.0),
+            duration_us: avail.map(|a| a.dur).filter(|d| *d > 0),
             width: None,
             height: None,
             fps: None,
@@ -1215,7 +1327,7 @@ impl Importer<'_> {
             id,
             path: PathBuf::new(),
             kind: MediaKind::Sequence,
-            duration_secs: None,
+            duration_us: None,
             width: None,
             height: None,
             fps: None,
@@ -1271,9 +1383,7 @@ impl Importer<'_> {
         let mut clips: Vec<Clip> = Vec::new();
         for (i, it) in items.iter().enumerate() {
             let adjacent_next = items.get(i + 1).filter(|n| {
-                n.is_clip()
-                    && kind == TrackKind::Video
-                    && (n.start - (it.start + it.dur)).abs() < 1e-6
+                n.is_clip() && kind == TrackKind::Video && (n.start - (it.start + it.dur)).abs() < 1
             });
             match &it.body {
                 Body::Gap => {}
@@ -1288,13 +1398,13 @@ impl Importer<'_> {
                     }
                     let mut adj = (**a).clone();
                     adj.id = self.unique_clip_id(Some(adj.id));
-                    adj.position_secs = self.pick(it.start, Some(a.position_secs), 0.5);
-                    adj.duration_secs = self.pick(it.dur, Some(a.duration_secs), 1.0);
+                    adj.start_us = self.pick(it.start, Some(a.start_us), 0.5);
+                    adj.duration_us = self.pick(it.dur, Some(a.duration_us), 1.0);
                     clips.push(Clip::Adjustment(adj));
                 }
                 Body::Caption {
                     text,
-                    style_id,
+                    style_ref,
                     snap,
                 } => {
                     if kind != TrackKind::Caption {
@@ -1306,21 +1416,50 @@ impl Importer<'_> {
                         continue;
                     }
                     let id = self.unique_clip_id(snap.as_ref().map(|s| s.id));
-                    clips.push(Clip::Caption(CaptionClip {
-                        id,
-                        text: text.clone(),
-                        position_secs: self.pick(
-                            it.start,
-                            snap.as_ref().map(|s| s.position_secs),
-                            0.5,
-                        ),
-                        duration_secs: self.pick(
-                            it.dur,
-                            snap.as_ref().map(|s| s.duration_secs),
-                            1.0,
-                        ),
-                        style_id: style_id.clone(),
-                    }));
+                    let mut caption = snap
+                        .as_deref()
+                        .cloned()
+                        .unwrap_or_else(|| CaptionClip::new(0, 1, text.clone()));
+                    if snap.is_none() {
+                        caption.style = style_ref.clone().map(TextStyleRef::new);
+                    }
+                    caption.id = id;
+                    caption.start_us = self.pick(it.start, snap.as_ref().map(|s| s.start_us), 0.5);
+                    caption.duration_us =
+                        self.pick(it.dur, snap.as_ref().map(|s| s.duration_us), 1.0);
+                    clips.push(Clip::Caption(caption));
+                }
+                Body::Text {
+                    text,
+                    style_ref,
+                    snap,
+                } => {
+                    if kind != TrackKind::Video {
+                        self.warn(
+                            WarningKind::Other,
+                            &it.path,
+                            "text clip on a non-video track; dropped",
+                        );
+                        continue;
+                    }
+                    let id = self.unique_clip_id(snap.as_ref().map(|s| s.id));
+                    let mut t = match snap {
+                        Some(s) => (**s).clone(),
+                        None => {
+                            let mut t = TextClip::new(0, 1, TextBody::plain(text.clone()));
+                            if let Some(r) = style_ref {
+                                t.style = TextStyleRef::new(r.clone());
+                            }
+                            t
+                        }
+                    };
+                    t.id = id;
+                    t.start_us = self.pick(it.start, snap.as_ref().map(|s| s.start_us), 0.5);
+                    t.duration_us = self.pick(it.dur, snap.as_ref().map(|s| s.duration_us), 1.0);
+                    if let Some(tr) = self.resolve_transition(it, adjacent_next) {
+                        t.outgoing_transition = tr;
+                    }
+                    clips.push(Clip::Text(t));
                 }
                 Body::Clip {
                     media_id,
@@ -1342,41 +1481,8 @@ impl Importer<'_> {
                         self.media_clip(it, *media_id, *src_in, *speed, *enabled, snap, effects);
                     // Transitions: the native item wins; the stored one survives only where
                     // OTIO has no way to express it (no touching clip after this one).
-                    match (&it.transition, adjacent_next) {
-                        (Some(tr), Some(next)) => {
-                            let max = (it.dur.min(next.dur)) / 2.0;
-                            let mut dur = tr.total;
-                            if let Some(s) = &tr.snap {
-                                if (s.duration_secs - dur).abs() * self.fps <= 0.5 + 1e-6 {
-                                    dur = s.duration_secs;
-                                }
-                            }
-                            if dur > max + EPS {
-                                self.warn(
-                                    WarningKind::Transition,
-                                    &it.path,
-                                    format!(
-                                        "transition of {dur:.3}s exceeds half the adjacent clips; \
-                                         shortened to {max:.3}s"
-                                    ),
-                                );
-                                dur = max;
-                            }
-                            c.outgoing_transition = (dur > EPS).then_some(ClipTransition {
-                                kind: tr.kind,
-                                duration_secs: dur,
-                            });
-                        }
-                        (Some(_), None) => {
-                            c.outgoing_transition = None;
-                            self.warn(
-                                WarningKind::Transition,
-                                &it.path,
-                                "transition is not between two adjacent video clips; dropped",
-                            );
-                        }
-                        (None, Some(_)) => c.outgoing_transition = None,
-                        (None, None) => {}
+                    if let Some(tr) = self.resolve_transition(it, adjacent_next) {
+                        c.outgoing_transition = tr;
                     }
                     clips.push(if kind == TrackKind::Audio {
                         c.outgoing_transition = None;
@@ -1391,28 +1497,86 @@ impl Importer<'_> {
         clips
     }
 
+    /// What the OTIO transition next to `it` makes of its clip's `outgoing_transition`:
+    /// `Some(value)` to set (`None` clears), or `None` to keep the stored one.
+    fn resolve_transition(
+        &mut self,
+        it: &Item,
+        adjacent_next: Option<&Item>,
+    ) -> Option<Option<ClipTransition>> {
+        match (&it.transition, adjacent_next) {
+            (Some(tr), Some(next)) => {
+                let max = it.dur.min(next.dur) / 2;
+                let mut dur = tr.total;
+                if let Some(s) = &tr.snap {
+                    if ((s.duration_us - dur).abs() as f64) * self.fps.as_f64() / 1e6 <= 0.5 + 1e-6
+                    {
+                        dur = s.duration_us;
+                    }
+                }
+                if dur > max + EPS {
+                    self.warn(
+                        WarningKind::Transition,
+                        &it.path,
+                        format!(
+                            "transition of {dur:.3}s exceeds half the adjacent clips; \
+                             shortened to {max:.3}s"
+                        ),
+                    );
+                    dur = max;
+                }
+                Some((dur > EPS).then(|| {
+                    ClipTransition {
+                        duration_us: dur,
+                        ..tr.snap
+                            .clone()
+                            .unwrap_or_else(|| ClipTransition::new(tr.item_ref.clone(), dur))
+                    }
+                }))
+            }
+            (Some(_), None) => {
+                self.warn(
+                    WarningKind::Transition,
+                    &it.path,
+                    "transition is not between two adjacent video clips; dropped",
+                );
+                Some(None)
+            }
+            (None, Some(_)) => Some(None),
+            (None, None) => None,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn media_clip(
         &mut self,
         it: &Item,
         media_id: Id,
-        src_in: f64,
+        src_in: i64,
         speed: f64,
         enabled: bool,
         snap: &Option<Box<MediaClip>>,
-        effects: &[EffectInstance],
+        effects: &[(String, EffectInstance)],
     ) -> MediaClip {
         let mut c = match snap {
             Some(s) => (**s).clone(),
-            None => MediaClip {
-                effects: effects.to_vec(),
-                ..MediaClip::default()
-            },
+            None => {
+                let mut c = MediaClip::default();
+                for (slot, e) in effects {
+                    match slot.as_str() {
+                        "filter" if c.filter.is_none() => c.filter = Some(e.clone()),
+                        "key" if c.key.is_none() => c.key = Some(e.clone()),
+                        "adjust" if c.adjust.is_none() => c.adjust = Some(e.clone()),
+                        _ => c.effects.push(e.clone()),
+                    }
+                }
+                c
+            }
         };
         c.id = self.unique_clip_id(snap.as_ref().map(|s| s.id));
         c.media_id = media_id;
         c.enabled = enabled;
-        let src_out = src_in + it.dur * speed;
+        let src_out = src_in + ((it.dur as f64) * speed).round() as i64;
 
         let mut keep_speed_keys = true;
         c.speed = match snap {
@@ -1422,9 +1586,9 @@ impl Importer<'_> {
                     .iter()
                     .any(|k| k.property == AnimProperty::Speed && !k.keys.is_empty());
                 if keyed {
-                    let tl = s.timeline_duration_secs();
-                    let avg = if tl > 0.0 {
-                        (s.source_out_secs - s.source_in_secs) / tl
+                    let tl = s.timeline_duration_us();
+                    let avg = if tl > 0 {
+                        (s.source_out_us - s.source_in_us) as f64 / tl as f64
                     } else {
                         1.0
                     };
@@ -1450,15 +1614,11 @@ impl Importer<'_> {
                 "speed keyframes dropped: the time warp was changed outside Renderly",
             );
         }
-        c.position_secs = self.pick(it.start, snap.as_ref().map(|s| s.position_secs), 0.5);
-        c.source_in_secs = self.pick(src_in, snap.as_ref().map(|s| s.source_in_secs), 0.5);
-        c.source_out_secs = self.pick(
-            src_out,
-            snap.as_ref().map(|s| s.source_out_secs),
-            1.5 + speed,
-        );
-        if c.source_out_secs <= c.source_in_secs {
-            c.source_out_secs = src_out.max(c.source_in_secs + EPS);
+        c.start_us = self.pick(it.start, snap.as_ref().map(|s| s.start_us), 0.5);
+        c.source_in_us = self.pick(src_in, snap.as_ref().map(|s| s.source_in_us), 0.5);
+        c.source_out_us = self.pick(src_out, snap.as_ref().map(|s| s.source_out_us), 1.5 + speed);
+        if c.source_out_us <= c.source_in_us {
+            c.source_out_us = src_out.max(c.source_in_us + 1);
         }
         c
     }
@@ -1496,16 +1656,16 @@ fn active_reference(v: &Value) -> Option<&Value> {
 }
 
 /// Duration of an item that has no `source_range`.
-fn composition_duration(v: &Value) -> f64 {
+fn composition_duration(v: &Value) -> i64 {
     let children = || {
         v.get("children")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
     };
-    let item_dur = |c: &Value| -> f64 {
+    let item_dur = |c: &Value| -> i64 {
         if schema_name(c) == Some("Transition") {
-            0.0
+            0
         } else if let Some(r) = c.get("source_range").and_then(read_range) {
             r.dur
         } else {
@@ -1513,14 +1673,14 @@ fn composition_duration(v: &Value) -> f64 {
                 Some("Clip") => active_reference(c)
                     .and_then(|r| r.get("available_range"))
                     .and_then(read_range)
-                    .map_or(0.0, |a| a.dur),
+                    .map_or(0, |a| a.dur),
                 Some("Track" | "Sequence" | "Stack") => composition_duration(c),
-                _ => 0.0,
+                _ => 0,
             }
         }
     };
     match schema_name(v) {
-        Some("Stack") => children().map(item_dur).fold(0.0, f64::max),
+        Some("Stack") => children().map(item_dur).fold(0, i64::max),
         _ => children().map(item_dur).sum(),
     }
 }
@@ -1545,7 +1705,7 @@ fn kind_for(path: &str, track: TrackKind) -> Option<MediaKind> {
 }
 
 /// Keep the part of `items` inside `[from, to)` and move it so `from` becomes 0.
-fn trim_items(items: &[Item], from: f64, to: f64) -> Vec<Item> {
+fn trim_items(items: &[Item], from: i64, to: i64) -> Vec<Item> {
     let mut out = Vec::with_capacity(items.len());
     for src in items {
         let mut it = src.clone();
@@ -1559,14 +1719,14 @@ fn trim_items(items: &[Item], from: f64, to: f64) -> Vec<Item> {
         let delta = na - a;
         if delta > EPS {
             if let Body::Clip { src_in, speed, .. } = &mut it.body {
-                *src_in = clean(*src_in + delta * *speed);
+                *src_in += ((delta as f64) * *speed).round() as i64;
             }
         }
         if nb < b - EPS {
             it.transition = None;
         }
-        it.start = clean(na - from);
-        it.dur = clean(nb - na);
+        it.start = na - from;
+        it.dur = nb - na;
         out.push(it);
     }
     out
@@ -1607,13 +1767,13 @@ mod tests {
 
     #[test]
     fn trim_cuts_head_and_tail() {
-        let mk = |start: f64, dur: f64| Item {
+        let mk = |start: i64, dur: i64| Item {
             start,
             dur,
             end_raw: start + dur,
             body: Body::Clip {
                 media_id: Id::new_v4(),
-                src_in: 0.0,
+                src_in: 0,
                 speed: 2.0,
                 enabled: true,
                 snap: None,
@@ -1622,19 +1782,23 @@ mod tests {
             transition: None,
             path: String::new(),
         };
-        let out = trim_items(&[mk(0.0, 4.0), mk(4.0, 4.0), mk(8.0, 4.0)], 2.0, 9.0);
+        let out = trim_items(
+            &[mk(0, 4000000), mk(4000000, 4000000), mk(8000000, 4000000)],
+            2000000,
+            9000000,
+        );
         assert_eq!(out.len(), 3);
-        assert_eq!((out[0].start, out[0].dur), (0.0, 2.0));
-        assert_eq!((out[1].start, out[1].dur), (2.0, 4.0));
-        assert_eq!((out[2].start, out[2].dur), (6.0, 1.0));
+        assert_eq!((out[0].start, out[0].dur), (0, 2000000));
+        assert_eq!((out[1].start, out[1].dur), (2000000, 4000000));
+        assert_eq!((out[2].start, out[2].dur), (6000000, 1000000));
         // The head was cut by 2s of timeline = 4s of source at 2x.
         match &out[0].body {
-            Body::Clip { src_in, .. } => assert_eq!(*src_in, 4.0),
+            Body::Clip { src_in, .. } => assert_eq!(*src_in, 4000000),
             _ => unreachable!(),
         }
         // A negative start shifts everything later.
-        let shifted = trim_items(&[mk(0.0, 4.0)], -3.0, 5.0);
-        assert_eq!((shifted[0].start, shifted[0].dur), (3.0, 4.0));
+        let shifted = trim_items(&[mk(0, 4000000)], -3000000, 5000000);
+        assert_eq!((shifted[0].start, shifted[0].dur), (3000000, 4000000));
     }
 
     #[test]

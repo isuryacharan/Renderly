@@ -7,13 +7,13 @@ function clip(id: string, position: number, duration: number): MediaClip {
     type: "video",
     id,
     media_id: "m1",
-    position_secs: position,
-    source_in_secs: 0,
-    source_out_secs: duration,
+    start_us: position * 1_000_000,
+    source_in_us: 0,
+    source_out_us: duration * 1_000_000,
     gain_db: 0,
     enabled: true,
-    fade_in_secs: 0,
-    fade_out_secs: 0,
+    fade_in_us: 0,
+    fade_out_us: 0,
   } as MediaClip;
 }
 

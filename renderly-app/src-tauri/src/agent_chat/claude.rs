@@ -65,7 +65,14 @@ use std::sync::Arc;
 pub const PERMISSION_PROMPT_TOOL: &str = "mcp__renderly__permission_prompt";
 
 /// Renderly's tools: pre-allowed, so they never prompt. They run in-process in the app.
-pub const PRE_ALLOWED_TOOLS: &[&str] = &["edit", "timeline", "look", "find_media", "assets"];
+pub const PRE_ALLOWED_TOOLS: &[&str] = &[
+    "edit",
+    "timeline",
+    "look",
+    "find_media",
+    "assets",
+    "transcript",
+];
 
 /// Claude Code's read-only built-ins. Always available and never prompt.
 pub const READ_ONLY_BUILTINS: &[&str] = &["Read", "Grep", "Glob"];

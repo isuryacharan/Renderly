@@ -5,6 +5,10 @@ use renderly_core::otio::{import_otio, ImportOptions, OtioError, OtioWarning, Wa
 use renderly_core::project::*;
 use serde_json::{json, Value};
 
+fn us(v: i64) -> f64 {
+    v as f64 / 1e6
+}
+
 fn fixture(name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/otio")
@@ -23,7 +27,7 @@ fn media_clips(t: &Track) -> Vec<&MediaClip> {
 }
 
 fn near(a: f64, b: f64) {
-    assert!((a - b).abs() < 1e-9, "{a} != {b}");
+    assert!((a - b).abs() < 2e-6, "{a} != {b}");
 }
 
 fn count(w: &[OtioWarning], kind: WarningKind) -> usize {
@@ -35,7 +39,7 @@ fn simple_cut_clip_order_positions_and_source_ranges() {
     let (p, w) = import("simple_cut");
     assert!(w.is_empty(), "{w:?}");
     assert_eq!(p.name, "Figure 1 - Simple Cut List");
-    assert_eq!(p.settings.fps, 24.0);
+    assert_eq!(p.settings.fps.as_f64(), 24.0);
     assert_eq!((p.settings.width, p.settings.height), (1920, 1080));
     assert_eq!(p.tracks.len(), 1);
     let t = &p.tracks[0];
@@ -45,9 +49,9 @@ fn simple_cut_clip_order_positions_and_source_ranges() {
     // (position, source_in, source_out) in frames @24: clip lengths 3, 6, 4, 6.
     let expect = [(0, 3, 6), (3, 2, 8), (9, 0, 4), (13, 0, 6)];
     for (c, (pos, a, b)) in clips.iter().zip(expect) {
-        near(c.position_secs, pos as f64 / 24.0);
-        near(c.source_in_secs, a as f64 / 24.0);
-        near(c.source_out_secs, b as f64 / 24.0);
+        near(us(c.start_us), pos as f64 / 24.0);
+        near(us(c.source_in_us), a as f64 / 24.0);
+        near(us(c.source_out_us), b as f64 / 24.0);
         assert_eq!(c.speed, 1.0);
     }
     // Four distinct files; paths come from the file URLs; durations from available ranges.
@@ -72,19 +76,19 @@ fn simple_cut_clip_order_positions_and_source_ranges() {
         ]
     );
     near(
-        p.find_media(clips[0].media_id)
+        us(p.find_media(clips[0].media_id)
             .unwrap()
-            .duration_secs
-            .unwrap(),
+            .duration_us
+            .unwrap()),
         8.0 / 24.0,
     );
     // The last clip has no source_range: it exposes the whole available range, whose start
     // (frame 100) is a timecode offset, so the file-relative source starts at 0.
     near(
-        p.find_media(clips[3].media_id)
+        us(p.find_media(clips[3].media_id)
             .unwrap()
-            .duration_secs
-            .unwrap(),
+            .duration_us
+            .unwrap()),
         6.0 / 24.0,
     );
 }
@@ -99,10 +103,10 @@ fn transition_sample_becomes_a_crossfade_between_adjacent_clips() {
         .outgoing_transition
         .as_ref()
         .expect("transition after clip 2");
-    assert_eq!(tr.kind, TransitionKind::Crossfade);
+    assert_eq!(tr.item_ref, "builtin:crossfade@1");
     // in_offset 2 + out_offset 3 frames = 5 frames, shortened to half of the 4-frame clip
     // that follows (Renderly's rule), with a warning saying so.
-    near(tr.duration_secs, 2.0 / 24.0);
+    near(us(tr.duration_us), 2.0 / 24.0);
     assert_eq!(count(&w, WarningKind::Transition), 1);
     assert!(clips[2].outgoing_transition.is_none() && clips[3].outgoing_transition.is_none());
 }
@@ -129,9 +133,9 @@ fn nested_stacks_and_tracks_become_sequences_with_time_warps() {
     let clips = media_clips(t);
     assert_eq!(clips.len(), 3, "the four MissingReference clips are gaps");
     // Positions: 238, +31+33 = 302, +29+63 = 394 frames @24 (gaps keep later items in place).
-    near(clips[0].position_secs, 238.0 / 24.0);
-    near(clips[1].position_secs, 302.0 / 24.0);
-    near(clips[2].position_secs, 394.0 / 24.0);
+    near(us(clips[0].start_us), 238.0 / 24.0);
+    near(us(clips[1].start_us), 302.0 / 24.0);
+    near(us(clips[2].start_us), 394.0 / 24.0);
     // Each clip places a sequence through its media item.
     let names: Vec<&str> = clips
         .iter()
@@ -148,11 +152,11 @@ fn nested_stacks_and_tracks_become_sequences_with_time_warps() {
             "Nested Track"
         ]
     );
-    near(clips[0].timeline_duration_secs(), 31.0 / 24.0);
+    near(us(clips[0].timeline_duration_us()), 31.0 / 24.0);
     // LinearTimeWarp 0.8545...: speed on the nested clip; the stack's source range is in
     // timeline time, so the inner span read is duration * speed.
     near(clips[1].speed, 0.8545454551724138);
-    near(clips[1].timeline_duration_secs(), 29.0 / 24.0);
+    near(us(clips[1].timeline_duration_us()), 29.0 / 24.0);
     // FreezeFrame is not representable.
     assert_eq!(count(&w, WarningKind::TimeWarp), 1);
     assert_eq!(count(&w, WarningKind::MissingMedia), 7);
@@ -165,7 +169,7 @@ fn nested_stacks_and_tracks_become_sequences_with_time_warps() {
 fn premiere_export_mixed_rates_nested_stacks_audio_and_urls() {
     let (p, w) = import("premiere_example");
     // Mostly 30 fps (56 of 58 ranges); the two 15 fps ranges are converted with their own rate.
-    assert_eq!(p.settings.fps, 30.0);
+    assert_eq!(p.settings.fps.as_f64(), 30.0);
     assert_eq!(count(&w, WarningKind::Rate), 1);
     assert_eq!(p.tracks.len(), 8);
     let kinds: Vec<_> = p.tracks.iter().map(|t| t.kind).collect();
@@ -180,26 +184,26 @@ fn premiere_export_mixed_rates_nested_stacks_audio_and_urls() {
     // V1: a 536-frame gap, then a 50-frame clip authored at 15 fps = 100 frames @30 = 3.333 s.
     let v1 = media_clips(&p.tracks[0]);
     assert_eq!(v1.len(), 1);
-    near(v1[0].position_secs, 536.0 / 30.0);
-    near(v1[0].timeline_duration_secs(), 50.0 / 15.0);
-    near(v1[0].source_in_secs, 0.0);
+    near(us(v1[0].start_us), 536.0 / 30.0);
+    near(us(v1[0].timeline_duration_us()), 50.0 / 15.0);
+    near(us(v1[0].source_in_us), 0.0);
     // `file://localhost/D%3a/media/...` is a Windows path.
     let m = p.find_media(v1[0].media_id).unwrap();
     assert_eq!(m.path.to_string_lossy(), "D:/media/sc01_sh010_anim.mov");
     assert_eq!(m.kind, MediaKind::Video);
-    near(m.duration_secs.unwrap(), 100.0 / 30.0);
+    near(us(m.duration_us.unwrap()), 100.0 / 30.0);
 
     // V2: gap 13, clip 100, gap 52, clip 157, clip 235, [transition] gap 79, nested stack 320.
     let v2 = media_clips(&p.tracks[1]);
     assert_eq!(v2.len(), 4);
-    near(v2[0].position_secs, 13.0 / 30.0);
-    near(v2[1].position_secs, (13.0 + 100.0 + 52.0) / 30.0);
-    near(v2[2].position_secs, (13.0 + 100.0 + 52.0 + 157.0) / 30.0);
+    near(us(v2[0].start_us), 13.0 / 30.0);
+    near(us(v2[1].start_us), (13.0 + 100.0 + 52.0) / 30.0);
+    near(us(v2[2].start_us), (13.0 + 100.0 + 52.0 + 157.0) / 30.0);
     near(
-        v2[3].position_secs,
+        us(v2[3].start_us),
         (13.0 + 100.0 + 52.0 + 157.0 + 235.0 + 79.0) / 30.0,
     );
-    near(v2[3].timeline_duration_secs(), 320.0 / 30.0);
+    near(us(v2[3].timeline_duration_us()), 320.0 / 30.0);
     // The dissolve after clip 235 is followed by a gap, so it cannot be kept.
     assert!(v2.iter().all(|c| c.outgoing_transition.is_none()));
     assert!(w
@@ -220,10 +224,10 @@ fn premiere_export_mixed_rates_nested_stacks_audio_and_urls() {
     let v4 = media_clips(&p.tracks[3]);
     assert_eq!(v4.len(), 2);
     let tr = v4[0].outgoing_transition.as_ref().unwrap();
-    assert_eq!(tr.kind, TransitionKind::Crossfade);
-    near(tr.duration_secs, 25.0 / 30.0);
+    assert_eq!(tr.item_ref, "builtin:crossfade@1");
+    near(us(tr.duration_us), 25.0 / 30.0);
     // The clip after the transition starts at its source_range start (18 frames @30).
-    near(v4[1].source_in_secs, 18.0 / 30.0);
+    near(us(v4[1].source_in_us), 18.0 / 30.0);
 
     // Audio tracks: clips reference audio media even when the file is a movie.
     let a1 = media_clips(&p.tracks[4]);
@@ -283,11 +287,11 @@ fn a_tracks_own_source_range_trims_its_content() {
     let (p, w) = import_otio(&json, &ImportOptions::default()).unwrap();
     let clips = media_clips(&p.tracks[0]);
     assert_eq!(clips.len(), 9);
-    near(clips[0].position_secs, 0.0);
-    near(clips[0].timeline_duration_secs(), 31.0 / 24.0);
-    near(clips[1].position_secs, 31.0 / 24.0);
+    near(us(clips[0].start_us), 0.0);
+    near(us(clips[0].timeline_duration_us()), 31.0 / 24.0);
+    near(us(clips[1].start_us), 31.0 / 24.0);
     // No available_range: source times are used as written.
-    near(clips[0].source_in_secs, 86501.0 / 24.0);
+    near(us(clips[0].source_in_us), 86501.0 / 24.0);
     // All nine clips share one file.
     assert_eq!(p.media.len(), 1);
     assert_eq!(p.media[0].path.to_string_lossy(), "/m/x y.mov");
@@ -305,14 +309,14 @@ fn a_tracks_own_source_range_trims_its_content() {
     let (p, _) = import_otio(&json, &ImportOptions::default()).unwrap();
     let clips = media_clips(&p.tracks[0]);
     // Clip 0 (0..31) and clip 1 (31..81) are cut: clip 1 keeps frames 40..81 of the track.
-    near(clips[0].position_secs, 0.0);
-    near(clips[0].timeline_duration_secs(), 41.0 / 24.0);
-    near(clips[0].source_in_secs, (86557.0 + 9.0) / 24.0);
-    let end: f64 = clips
+    near(us(clips[0].start_us), 0.0);
+    near(us(clips[0].timeline_duration_us()), 41.0 / 24.0);
+    near(us(clips[0].source_in_us), (86557.0 + 9.0) / 24.0);
+    let end: i64 = clips
         .iter()
-        .map(|c| c.position_secs + c.timeline_duration_secs())
-        .fold(0.0, f64::max);
-    near(end, 100.0 / 24.0);
+        .map(|c| c.start_us + c.timeline_duration_us())
+        .fold(0_i64, i64::max);
+    near(us(end), 100.0 / 24.0);
 }
 
 #[test]
@@ -341,9 +345,9 @@ fn clip_1_and_clip_2_media_reference_forms_both_work() {
         .iter()
         .zip(media_clips(&p2.tracks[0]))
     {
-        near(a.position_secs, b.position_secs);
-        near(a.source_in_secs, b.source_in_secs);
-        near(a.source_out_secs, b.source_out_secs);
+        near(us(a.start_us), us(b.start_us));
+        near(us(a.source_in_us), us(b.source_in_us));
+        near(us(a.source_out_us), us(b.source_out_us));
     }
 }
 
@@ -372,7 +376,7 @@ fn unknown_schemas_and_fields_are_tolerated() {
     // imports; every oddity is a warning, none an error.
     let clips = media_clips(&p.tracks[0]);
     assert_eq!(clips.len(), 3);
-    near(clips[0].position_secs, 3.0 / 24.0);
+    near(us(clips[0].start_us), 3.0 / 24.0);
     assert!(count(&w, WarningKind::UnknownSchema) >= 2);
     assert!(count(&w, WarningKind::UnsupportedEffect) >= 1);
 }
@@ -406,7 +410,7 @@ fn collections_other_roots_nonfinite_numbers_and_non_file_urls() {
         ..Default::default()
     };
     let (p, w) = import_otio(track, &options).unwrap();
-    assert_eq!(p.settings.fps, 25.0);
+    assert_eq!(p.settings.fps.as_f64(), 25.0);
     assert_eq!(p.tracks[0].kind, TrackKind::Audio);
     let clips = media_clips(&p.tracks[0]);
     assert_eq!(clips.len(), 1);
@@ -445,13 +449,13 @@ fn options_override_dimensions_rate_and_name() {
     };
     let (p, _) = import_otio(&fixture("simple_cut"), &options).unwrap();
     assert_eq!(p.name, "Mine");
-    assert_eq!(p.settings.fps, 25.0);
+    assert_eq!(p.settings.fps.as_f64(), 25.0);
     assert_eq!(
         (p.settings.width, p.settings.height, p.settings.sample_rate),
         (1080, 1920, 44_100)
     );
     // Positions still come from each value's own rate, not the project rate.
-    near(media_clips(&p.tracks[0])[1].position_secs, 3.0 / 24.0);
+    near(us(media_clips(&p.tracks[0])[1].start_us), 3.0 / 24.0);
 }
 
 #[test]

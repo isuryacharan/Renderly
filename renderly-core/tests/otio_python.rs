@@ -134,10 +134,11 @@ fn the_real_library_loads_our_export_and_agrees_on_structure() {
             }
         );
         // The library's track duration is the end of the last clip, in whole frames.
-        let end = t.clips.iter().map(Clip::end_secs).fold(0.0, f64::max);
-        let want = (end * fps + 0.5).floor() / fps;
+        let end = t.clips.iter().map(Clip::end_us).fold(0_i64, i64::max);
+        let fps_f = fps.as_f64();
+        let want = ((end as f64 / 1e6) * fps_f + 0.5).floor() / fps_f;
         assert!(
-            (got["duration"].as_f64().unwrap() - want).abs() < 1.5 / fps,
+            (got["duration"].as_f64().unwrap() - want).abs() < 1.5 / fps_f,
             "track {}: {} vs {}",
             t.name,
             got["duration"],
@@ -161,9 +162,9 @@ fn the_real_library_loads_our_export_and_agrees_on_structure() {
         .tracks
         .iter()
         .flat_map(|t| t.clips.iter())
-        .map(Clip::end_secs)
-        .fold(0.0, f64::max);
-    assert!((summary["duration"].as_f64().unwrap() - end).abs() < 2.0 / fps);
+        .map(Clip::end_us)
+        .fold(0_i64, i64::max);
+    assert!((summary["duration"].as_f64().unwrap() - end as f64 / 1e6).abs() < 2.0 / fps.as_f64());
 }
 
 #[test]
@@ -211,7 +212,7 @@ fn files_authored_by_the_real_library_import() {
     )
     .unwrap();
     p.validate().unwrap();
-    assert_eq!(p.settings.fps, 24.0);
+    assert_eq!(p.settings.fps.as_f64(), 24.0);
     assert_eq!(p.tracks.len(), 1);
     let clips: Vec<&MediaClip> = p.tracks[0]
         .clips
@@ -224,10 +225,11 @@ fn files_authored_by_the_real_library_import() {
         "a, b, c and the nested stack; warnings: {w:?}"
     );
     let near = |a: f64, b: f64| assert!((a - b).abs() < 1e-9, "{a} != {b}");
-    near(clips[0].source_in_secs, 1.0);
-    near(clips[0].timeline_duration_secs(), 2.0);
-    near(clips[1].position_secs, 2.5);
-    near(clips[1].timeline_duration_secs(), 3.0);
+    let us = |v: i64| v as f64 / 1e6;
+    near(us(clips[0].source_in_us), 1.0);
+    near(us(clips[0].timeline_duration_us()), 2.0);
+    near(us(clips[1].start_us), 2.5);
+    near(us(clips[1].timeline_duration_us()), 3.0);
     assert_eq!(
         p.find_media(clips[1].media_id)
             .unwrap()
@@ -237,9 +239,9 @@ fn files_authored_by_the_real_library_import() {
     );
     // Dissolve of 6 + 6 frames = 0.5 s between b and c (shortened if it exceeds half a clip).
     let tr = clips[1].outgoing_transition.as_ref().expect("dissolve");
-    near(tr.duration_secs, 0.5);
-    near(clips[2].position_secs, 5.5);
-    near(clips[3].position_secs, 7.5);
+    near(us(tr.duration_us), 0.5);
+    near(us(clips[2].start_us), 5.5);
+    near(us(clips[3].start_us), 7.5);
     assert_eq!(p.sequences.len(), 1);
     assert_eq!(p.sequences[0].name, "inner");
 }

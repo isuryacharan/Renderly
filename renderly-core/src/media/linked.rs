@@ -70,7 +70,7 @@ pub fn probe_video(path: &Path) -> Result<ProbedVideo, LinkedError> {
     // AV_NOPTS_VALUE is i64::MIN, so `> 0` also rejects "unknown".
     let stream_ticks = stream.duration();
     let time_base = stream.time_base();
-    let duration_secs = if stream_ticks > 0 && time_base.denominator() != 0 {
+    let duration_s = if stream_ticks > 0 && time_base.denominator() != 0 {
         stream_ticks as f64 * time_base.numerator() as f64 / time_base.denominator() as f64
     } else {
         // Container duration is in AV_TIME_BASE (1 / 1_000_000 s) units.
@@ -86,7 +86,7 @@ pub fn probe_video(path: &Path) -> Result<ProbedVideo, LinkedError> {
         width,
         height,
         fps,
-        duration_secs,
+        duration_us: crate::time::seconds_to_us(duration_s),
     })
 }
 
@@ -176,10 +176,10 @@ mod tests {
             cli.fps
         );
         assert!(
-            (linked.duration_secs - cli.duration_secs).abs() < 0.05,
+            (linked.duration_us - cli.duration_us).abs() < 50_000,
             "duration: linked {} vs cli {}",
-            linked.duration_secs,
-            cli.duration_secs
+            linked.duration_us,
+            cli.duration_us
         );
 
         assert_eq!(

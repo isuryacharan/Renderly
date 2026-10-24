@@ -2,6 +2,8 @@ import {
   MousePointer2,
   Scissors,
   Magnet,
+  AlignCenterVertical,
+  Flag,
   ZoomIn,
   ZoomOut,
   Maximize,
@@ -9,6 +11,8 @@ import {
   CircleDashed,
 } from "lucide-react";
 import { useEditorStore } from "../../store/editorStore";
+import { activeTracks } from "../../lib/container";
+import { magnetTargetTrack } from "../../lib/text";
 import { getAction, invokeAction } from "../../lib/actions";
 import { IconButton } from "../ui/IconButton";
 import { Tooltip } from "../ui/Tooltip";
@@ -28,6 +32,11 @@ export function TimelineToolbar() {
   const fitZoom = useEditorStore((s) => s.fitZoom);
   const toast = useEditorStore((s) => s.toast);
   const project = useEditorStore((s) => s.project);
+  const activeSequenceId = useEditorStore((s) => s.activeSequenceId);
+  const selectedTrackId = useEditorStore((s) => s.selection?.trackId);
+  // The magnet acts on the selected video track, else the first one (Decision 1).
+  const magnetTrack = magnetTargetTrack(activeTracks(project, activeSequenceId), selectedTrackId);
+  const magnetOn = magnetTrack?.magnetic === true;
 
   return (
     <div className="timeline-tools">
@@ -53,7 +62,7 @@ export function TimelineToolbar() {
             <Scissors size={15} strokeWidth={1.75} />
           </button>
         </Tooltip>
-        <Tooltip content={tip("tool.mask", "Mask (M)")}>
+        <Tooltip content={tip("tool.mask", "Mask (Shift+M)")}>
           <button
             type="button"
             className={`tool-btn icon-only${toolMode === "mask" ? " active" : ""}`}
@@ -76,13 +85,46 @@ export function TimelineToolbar() {
         onClick={() => invokeAction("edit.split")}
       />
 
-      <Tooltip content="Snap to grid and clip edges">
+      <Tooltip
+        content={
+          magnetTrack
+            ? `Magnetic track: ${magnetTrack.name} ${magnetOn ? "(on)" : "(off)"} - clips close up when you edit`
+            : "Magnetic track (add a video track first)"
+        }
+      >
+        <button
+          type="button"
+          className={`tool-btn icon-only${magnetOn ? " active" : ""}`}
+          aria-pressed={magnetOn}
+          aria-label="Magnetic track"
+          disabled={!magnetTrack}
+          onClick={() => invokeAction("timeline.toggle-magnet")}
+        >
+          <Magnet size={15} strokeWidth={1.75} />
+        </button>
+      </Tooltip>
+
+      <Tooltip content="Snap to clip edges, markers and the playhead">
         <button
           type="button"
           className={`tool-btn icon-only${snapEnabled ? " active" : ""}`}
+          aria-pressed={snapEnabled}
+          aria-label="Snapping"
           onClick={() => setSnap(!snapEnabled)}
         >
-          <Magnet size={15} strokeWidth={1.75} />
+          <AlignCenterVertical size={15} strokeWidth={1.75} />
+        </button>
+      </Tooltip>
+
+      <Tooltip content={tip("timeline.add-marker", "Add marker (M)")}>
+        <button
+          type="button"
+          className="tool-btn icon-only"
+          aria-label="Add marker"
+          disabled={!project || activeSequenceId != null}
+          onClick={() => invokeAction("timeline.add-marker")}
+        >
+          <Flag size={15} strokeWidth={1.75} />
         </button>
       </Tooltip>
 

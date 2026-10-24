@@ -3,21 +3,25 @@ import { Music, Sparkles, Sticker } from "lucide-react";
 import { addSfxFromPack, addStickerFromPack, addTrack, generateSticker } from "../../lib/commands";
 import * as ipc from "../../lib/ipc";
 import type { ExtensionCatalog } from "../../lib/ipc";
-import { clipDurationSecs, type Track, type TrackKind } from "../../lib/types";
+import { clipDurationUs, type Track, type TrackKind } from "../../lib/types";
+import { normalizeFps, snapToFrameUs } from "../../lib/time";
 import { activeTracks } from "../../lib/container";
 import { useEditorStore } from "../../store/editorStore";
 
-const DEFAULT_STICKER_SECS = 3;
+/// Default sticker length (µs) when the pack does not say.
+const DEFAULT_STICKER_US = 3_000_000;
 
 function rangeOverlaps(track: Track, position: number, duration: number): boolean {
   return track.clips.some(
-    (c) => position < c.position_secs + clipDurationSecs(c) && c.position_secs < position + duration,
+    (c) => position < c.start_us + clipDurationUs(c) && c.start_us < position + duration,
   );
 }
 
 export function StickersPanel() {
   const project = useEditorStore((s) => s.project);
-  const playhead = useEditorStore((s) => s.playhead);
+  const rawPlayhead = useEditorStore((s) => s.playhead);
+  // Overlays land on a frame boundary of the project rate.
+  const playhead = snapToFrameUs(normalizeFps(project?.settings.fps), rawPlayhead);
   const dispatch = useEditorStore((s) => s.dispatch);
   const toast = useEditorStore((s) => s.toast);
   const [catalog, setCatalog] = useState<ExtensionCatalog | null>(null);
@@ -30,7 +34,7 @@ export function StickersPanel() {
       return;
     }
     void ipc.listExtensions().then(setCatalog).catch(() => setCatalog(null));
-  }, [project, project?.asset_pack_paths?.join("|")]);
+  }, [project, project?.legacy_pack_paths?.join("|")]);
 
   const stickers =
     catalog?.packs.flatMap((p) => p.stickers.map((s) => ({ ...s, pack_id: p.id }))) ?? [];
@@ -77,8 +81,8 @@ export function StickersPanel() {
     return created;
   }
 
-  async function placeSticker(packId: string, stickerId: string, durationSecs: number) {
-    const dur = Math.max(0.1, durationSecs || DEFAULT_STICKER_SECS);
+  async function placeSticker(packId: string, stickerId: string, durationUs: number) {
+    const dur = Math.max(100_000, durationUs || DEFAULT_STICKER_US);
     const track = await resolveOverlayTrack("video", "Stickers", playhead, dur);
     if (!track) return;
     await dispatch(addStickerFromPack(packId, stickerId, track.id, playhead));
@@ -88,7 +92,7 @@ export function StickersPanel() {
     // Real duration is probed in-core; use a short probe window so we still prefer a
     // free overlay track at the playhead. Worst case the command rejects and the user
     // retries — but with a dedicated SFX track this almost never happens.
-    const track = await resolveOverlayTrack("audio", "SFX", playhead, 0.25);
+    const track = await resolveOverlayTrack("audio", "SFX", playhead, 250_000);
     if (!track) return;
     await dispatch(addSfxFromPack(packId, sfxId, track.id, playhead));
   }
@@ -97,7 +101,7 @@ export function StickersPanel() {
     if (!stickerPrompt.trim() || !project) return;
     setGenBusy(true);
     try {
-      const track = await resolveOverlayTrack("video", "Stickers", playhead, DEFAULT_STICKER_SECS);
+      const track = await resolveOverlayTrack("video", "Stickers", playhead, DEFAULT_STICKER_US);
       if (!track) return;
       const outputPath = `${project.name.replace(/[^\w-]+/g, "_")}-sticker-${Date.now()}.png`;
       toast("Generating sticker…", "info");
@@ -158,7 +162,7 @@ export function StickersPanel() {
               key={`${s.pack_id}:${s.id}`}
               type="button"
               onClick={() =>
-                void placeSticker(s.pack_id, s.id, s.default_duration_secs ?? DEFAULT_STICKER_SECS)
+                void placeSticker(s.pack_id, s.id, s.default_duration_us ?? DEFAULT_STICKER_US)
               }
             >
               <Sticker size={14} strokeWidth={1.75} />

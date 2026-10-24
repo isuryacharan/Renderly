@@ -16,6 +16,10 @@ struct MixParams {
     invert: f32,
     mode: u32,   // 0=rect, 1=ellipse, 2=raster, 3=none
     opacity: f32,
+    blend: u32,  // BlendMode::shader_index; 0 = normal
+    pad0: u32,
+    pad1: u32,
+    pad2: u32,
 };
 
 @group(0) @binding(0) var base_tex: texture_2d<f32>;
@@ -90,7 +94,16 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         mask_a = 1.0 - mask_a;
     }
 
+    var adjusted_mixed = adjusted;
+    if (params.blend != 0u) {
+        // The adjusted picture is the "source" blended over the unadjusted one (both whole
+        // canvas); the result is converted back to straight alpha for the mix below.
+        let backdrop = vec4<f32>(base.rgb * base.a, base.a);
+        let blended = blend_over(params.blend, backdrop, adjusted.rgb, adjusted.a);
+        let inv = select(0.0, 1.0 / max(blended.a, 1e-6), blended.a > 0.0);
+        adjusted_mixed = vec4<f32>(clamp(blended.rgb * inv, vec3<f32>(0.0), vec3<f32>(1.0)), blended.a);
+    }
     let k = clamp(params.opacity, 0.0, 1.0) * mask_a;
-    let m = mix(base, adjusted, k);
+    let m = mix(base, adjusted_mixed, k);
     return vec4<f32>(m.rgb * m.a, m.a);
 }

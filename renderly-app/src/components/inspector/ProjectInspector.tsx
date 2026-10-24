@@ -3,8 +3,14 @@ import { Settings2 } from "lucide-react";
 import { useEditorStore } from "../../store/editorStore";
 import { setProjectSettings } from "../../lib/commands";
 import { ASPECT_PRESETS } from "../../lib/types";
+import { fpsToNumber, type Fps } from "../../lib/time";
 import { MenuSelect } from "../ui/MenuSelect";
 import { MulticamSection } from "./MulticamSection";
+
+/// The rate as an editable number (29.97 for 30000/1001); the engine snaps it back to a rational.
+function fpsDisplayValue(fps: Fps): number {
+  return Number(fpsToNumber(fps).toFixed(3));
+}
 
 export function ProjectInspector() {
   const project = useEditorStore((s) => s.project);
@@ -13,14 +19,14 @@ export function ProjectInspector() {
 
   const [width, setWidth] = useState(project?.settings.width ?? 1080);
   const [height, setHeight] = useState(project?.settings.height ?? 1920);
-  const [fps, setFps] = useState(project?.settings.fps ?? 60);
+  const [fps, setFps] = useState(project ? fpsDisplayValue(project.settings.fps) : 60);
 
   useEffect(() => {
     if (!project) return;
     setWidth(project.settings.width);
     setHeight(project.settings.height);
-    setFps(project.settings.fps);
-  }, [project?.id, project?.settings.width, project?.settings.height, project?.settings.fps]);
+    setFps(fpsDisplayValue(project.settings.fps));
+  }, [project?.id, project?.settings.width, project?.settings.height, project?.settings.fps?.num, project?.settings.fps?.den]);
 
   if (!project) {
     return (
@@ -111,7 +117,7 @@ export function ProjectInspector() {
           <input
             type="number"
             min={1}
-            step={1}
+            step="any"
             value={fps}
             onChange={(e) => setFps(parseFloat(e.target.value) || 1)}
           />

@@ -6,7 +6,7 @@
 // root. Pure helpers, no store dependency, so they are unit-tested in container.test.ts.
 
 import {
-  clipEndSecs,
+  clipEndUs,
   type Clip,
   type MediaItem,
   type Project,
@@ -82,6 +82,8 @@ export function containerView(project: Project, activeSequenceId: string | null)
       ...project,
       tracks: activeTracks(project, id),
       settings: { ...project.settings, width, height },
+      // Markers belong to the root timeline; a nested sequence shows and snaps to none.
+      markers: [],
     };
     perProject.set(id, view);
   }
@@ -196,12 +198,12 @@ export function mediaOfSequence(project: Project, sequenceId: string): MediaItem
 }
 
 /** End of the last enabled non-caption clip in the open container (0 when empty). */
-export function containerDurationSecs(project: Project, activeSequenceId: string | null): number {
+export function containerDurationUs(project: Project, activeSequenceId: string | null): number {
   let end = 0;
   for (const track of activeTracks(project, activeSequenceId)) {
     for (const clip of track.clips) {
       if (clip.type === "caption" || !clip.enabled) continue;
-      end = Math.max(end, clipEndSecs(clip));
+      end = Math.max(end, clipEndUs(clip));
     }
   }
   return end;
@@ -256,26 +258,26 @@ export function pathAfterOpen(path: string[], sequenceId: string): string[] {
   return idx === -1 ? [...path, sequenceId] : path.slice(0, idx + 1);
 }
 
-/** Minimum length of an adjustment layer: one frame at 30 fps keeps it grabbable. */
-export const MIN_ADJUSTMENT_SECS = 0.1;
+/** Minimum length of an adjustment layer in µs (about three frames at 30 fps keeps it grabbable). */
+export const MIN_ADJUSTMENT_US = 100_000;
 
 /**
  * Trim math for an adjustment layer's edges (it has no source range, so a trim is just
- * position + duration): dragging the left edge to `edgeSecs` keeps the right edge fixed;
+ * position + duration): dragging the left edge to `edgeUs` keeps the right edge fixed;
  * dragging the right edge keeps the position. Clamped so the layer stays at least
- * `MIN_ADJUSTMENT_SECS` long and never starts before 0.
+ * `MIN_ADJUSTMENT_US` long and never starts before 0.
  */
 export function trimAdjustment(
   edge: "left" | "right",
   position: number,
   duration: number,
-  edgeSecs: number,
+  edgeUs: number,
 ): { position: number; duration: number } {
   if (edge === "right") {
-    return { position, duration: Math.max(MIN_ADJUSTMENT_SECS, edgeSecs - position) };
+    return { position, duration: Math.max(MIN_ADJUSTMENT_US, edgeUs - position) };
   }
   const end = position + duration;
-  const newPos = Math.max(0, Math.min(end - MIN_ADJUSTMENT_SECS, edgeSecs));
+  const newPos = Math.max(0, Math.min(end - MIN_ADJUSTMENT_US, edgeUs));
   return { position: newPos, duration: end - newPos };
 }
 

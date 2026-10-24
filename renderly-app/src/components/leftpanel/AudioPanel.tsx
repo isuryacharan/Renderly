@@ -5,6 +5,7 @@ import { fileName } from "../../lib/format";
 import { generateVoiceover } from "../../lib/commands";
 import { pickAndImportMedia } from "../../lib/projectFlows";
 import { startMediaDrag } from "../../lib/dragMedia";
+import { normalizeFps, snapToFrameUs, usToSecs } from "../../lib/time";
 import { MenuSelect } from "../ui/MenuSelect";
 import { Tooltip } from "../ui/Tooltip";
 
@@ -14,7 +15,8 @@ export function AudioPanel() {
   const placeMediaOnTimeline = useEditorStore((s) => s.placeMediaOnTimeline);
   const ensureTrack = useEditorStore((s) => s.ensureTrack);
   const dispatch = useEditorStore((s) => s.dispatch);
-  const playhead = useEditorStore((s) => s.playhead);
+  const rawPlayhead = useEditorStore((s) => s.playhead);
+  const playhead = snapToFrameUs(normalizeFps(project?.settings.fps), rawPlayhead);
   const toast = useEditorStore((s) => s.toast);
 
   const [ttsText, setTtsText] = useState("");
@@ -105,7 +107,7 @@ export function AudioPanel() {
               key={item.id}
               className="media-item"
               draggable
-              onDragStart={(e) => startMediaDrag(e, item.id, item.kind, item.duration_secs ?? 5)}
+              onDragStart={(e) => startMediaDrag(e, item.id, item.kind, item.duration_us ?? 5_000_000)}
               onClick={() => void placeMediaOnTimeline(item.id, item.kind)}
             >
               {peaks?.length ? (
@@ -134,7 +136,7 @@ export function AudioPanel() {
               )}
               <div className="media-meta">
                 <div className="name">{fileName(item.path)}</div>
-                <div className="sub">{item.duration_secs?.toFixed(1) ?? "?"}s</div>
+                <div className="sub">{item.duration_us != null ? usToSecs(item.duration_us).toFixed(1) : "?"}s</div>
               </div>
               <Tooltip content="Add to timeline">
                 <span className="media-add-hint">

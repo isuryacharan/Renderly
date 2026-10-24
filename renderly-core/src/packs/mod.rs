@@ -12,10 +12,13 @@ pub mod describe;
 pub mod format2;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod hash;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod host;
 pub mod item;
 pub mod refs;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod rpack;
+pub mod status;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use rpack::build;
@@ -26,14 +29,8 @@ pub use item::{builtin_items, ItemState, LoadedItem};
 /// "Feature requirements"). Items that need anything else are installed but disabled.
 pub const FEATURES: &[&str] = crate::compose::runtime::FEATURES;
 
-#[cfg(not(target_arch = "wasm32"))]
-use crate::frame::RgbaFrame;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::project::{EffectInstance, Project};
 use serde::Deserialize;
 use std::collections::BTreeMap;
-#[cfg(not(target_arch = "wasm32"))]
-use std::collections::HashSet;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 use std::path::PathBuf;
@@ -63,7 +60,7 @@ pub struct PackManifest {
 pub struct PackTemplate {
     pub id: String,
     pub label: String,
-    /// Serialized `Command` values; `AddClip.position_secs` is offset by the apply call.
+    /// Serialized `Command` values; `AddClip.start_us` is offset by the apply call.
     #[serde(default)]
     pub commands: Vec<serde_json::Value>,
 }
@@ -111,31 +108,93 @@ pub struct PackLut {
     pub path: String,
 }
 
+/// Duration of a pack item in integer µs. Packs written before schema v8 used the float
+/// `default_duration_secs`; it is still read (deprecated alias) and converted.
+fn pack_duration_us(us: Option<i64>, legacy_secs: Option<f64>, default_us: i64) -> i64 {
+    match (us, legacy_secs) {
+        (Some(us), _) => us,
+        (None, Some(secs)) => crate::time::seconds_to_us(secs),
+        (None, None) => default_us,
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
+#[serde(from = "RawPackTransitionAlias")]
 pub struct PackTransitionAlias {
     pub id: String,
     pub label: String,
     /// Builtin transition kind name (`crossfade`, `wipe_left`, …).
     pub kind: String,
-    #[serde(default = "default_transition_duration")]
-    pub default_duration_secs: f64,
+    pub default_duration_us: i64,
 }
 
-fn default_transition_duration() -> f64 {
-    0.5
+#[derive(Deserialize)]
+struct RawPackTransitionAlias {
+    id: String,
+    label: String,
+    kind: String,
+    #[serde(default)]
+    default_duration_us: Option<i64>,
+    #[serde(default)]
+    default_duration_secs: Option<f64>,
+}
+
+impl From<RawPackTransitionAlias> for PackTransitionAlias {
+    fn from(r: RawPackTransitionAlias) -> Self {
+        Self {
+            id: r.id,
+            label: r.label,
+            kind: r.kind,
+            default_duration_us: pack_duration_us(
+                r.default_duration_us,
+                r.default_duration_secs,
+                default_transition_duration(),
+            ),
+        }
+    }
+}
+
+fn default_transition_duration() -> i64 {
+    500_000
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(from = "RawPackSticker")]
 pub struct PackSticker {
     pub id: String,
     pub label: String,
     pub path: String,
-    #[serde(default = "default_sticker_duration")]
-    pub default_duration_secs: f64,
+    pub default_duration_us: i64,
 }
 
-fn default_sticker_duration() -> f64 {
-    3.0
+#[derive(Deserialize)]
+struct RawPackSticker {
+    id: String,
+    label: String,
+    path: String,
+    #[serde(default)]
+    default_duration_us: Option<i64>,
+    #[serde(default)]
+    default_duration_secs: Option<f64>,
+}
+
+impl From<RawPackSticker> for PackSticker {
+    fn from(r: RawPackSticker) -> Self {
+        Self {
+            id: r.id,
+            label: r.label,
+            path: r.path,
+            default_duration_us: pack_duration_us(
+                r.default_duration_us,
+                r.default_duration_secs,
+                default_sticker_duration(),
+            ),
+        }
+    }
+}
+
+fn default_sticker_duration() -> i64 {
+    3_000_000
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -152,7 +211,7 @@ pub struct LoadedPack {
     /// the LUTs that loaded; `caption_styles`, `stickers`, `sfx`, `templates` and `transitions`
     /// stay empty (format 2 has items instead).
     pub manifest: PackManifest,
-    /// Loaded `.cube` LUTs by item id (only items that loaded).
+    /// Loaded `.cube` LUTs by [`lut_key`] (only items that loaded).
     pub luts: BTreeMap<String, CubeLut>,
     /// Pack format this was read from: 1 (no `format` field) or 2.
     pub format: u32,
@@ -175,6 +234,16 @@ pub struct PackMeta {
     /// `requires.renderly` as declared. A pack whose requirement this build does not meet has
     /// every item disabled.
     pub requires_renderly: Option<String>,
+}
+
+/// The key a LUT item has in [`LoadedPack::luts`]: its id for version 1, `id@version` for later
+/// versions, so two versions of one LUT live side by side.
+pub fn lut_key(id: &str, version: u32) -> String {
+    if version == 1 {
+        id.to_string()
+    } else {
+        format!("{id}@{version}")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -300,11 +369,38 @@ impl LoadedPack {
             .unwrap_or_else(|| self.manifest.version.clone())
     }
 
-    /// A minimal in-memory pack carrying only parsed LUTs - no filesystem, no manifest
-    /// beyond its id. This is what the wasm preview builds from `.cube` text the webview
+    /// A minimal in-memory pack carrying only parsed LUTs (keyed by [`lut_key`]) - no
+    /// filesystem, no manifest beyond its id. This is what the wasm preview builds from `.cube` text the webview
     /// fetched, so `find_cube_lut` / the effect processor resolve `pack:<id>:lut:<lut>` the
     /// same way they do for a pack loaded from disk.
     pub fn from_luts(pack_id: &str, luts: BTreeMap<String, CubeLut>) -> Self {
+        Self::from_parts(pack_id, luts, Vec::new())
+    }
+
+    /// An in-memory pack built from host-supplied parts: parsed `.cube` LUTs (each becomes a
+    /// version-1 `lut` item) and already compiled effect items (see
+    /// [`LoadedItem::from_sources`]). This is how the wasm preview receives pack content: the
+    /// webview fetches the files from the host and core compiles them, so preview and export
+    /// run the same items. `pack_id` is the id refs use (`local.starter`, `mira.film-looks`).
+    pub fn from_parts(
+        pack_id: &str,
+        luts: BTreeMap<String, CubeLut>,
+        effect_items: Vec<LoadedItem>,
+    ) -> Self {
+        let mut items: Vec<LoadedItem> = luts
+            .keys()
+            .map(|key| {
+                // Keys are `id` (version 1) or `id@version` (see `lut_key`).
+                let (id, version) = match key.rsplit_once('@') {
+                    Some((id, v)) => (id, v.parse().unwrap_or(1)),
+                    None => (key.as_str(), 1),
+                };
+                let mut item = LoadedItem::with_state("lut", id, version, ItemState::Ok);
+                item.label = id.to_string();
+                item
+            })
+            .collect();
+        items.extend(effect_items);
         let manifest = PackManifest {
             id: pack_id.to_string(),
             name: pack_id.to_string(),
@@ -334,30 +430,58 @@ impl LoadedPack {
                 format!("local.{pack_id}")
             },
             meta: PackMeta::default(),
-            items: Vec::new(),
+            items,
         }
     }
 }
 
-/// Distinct `(pack_id, lut_id)` pairs of every enabled-or-not pack-LUT effect on the
-/// project's media clips, in first-use order - what a host without a filesystem must fetch
-/// before those effects can render. Pure data walk.
-pub fn referenced_pack_luts(project: &crate::project::Project) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
+/// A `pack:` ref a project uses, with the hash stored where it was applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackRefUse {
+    pub item_ref: String,
+    pub hash: Option<String>,
+}
+
+/// Distinct `pack:` refs used by the project's effects and transitions (enabled or not), in
+/// first-use order - what a host without a filesystem must fetch before those items can
+/// render. Pure data walk.
+pub fn referenced_pack_items(project: &crate::project::Project) -> Vec<PackRefUse> {
+    use crate::project::Clip;
+    let mut out: Vec<PackRefUse> = Vec::new();
+    let mut push = |item_ref: &str, hash: &Option<String>| {
+        if item_ref.starts_with("pack:") && !out.iter().any(|u| u.item_ref == item_ref) {
+            out.push(PackRefUse {
+                item_ref: item_ref.to_string(),
+                hash: hash.clone(),
+            });
+        }
+    };
     for track in project.all_tracks() {
         for clip in &track.clips {
-            let effects = match clip {
-                crate::project::Clip::Video(m) | crate::project::Clip::Audio(m) => &m.effects,
-                crate::project::Clip::Adjustment(a) => &a.effects,
-                crate::project::Clip::Caption(_) => continue,
-            };
-            for effect in effects {
-                if let Some((pack, lut)) = parse_pack_lut_id(&effect.effect_id) {
-                    let pair = (pack.to_string(), lut.to_string());
-                    if !out.contains(&pair) {
-                        out.push(pair);
+            match clip {
+                Clip::Video(m) | Clip::Audio(m) => {
+                    for e in m.effect_stack() {
+                        push(&e.item_ref, &e.hash);
+                    }
+                    if let Some(t) = &m.outgoing_transition {
+                        push(&t.item_ref, &t.hash);
                     }
                 }
+                Clip::Adjustment(a) => {
+                    for e in a.effect_stack() {
+                        push(&e.item_ref, &e.hash);
+                    }
+                }
+                Clip::Text(t) => {
+                    for e in t.effect_stack() {
+                        push(&e.item_ref, &e.hash);
+                    }
+                    if let Some(tr) = &t.outgoing_transition {
+                        push(&tr.item_ref, &tr.hash);
+                    }
+                }
+                // Text styles and animations are not effect-pack items yet (captions phase).
+                Clip::Caption(_) => {}
             }
         }
     }
@@ -365,7 +489,7 @@ pub fn referenced_pack_luts(project: &crate::project::Project) -> Vec<(String, S
 }
 
 pub fn find_pack<'a>(packs: &'a [LoadedPack], pack_id: &str) -> Option<&'a LoadedPack> {
-    packs.iter().find(|p| p.manifest.id == pack_id)
+    packs.iter().find(|p| refs::pack_matches(p, pack_id))
 }
 
 pub fn find_sticker<'a>(
@@ -393,38 +517,15 @@ pub fn pack_id_at(root: &Path) -> Option<String> {
     load_pack(root).ok().map(|p| p.manifest.id)
 }
 
+/// The packs installed in the user library (`RENDERLY_LIBRARY_DIR` or the default folder),
+/// newest release first: what an item ref resolves against. Empty when the library cannot be
+/// read. Native only; hosts pass the result to the renderer, so the compositor itself stays
+/// pure.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn load_project_packs(project: &Project) -> Vec<LoadedPack> {
-    let mut out = Vec::new();
-    for path in &project.asset_pack_paths {
-        if let Ok(pack) = load_pack(path) {
-            out.push(pack);
-        }
-    }
-    out
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub fn known_effect_ids(project: &Project) -> HashSet<String> {
-    let mut ids = HashSet::new();
-    for pack in load_project_packs(project) {
-        for lut in &pack.manifest.luts {
-            ids.insert(format!("pack:{}:lut:{}", pack.manifest.id, lut.id));
-        }
-    }
-    ids
-}
-
-pub fn effect_id_for_lut(pack_id: &str, lut_id: &str) -> String {
-    format!("pack:{pack_id}:lut:{lut_id}")
-}
-
-pub fn find_cube_lut<'a>(
-    packs: &'a [LoadedPack],
-    pack_id: &str,
-    lut_id: &str,
-) -> Option<&'a CubeLut> {
-    find_pack(packs, pack_id)?.luts.get(lut_id)
+pub fn load_installed_packs() -> Vec<LoadedPack> {
+    crate::library::Library::open(&crate::library::default_root())
+        .map(|library| library.load_all())
+        .unwrap_or_default()
 }
 
 /// RGBA8 bytes for uploading a `.cube` LUT as a `D3` texture (R fastest, then G, then B).
@@ -439,52 +540,12 @@ pub fn cube_lut_upload_bytes(cube: &CubeLut) -> Vec<u8> {
     bytes
 }
 
-/// Apply enabled pack LUT effects (CPU) to a frame in list order.
-///
-/// Pack LUTs are normally applied on the GPU in [`crate::compose::effects::EffectProcessor`]
-/// (improvement-plan A7). This path remains for tests and headless fallbacks. Native-only
-/// (loads packs from disk via `Project::asset_pack_paths`); the wasm compositor defers pack
-/// LUTs, see docs/preview-webview.md P2.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn apply_pack_effects(project: &Project, frame: &mut RgbaFrame, effects: &[EffectInstance]) {
-    apply_pack_effects_cpu(project, frame, effects);
-}
-
-/// CPU trilinear pack LUT application (see [`apply_pack_effects`]).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn apply_pack_effects_cpu(
-    project: &Project,
-    frame: &mut RgbaFrame,
-    effects: &[EffectInstance],
-) {
-    let packs = load_project_packs(project);
-    for effect in effects.iter().filter(|e| e.enabled) {
-        let Some((pack_id, lut_id)) = parse_pack_lut_id(&effect.effect_id) else {
-            continue;
-        };
-        let Some(pack) = packs.iter().find(|p| p.manifest.id == pack_id) else {
-            continue;
-        };
-        let Some(cube) = pack.luts.get(lut_id) else {
-            continue;
-        };
-        let intensity = effect
-            .params
-            .get("intensity")
-            .copied()
-            .unwrap_or(1.0)
-            .clamp(0.0, 1.0) as f32;
-        apply_cube(frame, cube, intensity);
-    }
-}
-
-pub fn parse_pack_lut_id(effect_id: &str) -> Option<(&str, &str)> {
-    let rest = effect_id.strip_prefix("pack:")?;
-    let (pack_id, lut) = rest.split_once(":lut:")?;
-    if pack_id.is_empty() || lut.is_empty() {
-        return None;
-    }
-    Some((pack_id, lut))
+pub fn find_cube_lut<'a>(
+    packs: &'a [LoadedPack],
+    pack_id: &str,
+    lut_id: &str,
+) -> Option<&'a CubeLut> {
+    find_pack(packs, pack_id)?.luts.get(lut_id)
 }
 
 pub fn find_caption_style<'a>(
@@ -552,77 +613,32 @@ pub fn parse_cube_text(text: &str) -> Result<CubeLut, String> {
     Ok(CubeLut { size, data })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn apply_cube(frame: &mut RgbaFrame, cube: &CubeLut, intensity: f32) {
-    if intensity <= 0.0 {
-        return;
-    }
-    let n = cube.size;
-    let max_i = (n - 1) as f32;
-    for px in frame.pixels.as_chunks_mut::<4>().0 {
-        let r = px[0] as f32 / 255.0;
-        let g = px[1] as f32 / 255.0;
-        let b = px[2] as f32 / 255.0;
-        let mapped = sample_cube(cube, r, g, b, max_i);
-        px[0] = ((r + (mapped[0] - r) * intensity) * 255.0).clamp(0.0, 255.0) as u8;
-        px[1] = ((g + (mapped[1] - g) * intensity) * 255.0).clamp(0.0, 255.0) as u8;
-        px[2] = ((b + (mapped[2] - b) * intensity) * 255.0).clamp(0.0, 255.0) as u8;
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn sample_cube(cube: &CubeLut, r: f32, g: f32, b: f32, max_i: f32) -> [f32; 3] {
-    let n = cube.size;
-    let rf = (r * max_i).clamp(0.0, max_i);
-    let gf = (g * max_i).clamp(0.0, max_i);
-    let bf = (b * max_i).clamp(0.0, max_i);
-    let r0 = rf.floor() as usize;
-    let g0 = gf.floor() as usize;
-    let b0 = bf.floor() as usize;
-    let r1 = (r0 + 1).min(n - 1);
-    let g1 = (g0 + 1).min(n - 1);
-    let b1 = (b0 + 1).min(n - 1);
-    let tr = rf - r0 as f32;
-    let tg = gf - g0 as f32;
-    let tb = bf - b0 as f32;
-
-    let c000 = cube_at(cube, r0, g0, b0);
-    let c100 = cube_at(cube, r1, g0, b0);
-    let c010 = cube_at(cube, r0, g1, b0);
-    let c110 = cube_at(cube, r1, g1, b0);
-    let c001 = cube_at(cube, r0, g0, b1);
-    let c101 = cube_at(cube, r1, g0, b1);
-    let c011 = cube_at(cube, r0, g1, b1);
-    let c111 = cube_at(cube, r1, g1, b1);
-
-    let c00 = lerp3(c000, c100, tr);
-    let c10 = lerp3(c010, c110, tr);
-    let c01 = lerp3(c001, c101, tr);
-    let c11 = lerp3(c011, c111, tr);
-    let c0 = lerp3(c00, c10, tg);
-    let c1 = lerp3(c01, c11, tg);
-    lerp3(c0, c1, tb)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn cube_at(cube: &CubeLut, r: usize, g: usize, b: usize) -> [f32; 3] {
-    let n = cube.size;
-    cube.data[r + g * n + b * n * n]
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
-    [
-        a[0] + (b[0] - a[0]) * t,
-        a[1] + (b[1] - a[1]) * t,
-        a[2] + (b[2] - a[2]) * t,
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn pack_durations_accept_micros_and_the_legacy_seconds_alias() {
+        let new: PackTransitionAlias = serde_json::from_str(
+            r#"{"id":"a","label":"A","kind":"crossfade","default_duration_us":350000}"#,
+        )
+        .unwrap();
+        assert_eq!(new.default_duration_us, 350_000);
+        let old: PackTransitionAlias = serde_json::from_str(
+            r#"{"id":"a","label":"A","kind":"crossfade","default_duration_secs":0.35}"#,
+        )
+        .unwrap();
+        assert_eq!(old.default_duration_us, 350_000);
+        let none: PackSticker =
+            serde_json::from_str(r#"{"id":"s","label":"S","path":"s.png"}"#).unwrap();
+        assert_eq!(none.default_duration_us, 3_000_000);
+        let sticker: PackSticker = serde_json::from_str(
+            r#"{"id":"s","label":"S","path":"s.png","default_duration_secs":1.5}"#,
+        )
+        .unwrap();
+        assert_eq!(sticker.default_duration_us, 1_500_000);
+    }
 
     #[test]
     fn cube_upload_bytes_len() {

@@ -28,10 +28,10 @@ my-pack/
   ],
   "transitions": [
     // Aliases of builtin TransitionKind only — no custom shaders in v1
-    { "id": "quick", "label": "Quick wipe", "kind": "wipe_left", "default_duration_secs": 0.35 }
+    { "id": "quick", "label": "Quick wipe", "kind": "wipe_left", "default_duration_us": 350000 }
   ],
   "stickers": [
-    { "id": "star", "label": "Star", "path": "stickers/star.png", "default_duration_secs": 3.0 }
+    { "id": "star", "label": "Star", "path": "stickers/star.png", "default_duration_us": 3000000 }
   ],
   "sfx": [
     { "id": "blip", "label": "Blip", "path": "sfx/blip.wav" }
@@ -41,7 +41,7 @@ my-pack/
       "id": "cold-open",
       "label": "Cold open",
       "commands": [
-        // Serialized Command values; AddClip.position_secs is offset by ApplyTemplate
+        // Serialized Command values; AddClip.start is offset by ApplyTemplate
       ]
     }
   ]
@@ -56,28 +56,31 @@ when burning captions.
 
 ### LUTs
 
-IRIDAS `.cube` (`LUT_3D_SIZE`). Applied on the CPU before GPU upload. Effect id:
+IRIDAS `.cube` (`LUT_3D_SIZE`). Uploaded as a 3D texture and applied on the GPU by the builtin
+LUT filter (`builtin:lut_filter@1`). Ref (schema v8):
 
-`pack:<pack_id>:lut:<lut_id>`
+`pack:<pack-id>/<lut-id>@1` (a format-1 pack answers to `local.<id>`, so `pack:local.my-pack/film@1`)
 
-Params: `intensity` (0..1, default 1).
+Params: `intensity` (0..1, default 1). Apply it with `SetClipEffects`, usually in the `filter`
+slot. The v7 effect id `pack:<pack_id>:lut:<lut_id>` is gone from project files; the migration
+rewrote it to the ref above.
 
 ### Stickers
 
 PNG (or other image) placed as an image `MediaClip` on a video track (no new clip type).
-Command: `AddStickerFromPack { pack_id, sticker_id, track_id, position_secs }` — imports
+Command: `AddStickerFromPack { pack_id, sticker_id, track_id, start }` — imports
 the asset into the media pool if needed, then `AddClip`.
 
 ### SFX
 
 Audio file placed as an audio `MediaClip`. Command: `AddSfxFromPack { pack_id, sfx_id,
-track_id, position_secs }`.
+track_id, start }`.
 
 ### Templates (Phase 4)
 
 Named command sequences. Each entry has `id`, `label`, and `commands` (JSON `Command`
-objects). `ApplyTemplate { pack_id, template_id, position_secs }` deserializes each
-command, adds `position_secs` to every `AddClip.position_secs`, and applies them
+objects). `ApplyTemplate { pack_id, template_id, start }` deserializes each
+command, adds `start` to every `AddClip.start`, and applies them
 sequentially — rolling back the project clone on any failure.
 
 ## Pack format 2 (effects, filters, transitions, LUTs)
@@ -153,8 +156,18 @@ enforced. The same checks run for builtins.
   declaration) and every file it references, named relative to the item folder. Per-file
   digests are cached by `(path, mtime, size)`, so reloading an unchanged pack does not rehash
   it. A rewrite that keeps both mtime and size is not seen until the process restarts.
-- Project refs to pack items are stored by schema v8. Today `SetClipEffects` still accepts
-  `builtin:<id>` and `pack:<pack>:lut:<lut>`.
+- Projects store these refs (and the hash an item had when it was applied) since schema v8;
+  they never store pack paths. A format-1 pack's transition alias (`pack:local.starter/quick-wipe@1`)
+  runs the builtin it names. `pack:<pack>/<lut>@<v>` resolves to `builtin:lut_filter@1` with that
+  LUT bound.
+- Status (`ok` / `changed` / `missing` / `disabled`) is computed on load from what is installed,
+  never stored, and a project's problem items are listed by `get_project` (MCP) and marked in the
+  in-app outline. `missing` renders pass-through and keeps the instance's params. See
+  [project-schema.md](project-schema.md) "Effects, slots and blend modes".
+- Slots: `kind: "filter"` items (and LUTs) belong in a clip's `filter` slot, a keying effect
+  (`category: "key"`) in `key`, the colour adjustment in `adjust`, everything else in `effects[]`;
+  slots always run in the order filter, key, adjust, effects[]. A parameter marked
+  `animatable: false`, and `bool`, `choice` and `lut` parameters, cannot be keyframed.
 
 ### Checking a pack
 
@@ -214,15 +227,21 @@ and installs as `local.starter` 1.0.0.
 
 ### Perception
 
-`describe_effects` (MCP) lists the builtins plus the packs you name by folder, or the open
-project's packs when you name none. `describe_commands` lists the same catalogue. Each line
-gives the ref, kind, label, state (with the reason when not `ok`) and the params: type, range,
-default and `initial` (the value written when the effect is added).
+`describe_effects` (MCP) lists the builtins plus the packs installed in the user library, or
+the packs you name by folder. `describe_commands` lists the same catalogue. Each line gives the
+ref, kind, label, state (with the reason when not `ok`), the usual `slot` and the params: type,
+range, default and `initial` (the value written when the effect is added).
+
+For the webview preview (docs/preview-webview.md), `renderly_core::packs::host::host_item`
+reads one referenced item's files (a LUT's `.cube` text, or an effect's `effect.json`, WGSL files
+and texture files) and the desktop app serves them through `read_preview_pack_items`; the wasm
+compositor compiles them with the same code export uses (`WasmCompositor.set_pack_item`).
 
 ## Commands
 
-- `LoadAssetPack { path }` — validate + record path on the project
-- `UnloadAssetPack { pack_id }`
+- `LoadAssetPack { path }` — deprecated in v8: installs the pack folder into the user library
+  (the project does not record it); `UnloadAssetPack { pack_id }` uninstalls it
+- `SetClipEffects` / `SetClipTransition` apply items by ref
 - `AddStickerFromPack` / `AddSfxFromPack`
 - `ApplyTemplate`
 

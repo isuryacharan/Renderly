@@ -144,8 +144,8 @@ pub struct MatteSidecar {
     pub source_mtime_ms: u64,
     pub source_size: u64,
     /// Source time of matte frame 0 and of the last frame.
-    pub range_start_secs: f64,
-    pub range_end_secs: f64,
+    pub range_start_us: i64,
+    pub range_end_us: i64,
     pub fps: f64,
     pub frame_count: u32,
     pub width: u32,
@@ -157,8 +157,8 @@ pub struct MatteSidecar {
 impl MatteSidecar {
     pub fn frames(&self) -> MatteFrames {
         MatteFrames {
-            start_secs: self.range_start_secs,
-            fps: self.fps,
+            start_us: self.range_start_us,
+            fps: crate::time::Fps::from_f64(self.fps),
             count: self.frame_count,
             width: self.width,
             height: self.height,
@@ -180,8 +180,8 @@ pub struct MatteJob {
     pub source_path: PathBuf,
     pub is_image: bool,
     /// Used source range of the clip (seconds).
-    pub source_in_secs: f64,
-    pub source_out_secs: f64,
+    pub source_in_us: i64,
+    pub source_out_us: i64,
     /// Native fps of the source (the bake caps it at [`MATTE_MAX_FPS`]).
     pub source_fps: f64,
     pub cache_dir: PathBuf,
@@ -213,8 +213,8 @@ pub fn prepare_rvm_job(
     Ok(MatteJob {
         source_path: media.path.clone(),
         is_image,
-        source_in_secs: clip.source_in_secs.max(0.0),
-        source_out_secs: clip.source_out_secs.max(clip.source_in_secs),
+        source_in_us: clip.source_in_us.max(0),
+        source_out_us: clip.source_out_us.max(clip.source_in_us),
         source_fps: media
             .fps
             .filter(|f| f.is_finite() && *f > 0.0)
@@ -269,8 +269,8 @@ fn write_gray_png(
 
 /// Number of matte frames planned for a source span at `fps`: one per frame plus the closing
 /// frame, so the clip's last source time maps to a real matte frame.
-pub fn planned_frame_count(span_secs: f64, fps: f64) -> u32 {
-    ((span_secs.max(0.0) * fps).round() as u32).saturating_add(1)
+pub fn planned_frame_count(span_s: f64, fps: f64) -> u32 {
+    ((span_s.max(0.0) * fps).round() as u32).saturating_add(1)
 }
 
 /// Locate the matting weights without touching the network: `Err(ModelNotAvailable)` when
@@ -351,17 +351,13 @@ fn bake_into(
     } else {
         job.source_fps.clamp(1.0, MATTE_MAX_FPS)
     };
-    let start = if job.is_image {
-        0.0
-    } else {
-        job.source_in_secs
-    };
+    let start = if job.is_image { 0 } else { job.source_in_us };
     let span = if job.is_image {
-        0.0
+        0
     } else {
-        job.source_out_secs - job.source_in_secs
+        job.source_out_us - job.source_in_us
     };
-    let total = planned_frame_count(span, fps);
+    let total = planned_frame_count(crate::time::us_to_seconds(span), fps);
 
     // Frame source: one decoder for the whole range, or the still image once.
     let mut still: Option<RgbaFrame> = None;
@@ -379,7 +375,7 @@ fn bake_into(
         Some(
             crate::media::VideoReader::open_with(
                 &job.source_path,
-                start,
+                crate::time::us_to_seconds(start),
                 &crate::media::ReaderOptions {
                     target_height: Some(MATTE_MAX_HEIGHT),
                     output_fps: Some(fps),
@@ -451,8 +447,8 @@ fn bake_into(
         source_path: job.source_path.to_string_lossy().into_owned(),
         source_mtime_ms: mtime,
         source_size: len,
-        range_start_secs: start,
-        range_end_secs: start + f64::from(written - 1) / fps,
+        range_start_us: start,
+        range_end_us: start + crate::time::seconds_to_us(f64::from(written - 1) / fps),
         fps,
         frame_count: written,
         width: size.0,
@@ -493,8 +489,8 @@ pub enum MatteStatus {
 pub fn sidecar_staleness(
     sidecar: &MatteSidecar,
     source_path: &Path,
-    source_in_secs: f64,
-    source_out_secs: f64,
+    source_in_us: i64,
+    source_out_us: i64,
 ) -> Option<String> {
     if sidecar.version != SIDECAR_VERSION {
         return Some("matte was written by an incompatible version".into());
@@ -509,9 +505,9 @@ pub fn sidecar_staleness(
     if mtime != sidecar.source_mtime_ms || len != sidecar.source_size {
         return Some("source file changed on disk".into());
     }
-    let frame = 1.0 / sidecar.fps.max(1.0);
-    if source_in_secs < sidecar.range_start_secs - 0.5 * frame
-        || source_out_secs > sidecar.range_end_secs + 1.5 * frame
+    let frame = (1_000_000.0 / sidecar.fps.max(1.0)).round() as i64;
+    if source_in_us < sidecar.range_start_us - frame / 2
+        || source_out_us > sidecar.range_end_us + frame * 3 / 2
     {
         return Some("clip uses source time outside the generated range".into());
     }
@@ -545,12 +541,7 @@ pub fn matte_status(project: &Project, clip: &MediaClip) -> MatteStatus {
             reason: "source media not found".into(),
         };
     };
-    match sidecar_staleness(
-        &sidecar,
-        &media.path,
-        clip.source_in_secs,
-        clip.source_out_secs,
-    ) {
+    match sidecar_staleness(&sidecar, &media.path, clip.source_in_us, clip.source_out_us) {
         Some(reason) => MatteStatus::Stale { reason },
         None => MatteStatus::Ready {
             frames: Some(sidecar.frame_count),
@@ -577,8 +568,8 @@ mod tests {
             source_path: path.to_string_lossy().into_owned(),
             source_mtime_ms: mtime,
             source_size: len,
-            range_start_secs: 2.0,
-            range_end_secs: 4.0,
+            range_start_us: 2000000,
+            range_end_us: 4000000,
             fps: 30.0,
             frame_count: 61,
             width: 8,
@@ -602,30 +593,30 @@ mod tests {
         let sc = sidecar_for(&src);
 
         // Used range inside the baked one: ready (split / trimmed-down clips stay valid).
-        assert_eq!(sidecar_staleness(&sc, &src, 2.0, 4.0), None);
-        assert_eq!(sidecar_staleness(&sc, &src, 2.5, 3.0), None);
+        assert_eq!(sidecar_staleness(&sc, &src, 2000000, 4000000), None);
+        assert_eq!(sidecar_staleness(&sc, &src, 2500000, 3000000), None);
         // Extending the trim past the baked range makes it stale.
-        assert!(sidecar_staleness(&sc, &src, 1.0, 4.0)
+        assert!(sidecar_staleness(&sc, &src, 1000000, 4000000)
             .unwrap()
             .contains("outside"));
-        assert!(sidecar_staleness(&sc, &src, 2.0, 5.0).is_some());
+        assert!(sidecar_staleness(&sc, &src, 2000000, 5000000).is_some());
         // Different path / model / version.
         let other = dir.join("other.bin");
         std::fs::write(&other, b"abc").unwrap();
-        assert!(sidecar_staleness(&sc, &other, 2.0, 4.0)
+        assert!(sidecar_staleness(&sc, &other, 2000000, 4000000)
             .unwrap()
             .contains("path"));
         let mut m = sidecar_for(&src);
         m.model_id = "other".into();
-        assert!(sidecar_staleness(&m, &src, 2.0, 4.0)
+        assert!(sidecar_staleness(&m, &src, 2000000, 4000000)
             .unwrap()
             .contains("model"));
         let mut v = sidecar_for(&src);
         v.version = 99;
-        assert!(sidecar_staleness(&v, &src, 2.0, 4.0).is_some());
+        assert!(sidecar_staleness(&v, &src, 2000000, 4000000).is_some());
         // Source changed on disk (size differs).
         std::fs::write(&src, b"abcdef").unwrap();
-        assert!(sidecar_staleness(&sc, &src, 2.0, 4.0)
+        assert!(sidecar_staleness(&sc, &src, 2000000, 4000000)
             .unwrap()
             .contains("changed on disk"));
         std::fs::remove_dir_all(&dir).ok();
@@ -638,14 +629,17 @@ mod tests {
         std::fs::write(dir.join(SIDECAR_FILE), serde_json::to_string(&sc).unwrap()).unwrap();
         assert_eq!(read_sidecar(&dir), Some(sc.clone()));
         let f = sc.frames();
-        assert_eq!((f.count, f.fps, f.start_secs), (61, 30.0, 2.0));
+        assert_eq!(
+            (f.count, f.fps, f.start_us),
+            (61, crate::time::Fps::new(30, 1), 2000000)
+        );
         // Frame lookup: nearest, clamped at both ends.
-        assert_eq!(f.index_at(2.0), 0);
-        assert_eq!(f.index_at(2.0 + 1.0 / 30.0), 1);
-        assert_eq!(f.index_at(2.0 + 0.4 / 30.0), 0);
-        assert_eq!(f.index_at(2.0 + 0.6 / 30.0), 1);
-        assert_eq!(f.index_at(100.0), 60);
-        assert_eq!(f.index_at(-5.0), 0);
+        assert_eq!(f.index_at(2000000), 0);
+        assert_eq!(f.index_at(2_000_000 + 33_333), 1);
+        assert_eq!(f.index_at(2_000_000 + 13_333), 0);
+        assert_eq!(f.index_at(2_000_000 + 20_000), 1);
+        assert_eq!(f.index_at(100000000), 60);
+        assert_eq!(f.index_at(-5000000), 0);
         assert_eq!(MatteFrames::file_name(7), "f000007.png");
         assert_eq!(read_sidecar(&dir.join("nope")), None);
         std::fs::remove_dir_all(&dir).ok();

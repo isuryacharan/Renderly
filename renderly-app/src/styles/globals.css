@@ -3035,3 +3035,286 @@ dialog menu {
   padding: 0;
   flex-shrink: 0;
 }
+
+/* ——— Effect slots, generic parameter rows, status badges (schema v8) ——— */
+.effect-list-header {
+  gap: var(--space-1);
+}
+
+.effect-list-header .toggle-row {
+  flex: 1;
+  min-width: 0;
+}
+
+.effect-slot-tag {
+  font-size: var(--fs-11);
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: var(--space-1);
+}
+
+.effect-badge {
+  margin: 0 0 0.4rem;
+  padding: 0.25rem 0.5rem;
+  font-size: var(--fs-11);
+  border-radius: var(--radius-m);
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+}
+
+.effect-badge.missing,
+.effect-badge.disabled {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+}
+
+.param-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.param-row > label {
+  flex: 0 0 5.5rem;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.param-row > label.toggle-row {
+  flex: 1;
+}
+
+.param-row > input[type="range"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.param-row > input[type="number"] {
+  flex: 1;
+  min-width: 0;
+  width: 0;
+}
+
+.param-row > input[type="color"] {
+  flex: 0 0 2rem;
+  width: 2rem;
+  height: 1.6rem;
+  padding: 0;
+}
+
+.param-row > span {
+  flex: 0 0 2.6rem;
+  text-align: right;
+  font-size: var(--fs-11);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.param-row .menu-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.param-key {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  padding: 0;
+  color: var(--text-3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-m);
+  cursor: pointer;
+}
+
+.param-key:hover:not(:disabled) {
+  color: var(--accent-hover);
+  border-color: var(--accent);
+}
+
+.param-key.on {
+  color: var(--accent);
+}
+
+.param-key.on svg {
+  fill: currentColor;
+}
+
+.blend-mode-control {
+  margin-top: var(--space-2);
+}
+
+/* Magnetic toggle in a video track header (replaces the decorative kind icon). */
+.track-magnet-btn {
+  width: 18px;
+  height: 18px;
+}
+
+/* —— Marker menu (ruler flags) —— */
+.marker-menu {
+  min-width: 190px;
+}
+
+.marker-menu-head {
+  padding: 0.35rem 0.85rem;
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-family: var(--font-mono, Consolas, monospace);
+}
+
+.marker-menu-rename {
+  padding: 0.25rem 0.6rem 0.4rem;
+}
+
+.marker-menu-rename input {
+  width: 100%;
+}
+
+.marker-menu-colors {
+  display: flex;
+  gap: 6px;
+  padding: 0.2rem 0.85rem 0.4rem;
+}
+
+.context-menu button.marker-swatch {
+  display: block;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--accent);
+}
+
+.context-menu button.marker-swatch.selected {
+  outline: 2px solid var(--text-1);
+  outline-offset: 1px;
+}
+
+/* —— Text: words, animations, transcript (schema v8) —— */
+.insp-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: var(--space-2);
+  font-size: var(--fs-11);
+  color: var(--text-2);
+}
+
+.style-card.style-inherit .style-preview {
+  opacity: 0.55;
+}
+
+.text-animation-list {
+  list-style: none;
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: var(--fs-12, 0.75rem);
+  color: var(--text-2);
+}
+
+.text-animation-list li {
+  display: flex;
+  gap: 8px;
+}
+
+.text-animation-phase {
+  min-width: 44px;
+  color: var(--text-3);
+  text-transform: uppercase;
+  font-size: var(--fs-11);
+  letter-spacing: 0.04em;
+}
+
+.word-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.word-chip {
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--fs-11);
+  cursor: pointer;
+}
+
+.word-chip:hover:not(:disabled) {
+  background: var(--bg-3);
+}
+
+.word-chip.emphasis {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-hover);
+  font-weight: 600;
+}
+
+.transcript-words {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 1px;
+  line-height: 1.7;
+  max-height: 220px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--bg-1);
+}
+
+.transcript-word {
+  padding: 0 3px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--fs-12, 0.75rem);
+  cursor: pointer;
+}
+
+.transcript-word:hover {
+  background: var(--bg-3);
+}
+
+.transcript-word.selected {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+
+.transcript-word.deleted {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+
+.transcript-word.filler:not(.deleted) {
+  border-bottom: 1px dashed var(--text-3);
+}
+
+.transcript-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}

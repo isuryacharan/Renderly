@@ -22,7 +22,7 @@ fn project_with_clip(source: &Path) -> (Project, Id, Id) {
         id: media_id,
         path: source.to_path_buf(),
         kind: MediaKind::Video,
-        duration_secs: Some(20.0),
+        duration_us: Some(20000000),
         width: Some(1280),
         height: Some(720),
         fps: Some(30.0),
@@ -35,6 +35,7 @@ fn project_with_clip(source: &Path) -> (Project, Id, Id) {
             name: "V".into(),
             id: None,
             sequence_id: None,
+            magnetic: Some(false),
         },
     )
     .unwrap() else {
@@ -45,9 +46,9 @@ fn project_with_clip(source: &Path) -> (Project, Id, Id) {
         Command::AddClip {
             track_id,
             media_id,
-            position_secs: 5.0,
-            source_in_secs: 2.0,
-            source_out_secs: 7.0,
+            start: Time::Us(5000000),
+            source_in: Time::Us(2000000),
+            source_out: Time::Us(7000000),
         },
     )
     .unwrap() else {
@@ -93,8 +94,8 @@ fn write_sidecar(dir: &Path, source: &Path, start: f64, end: f64) -> MatteSideca
             .unwrap()
             .as_millis() as u64,
         source_size: meta.len(),
-        range_start_secs: start,
-        range_end_secs: end,
+        range_start_us: (start * 1e6).round() as i64,
+        range_end_us: (end * 1e6).round() as i64,
         fps: 30.0,
         frame_count: ((end - start) * 30.0).round() as u32 + 1,
         width: 64,
@@ -234,7 +235,7 @@ fn attach_requires_a_fresh_sidecar_and_wires_the_per_frame_index() {
     );
 
     // Timeline -> source -> matte frame: at t=6 s the clip shows source 3 s = matte frame 30.
-    let reqs = crate::mask::frame_matte_requests_at(&project, 6.0);
+    let reqs = crate::mask::frame_matte_requests_at(&project, 6000000);
     assert_eq!(reqs.len(), 1);
     assert_eq!(reqs[0].index, 30);
     assert_eq!(reqs[0].stamp, 42);
@@ -260,9 +261,9 @@ fn attach_requires_a_fresh_sidecar_and_wires_the_per_frame_index() {
     ));
 
     // Outside the clip nothing is requested; the end clamps to the last frame.
-    assert!(crate::mask::frame_matte_requests_at(&project, 1.0).is_empty());
+    assert!(crate::mask::frame_matte_requests_at(&project, 1000000).is_empty());
     assert_eq!(
-        crate::mask::frame_matte_requests_at(&project, 9.999)[0].index,
+        crate::mask::frame_matte_requests_at(&project, 9999000)[0].index,
         150
     );
 

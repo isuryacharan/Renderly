@@ -73,8 +73,8 @@ fn caption_fixture() -> (Project, u64, WriteLedger, Id, Id) {
         &WriteOptions::default(),
         Caller::User,
         vec![command(json!({
-            "command": "AddCaption", "track_id": track, "text": "hi",
-            "position_secs": 0.0, "duration_secs": 1.0, "style_id": "tiktok-minimal"
+            "command": "AddCaption", "track_id": track, "body": { "text": "hi" },
+            "start": 0, "duration": "1s", "style": { "ref": "builtin:tiktok-minimal@1" }
         }))],
     )
     .unwrap_or_else(|e| panic!("AddCaption failed: {e}"));
@@ -470,7 +470,7 @@ fn dry_run_refuses_commands_that_write_files() {
         Caller::User,
         vec![command(json!({
             "command": "GenerateVoiceover", "text": "hi", "track_id": Id::new_v4(),
-            "position_secs": 0.0, "output_path": "/tmp/x.wav",
+            "start": 0, "output_path": "/tmp/x.wav",
             "provider": { "provider": "piper_local" }
         }))],
     )
@@ -705,7 +705,7 @@ fn moving_a_clip_to_another_track_is_not_a_deletion() {
         Caller::Agent,
         vec![command(json!({
             "command": "MoveClip", "track_id": track, "clip_id": clip,
-            "new_position_secs": 2.0, "new_track_id": other
+            "start": "2s", "new_track_id": other
         }))],
     )
     .unwrap_or_else(|e| panic!("MoveClip was blocked by the guard: {e}"));

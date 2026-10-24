@@ -30,6 +30,52 @@ pub const RENDERLY_METADATA_FORMAT: u32 = 1;
 pub const RENDERLY_METADATA_KEY: &str = "renderly";
 /// `generator_kind` of the `GeneratorReference` used for caption clips.
 pub const CAPTION_GENERATOR_KIND: &str = "renderly.caption";
+/// `generator_kind` of the `GeneratorReference` used for text clips (titles on video tracks).
+pub const TEXT_GENERATOR_KIND: &str = "renderly.text";
+
+/// The OTIO marker colours, with the RGB each stands for (nearest match wins when a Renderly
+/// marker colour is written; the exact colour is kept in the marker's metadata).
+const MARKER_COLORS: &[(&str, [u8; 3])] = &[
+    ("PINK", [0xff, 0x69, 0xb4]),
+    ("RED", [0xe5, 0x39, 0x35]),
+    ("ORANGE", [0xff, 0x98, 0x00]),
+    ("YELLOW", [0xff, 0xeb, 0x3b]),
+    ("GREEN", [0x43, 0xa0, 0x47]),
+    ("CYAN", [0x00, 0xbc, 0xd4]),
+    ("BLUE", [0x1e, 0x88, 0xe5]),
+    ("PURPLE", [0x8e, 0x24, 0xaa]),
+    ("MAGENTA", [0xd8, 0x1b, 0x60]),
+    ("BLACK", [0x00, 0x00, 0x00]),
+    ("WHITE", [0xff, 0xff, 0xff]),
+];
+
+/// OTIO marker colour name for a Renderly marker colour (`#RRGGBB`); empty = the default for
+/// the kind (red for user markers, cyan for beats).
+pub(crate) fn otio_marker_color(hex: &str, kind: crate::project::MarkerKind) -> &'static str {
+    let Some([r, g, b, _]) = crate::project::text::parse_hex_color(hex) else {
+        return match kind {
+            crate::project::MarkerKind::User => "RED",
+            crate::project::MarkerKind::Beat => "CYAN",
+        };
+    };
+    let dist = |c: &[u8; 3]| {
+        let d = |a: u8, b: u8| (i32::from(a) - i32::from(b)).pow(2);
+        d(r, c[0]) + d(g, c[1]) + d(b, c[2])
+    };
+    MARKER_COLORS
+        .iter()
+        .min_by_key(|(_, c)| dist(c))
+        .map_or("RED", |(n, _)| n)
+}
+
+/// Renderly marker colour (`#RRGGBB`) for an OTIO colour name; unknown names give `""`.
+pub(crate) fn marker_color_from_otio(name: &str) -> String {
+    MARKER_COLORS
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        .map(|(_, c)| format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2]))
+        .unwrap_or_default()
+}
 
 /// Why an OTIO export or import failed outright. Anything recoverable is an [`OtioWarning`]
 /// instead.

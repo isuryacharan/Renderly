@@ -15,8 +15,8 @@
 use super::{ClipRef, CommandError, CommandOutcome, TrackRegion};
 use crate::media::{self, ReaderOptions, VideoReader};
 use crate::project::{
-    evaluate_transform, AnimProperty, Clip, ClipTransform, Easing, Id, Keyframe, KeyframeTrack,
-    MediaClip, MediaKind, Project, TrackKind,
+    evaluate_transform, AnimProperty, Clip, ClipTransform, Id, Keyframe, KeyframeTrack, MediaClip,
+    MediaKind, Project, TrackKind,
 };
 use crate::tracking::{
     gaussian_smooth, simplify_polyline, GrayImage, MotionModel, MotionTracker, Rect, Similarity,
@@ -111,10 +111,14 @@ pub(super) struct FrameFeeder {
 }
 
 impl FrameFeeder {
-    pub(super) fn open(path: &std::path::Path, start: f64, fps: f64) -> Result<Self, CommandError> {
+    pub(super) fn open(
+        path: &std::path::Path,
+        start_us: i64,
+        fps: f64,
+    ) -> Result<Self, CommandError> {
         let reader = VideoReader::open_with(
             path,
-            start.max(0.0),
+            crate::time::us_to_seconds(start_us.max(0)),
             &ReaderOptions {
                 target_height: Some(ANALYSIS_HEIGHT),
                 output_fps: Some(fps),
@@ -176,7 +180,7 @@ impl FrameFeeder {
 
 /// Which frames to analyse: clip-local timeline times and the matching source frame indices.
 pub(super) struct SamplePlan {
-    pub(super) times: Vec<f64>,
+    pub(super) times: Vec<i64>,
     pub(super) idx: Vec<i64>,
     pub(super) fps: f64,
 }
@@ -186,22 +190,22 @@ pub(super) fn plan_samples(
     requested: Option<usize>,
 ) -> Result<SamplePlan, CommandError> {
     let clip = &vc.clip;
-    let dur = clip.timeline_duration_secs();
-    let span = (clip.source_out_secs - clip.source_in_secs).max(0.0);
-    if !(dur.is_finite() && dur > 1e-6 && span > 1e-6) {
+    let dur = clip.timeline_duration_us();
+    let span = (clip.source_out_us - clip.source_in_us).max(0);
+    if !(dur > 0 && span > 0) {
         return Err(CommandError::Analysis("clip has zero duration".into()));
     }
     let fps = vc.fps.clamp(1.0, MAX_ANALYSIS_FPS);
     // One analysis frame per native source frame, unless the caller asked for fewer/more.
-    let native = (span * fps).round() as usize + 1;
+    let native = ((span as f64) * fps / 1e6).round() as usize + 1;
     let n = requested.unwrap_or(native).clamp(2, MAX_ANALYSIS_FRAMES);
     let mut times = Vec::with_capacity(n);
     let mut idx = Vec::with_capacity(n);
     for i in 0..n {
-        let t = dur * i as f64 / (n - 1) as f64;
-        let src = clip.source_time_at(clip.position_secs + t);
+        let t = ((dur as f64) * i as f64 / (n - 1) as f64).round() as i64;
+        let src = clip.source_time_at(clip.start_us + t);
         times.push(t);
-        idx.push((((src - clip.source_in_secs) * fps).round() as i64).max(0));
+        idx.push((((src - clip.source_in_us) as f64 * fps / 1e6).round() as i64).max(0));
     }
     Ok(SamplePlan { times, idx, fps })
 }
@@ -209,7 +213,7 @@ pub(super) fn plan_samples(
 /// Frame-to-frame motion for a whole clip.
 struct MotionSeries {
     /// Clip-local timeline seconds of each analysed frame.
-    times: Vec<f64>,
+    times: Vec<i64>,
     /// `steps[i]` maps frame `i-1` to frame `i` in analysis-image pixels (`steps[0]` = identity).
     steps: Vec<Similarity>,
     /// Centre of the tracked region on each frame, analysis-image pixels.
@@ -226,7 +230,7 @@ fn analyse_motion(
     follow_region: bool,
 ) -> Result<MotionSeries, CommandError> {
     let plan = plan_samples(vc, requested_frames)?;
-    let mut feeder = FrameFeeder::open(&vc.path, vc.clip.source_in_secs, plan.fps)?;
+    let mut feeder = FrameFeeder::open(&vc.path, vc.clip.source_in_us, plan.fps)?;
     let (first, first_idx) = {
         let (g, i) = feeder.gray_at(plan.idx[0])?;
         (g.clone(), i)
@@ -298,32 +302,30 @@ fn fit_shift(
     )
 }
 
-pub(super) fn key(time_secs: f64, value: f64) -> Keyframe {
-    Keyframe {
-        time_secs,
-        value,
-        easing: Easing::Linear,
-        handle_left: None,
-        handle_right: None,
-    }
+pub(super) fn key(time_us: i64, value: f64) -> Keyframe {
+    Keyframe::new(time_us, value)
 }
 
 fn set_tracks(clip: &mut MediaClip, tracks: Vec<(AnimProperty, Vec<Keyframe>)>) {
     clip.keyframes
-        .retain(|t| !tracks.iter().any(|(p, _)| *p == t.property));
+        .retain(|t| !tracks.iter().any(|(p, _)| t.property == *p));
     for (property, keys) in tracks {
-        clip.keyframes.push(KeyframeTrack { property, keys });
+        clip.keyframes.push(KeyframeTrack::new(property, keys));
     }
 }
 
-pub(super) fn keys_simplified(times: &[f64], values: &[f64], tolerance: f64) -> Vec<Keyframe> {
-    simplify_polyline(times, values, tolerance)
+pub(super) fn keys_simplified(times: &[i64], values: &[f64], tolerance: f64) -> Vec<Keyframe> {
+    let times_s: Vec<f64> = times
+        .iter()
+        .map(|&t| crate::time::us_to_seconds(t))
+        .collect();
+    simplify_polyline(&times_s, values, tolerance)
         .into_iter()
         .map(|i| key(times[i], values[i]))
         .collect()
 }
 
-fn lerp_series(times: &[f64], values: &[f64], t: f64) -> f64 {
+fn lerp_series(times: &[i64], values: &[f64], t: i64) -> f64 {
     if t <= times[0] {
         return values[0];
     }
@@ -333,8 +335,8 @@ fn lerp_series(times: &[f64], values: &[f64], t: f64) -> f64 {
     }
     let hi = times.partition_point(|&x| x <= t).clamp(1, last);
     let lo = hi - 1;
-    let span = (times[hi] - times[lo]).max(1e-12);
-    values[lo] + (values[hi] - values[lo]) * (t - times[lo]) / span
+    let span = (times[hi] - times[lo]).max(1) as f64;
+    values[lo] + (values[hi] - values[lo]) * ((t - times[lo]) as f64) / span
 }
 
 pub(super) fn out_size(project: &Project) -> (f64, f64) {
@@ -446,12 +448,12 @@ pub(super) fn track_motion(
 struct TargetInfo {
     track_id: Id,
     clip_id: Id,
-    position_secs: f64,
-    duration_secs: f64,
+    start_us: i64,
+    duration_us: i64,
     /// The target's static transform (its user-placed offset and base rotation/scale).
     transform: ClipTransform,
     /// Timeline span shared by the tracked clip and the target.
-    overlap: (f64, f64),
+    overlap: (i64, i64),
 }
 
 fn resolve_target(
@@ -493,17 +495,17 @@ fn resolve_target(
                 "an audio clip cannot be a tracking target".into(),
             ))
         }
-        Clip::Caption(_) | Clip::Adjustment(_) => {
+        Clip::Caption(_) | Clip::Text(_) | Clip::Adjustment(_) => {
             return Err(CommandError::InvalidTrackTarget(
-                "only a video clip can be a tracking target (not a caption or adjustment layer)"
+                "only a video clip can be a tracking target (not a caption, text or adjustment layer)"
                     .into(),
             ))
         }
     };
-    let start = tracked.position_secs.max(clip.position_secs);
-    let end = (tracked.position_secs + tracked.timeline_duration_secs())
-        .min(clip.position_secs + clip.timeline_duration_secs());
-    if end - start <= 1e-6 {
+    let start = tracked.start_us.max(clip.start_us);
+    let end = (tracked.start_us + tracked.timeline_duration_us())
+        .min(clip.start_us + clip.timeline_duration_us());
+    if end - start <= 0 {
         return Err(CommandError::InvalidTrackTarget(
             "the target clip does not overlap the tracked clip in timeline time".into(),
         ));
@@ -511,8 +513,8 @@ fn resolve_target(
     Ok(TargetInfo {
         track_id: target.track_id,
         clip_id: target.clip_id,
-        position_secs: clip.position_secs,
-        duration_secs: clip.timeline_duration_secs(),
+        start_us: clip.start_us,
+        duration_us: clip.timeline_duration_us(),
         transform: clip.transform,
         overlap: (start, end),
     })
@@ -522,7 +524,7 @@ fn resolve_target(
 /// seconds. Values include the tracked clip's own transform (static and keyframed), so they
 /// are what the viewer sees, not just the footage.
 struct CanvasTrack {
-    times: Vec<f64>,
+    times: Vec<i64>,
     /// Canvas NDC of the tracked point (+x right, +y up), centre-relative.
     x: Vec<f64>,
     y: Vec<f64>,
@@ -537,7 +539,7 @@ fn canvas_track(series: &MotionSeries, tracked: &MediaClip, out_w: f64, out_h: f
     let (ndc_x, ndc_y) = frame_ndc(series, out_w, out_h);
     let (rel_rot, rel_scale) = relative_rot_scale(series);
     let n = series.times.len();
-    let at = |i: usize| evaluate_transform(tracked, tracked.position_secs + series.times[i]);
+    let at = |i: usize| evaluate_transform(tracked, tracked.start_us + series.times[i]);
     let base = at(0);
     let mut out = CanvasTrack {
         times: Vec::with_capacity(n),
@@ -556,7 +558,7 @@ fn canvas_track(series: &MotionSeries, tracked: &MediaClip, out_w: f64, out_h: f
             (ndc_x[i] + shift_x) * tf.scale_x,
             (ndc_y[i] + shift_y) * tf.scale_y,
         );
-        out.times.push(tracked.position_secs + series.times[i]);
+        out.times.push(tracked.start_us + series.times[i]);
         out.x.push(cos * px - sin * py + tf.x);
         out.y.push(sin * px + cos * py + tf.y);
         // The region's own motion, plus whatever the tracked layer's transform changed since
@@ -581,7 +583,7 @@ fn scale_ratio(value: f64, base: f64) -> f64 {
 
 /// Keyframes for a target clip that follows the tracked point. The `sample_count` keys are
 /// spread over the span the two clips share, so the target never gets keys outside its own
-/// span. Times are target-local (relative to the target's `position_secs`).
+/// span. Times are target-local (relative to the target's `start_us`).
 ///
 /// Offset: `PosX`/`PosY` = tracked point + the target's static `transform.x`/`y`, so a
 /// user-placed offset is kept (re-tracking does not accumulate it). Keyframed `PosX`/`PosY`
@@ -595,12 +597,12 @@ fn target_tracks(
     let n = canvas.times.len();
     let m = samples.clamp(2, n.max(2));
     let (start, end) = target.overlap;
-    let timeline: Vec<f64> = (0..m)
-        .map(|j| start + (end - start) * j as f64 / (m - 1) as f64)
+    let timeline: Vec<i64> = (0..m)
+        .map(|j| start + (((end - start) as f64) * j as f64 / (m - 1) as f64).round() as i64)
         .collect();
-    let local: Vec<f64> = timeline
+    let local: Vec<i64> = timeline
         .iter()
-        .map(|&t| (t - target.position_secs).clamp(0.0, target.duration_secs))
+        .map(|&t| (t - target.start_us).clamp(0, target.duration_us))
         .collect();
     let at = |v: &[f64]| -> Vec<f64> {
         timeline
@@ -626,12 +628,12 @@ fn target_tracks(
     tracks
 }
 
-fn keys_from(times: &[f64], values: &[f64]) -> Vec<Keyframe> {
+fn keys_from(times: &[i64], values: &[f64]) -> Vec<Keyframe> {
     times.iter().zip(values).map(|(&t, &v)| key(t, v)).collect()
 }
 
 struct TrackingCurves {
-    times: Vec<f64>,
+    times: Vec<i64>,
     pos_x: Vec<f64>,
     pos_y: Vec<f64>,
     /// (rotation degrees, uniform scale) when requested.
@@ -650,7 +652,9 @@ fn tracking_curves(
     let m = samples.clamp(2, n.max(2));
     let dur = series.times[n - 1];
     let (ndc_x, ndc_y) = frame_ndc(series, out_w, out_h);
-    let times: Vec<f64> = (0..m).map(|j| dur * j as f64 / (m - 1) as f64).collect();
+    let times: Vec<i64> = (0..m)
+        .map(|j| ((dur as f64) * j as f64 / (m - 1) as f64).round() as i64)
+        .collect();
     let sample = |v: &[f64]| -> Vec<f64> {
         times
             .iter()
@@ -727,8 +731,8 @@ pub(super) fn stabilize_clip(
         false,
     )?;
     let (out_w, out_h) = out_size(project);
-    let sigma_secs = SIGMA_BASE_SECS + SIGMA_PER_STRENGTH_SECS * strength;
-    let curves = stabilization_curves(&series, out_w, out_h, sigma_secs, &vc.clip.transform);
+    let sigma_s = SIGMA_BASE_SECS + SIGMA_PER_STRENGTH_SECS * strength;
+    let curves = stabilization_curves(&series, out_w, out_h, sigma_s, &vc.clip.transform);
     let tracks = vec![
         (
             AnimProperty::PosX,
@@ -757,7 +761,7 @@ pub(super) fn stabilize_clip(
 }
 
 struct StabilizationCurves {
-    times: Vec<f64>,
+    times: Vec<i64>,
     pos_x: Vec<f64>,
     pos_y: Vec<f64>,
     rotation_deg: Vec<f64>,
@@ -775,7 +779,7 @@ fn stabilization_curves(
     series: &MotionSeries,
     out_w: f64,
     out_h: f64,
-    sigma_secs: f64,
+    sigma_s: f64,
     base: &ClipTransform,
 ) -> StabilizationCurves {
     let n = series.times.len();
@@ -802,8 +806,8 @@ fn stabilization_curves(
         ls[i] = ls[i - 1] + s.scale().max(1e-6).ln();
     }
 
-    let dt = series.times[n - 1] / (n - 1).max(1) as f64;
-    let sigma = if dt > 1e-9 { sigma_secs / dt } else { 0.0 };
+    let dt = crate::time::us_to_seconds(series.times[n - 1]) / (n - 1).max(1) as f64;
+    let sigma = if dt > 1e-9 { sigma_s / dt } else { 0.0 };
     let (stx, sty) = (gaussian_smooth(&tx, sigma), gaussian_smooth(&ty, sigma));
     let (sth, sls) = (gaussian_smooth(&th, sigma), gaussian_smooth(&ls, sigma));
 
@@ -878,6 +882,7 @@ mod tests {
     use crate::commands::{apply_command, Command};
     use crate::proc::SerialSpawn;
     use crate::project::{evaluate_transform, MediaItem, Settings};
+    use crate::time::Time;
     use crate::tracking::test_support::texture;
     use std::io::Write;
     use std::process::{Command as Proc, Stdio};
@@ -893,7 +898,9 @@ mod tests {
         }
         let n = offsets.len();
         MotionSeries {
-            times: (0..n).map(|i| i as f64 * dt).collect(),
+            times: (0..n)
+                .map(|i| (i as f64 * dt * 1e6).round() as i64)
+                .collect(),
             steps,
             centres: vec![(0.0, 0.0); n],
             width: 400,
@@ -1028,7 +1035,9 @@ mod tests {
         // 270*9/16 = 151.875 source px are visible horizontally.
         let n = 30;
         let series = MotionSeries {
-            times: (0..n).map(|i| i as f64 / 30.0).collect(),
+            times: (0..n)
+                .map(|i| (i as f64 / 30.0 * 1e6).round() as i64)
+                .collect(),
             steps: vec![Similarity::IDENTITY; n],
             centres: (0..n)
                 .map(|i| (240.0 + 1.0 * i as f64, 135.0 - 2.0 * i as f64))
@@ -1152,7 +1161,7 @@ mod tests {
             id: media_id,
             path: path.to_path_buf(),
             kind: MediaKind::Video,
-            duration_secs: Some(secs),
+            duration_us: Some((secs * 1e6).round() as i64),
             width: Some(W as u32),
             height: Some(H as u32),
             fps: Some(FPS),
@@ -1165,6 +1174,7 @@ mod tests {
                 name: "V".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .expect("track")
@@ -1177,9 +1187,9 @@ mod tests {
             Command::AddClip {
                 track_id,
                 media_id,
-                position_secs: 2.0,
-                source_in_secs: 0.0,
-                source_out_secs: secs,
+                start: Time::Us(2000000),
+                source_in: Time::Us(0),
+                source_out: Time::Us((secs * 1e6).round() as i64),
             },
         )
         .expect("clip")
@@ -1238,10 +1248,10 @@ mod tests {
         let mut max_err: f64 = 0.0;
         // Default region centre is the frame centre; content moves by -v*t.
         for j in 0..=24 {
-            let local = clip.timeline_duration_secs() * j as f64 / 24.0;
-            let tf = evaluate_transform(clip, clip.position_secs + local);
+            let local = (clip.timeline_duration_us() as f64 * j as f64 / 24000000.0).round() as i64;
+            let tf = evaluate_transform(clip, clip.start_us + local);
             let (px, py) = (tf.x * W as f64 / 2.0, -tf.y * H as f64 / 2.0);
-            let (ex, ey) = (-vx * local, -vy * local);
+            let (ex, ey) = (-vx * (local as f64 / 1e6), -vy * (local as f64 / 1e6));
             max_err = max_err.max((px - ex).abs()).max((py - ey).abs());
         }
         eprintln!("track_motion max error: {max_err:.3} px");
@@ -1278,11 +1288,11 @@ mod tests {
         )
         .expect("track region");
         let clip = clip_ref(&project, tid, cid);
-        let t0 = evaluate_transform(clip, clip.position_secs);
+        let t0 = evaluate_transform(clip, clip.start_us);
         let (cx, cy) = ((0.1 + 0.15) * W as f64, (0.2 + 0.2) * H as f64);
         assert!((t0.x * W as f64 / 2.0 - (cx - W as f64 / 2.0)).abs() < 1.5);
         assert!((-t0.y * H as f64 / 2.0 - (cy - H as f64 / 2.0)).abs() < 1.5);
-        let tf = evaluate_transform(clip, clip.position_secs + 2.0);
+        let tf = evaluate_transform(clip, clip.start_us + 2000000);
         assert!(
             tf.rotation_deg.abs() < 0.3 && (tf.scale_x - 1.0).abs() < 0.01,
             "{tf:?}"
@@ -1339,7 +1349,8 @@ mod tests {
         let mut rx = Vec::new();
         let mut ry = Vec::new();
         for (k, o) in offsets.iter().enumerate() {
-            let tf = evaluate_transform(clip, clip.position_secs + k as f64 / FPS);
+            let tf =
+                evaluate_transform(clip, clip.start_us + (k as f64 / FPS * 1e6).round() as i64);
             rx.push(-o.0 + tf.x * W as f64 / 2.0);
             ry.push(-o.1 - tf.y * H as f64 / 2.0);
         }
@@ -1356,7 +1367,7 @@ mod tests {
         }
         eprintln!("stabilize max deviation from ideal pan: {worst:.2} px");
         assert!(worst < 4.0, "pan not preserved: {worst} px");
-        let tf = evaluate_transform(clip, clip.position_secs + 1.0);
+        let tf = evaluate_transform(clip, clip.start_us + 1000000);
         assert!(tf.scale_x >= 1.0 && tf.scale_x <= MAX_AUTO_ZOOM);
         assert!(tf.rotation_deg.abs() < 0.3);
         std::fs::remove_dir_all(&dir).ok();
@@ -1439,7 +1450,7 @@ mod tests {
             id: media_id,
             path: png,
             kind: MediaKind::Image,
-            duration_secs: None,
+            duration_us: None,
             width: Some(64),
             height: Some(64),
             fps: None,
@@ -1452,6 +1463,7 @@ mod tests {
                 name: "V".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .expect("track")
@@ -1464,9 +1476,9 @@ mod tests {
             Command::AddClip {
                 track_id: tid,
                 media_id,
-                position_secs: 0.0,
-                source_in_secs: 0.0,
-                source_out_secs: 3.0,
+                start: Time::Us(0),
+                source_in: Time::Us(0),
+                source_out: Time::Us(3000000),
             },
         )
         .expect("clip")
@@ -1542,6 +1554,7 @@ mod tests {
                 name: "Overlay".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .expect("track")
@@ -1554,9 +1567,9 @@ mod tests {
             Command::AddClip {
                 track_id,
                 media_id,
-                position_secs: position,
-                source_in_secs: src_in,
-                source_out_secs: src_out,
+                start: Time::Us((position * 1e6).round() as i64),
+                source_in: Time::Us((src_in * 1e6).round() as i64),
+                source_out: Time::Us((src_out * 1e6).round() as i64),
             },
         )
         .expect("clip")
@@ -1622,28 +1635,28 @@ mod tests {
         let target = clip_ref(&project, ttid, tcid);
         // Keys are target-local and stay inside the target's 1 s span.
         for prop in [AnimProperty::PosX, AnimProperty::PosY] {
-            let times: Vec<f64> = target
+            let times: Vec<i64> = target
                 .keyframes
                 .iter()
                 .filter(|k| k.property == prop)
-                .flat_map(|k| k.keys.iter().map(|key| key.time_secs))
+                .flat_map(|k| k.keys.iter().map(|key| key.time_us))
                 .collect();
             assert_eq!(times.len(), 12, "{prop:?} keys");
-            assert!(times.first().expect("first").abs() < 1e-9);
-            assert!((times.last().expect("last") - 1.0).abs() < 1e-9);
-            assert!(times.iter().all(|&t| (-1e-9..=1.0 + 1e-9).contains(&t)));
+            assert!(times.first().expect("first").abs() < 1);
+            assert!((times.last().expect("last") - 1_000_000).abs() < 1);
+            assert!(times.iter().all(|&t| (0..=1_000_000).contains(&t)));
         }
-        assert!(target
-            .keyframes
-            .iter()
-            .all(|k| !matches!(k.property, AnimProperty::Rotation | AnimProperty::ScaleX)));
+        assert!(target.keyframes.iter().all(|k| !matches!(
+            k.property.anim(),
+            Some(AnimProperty::Rotation | AnimProperty::ScaleX)
+        )));
 
         // Through the compositor's evaluation, the target's centre sits on the tracked point.
         let mut max_err: f64 = 0.0;
         for j in 0..=8 {
             let t = 3.0 + j as f64 / 8.0;
-            let tf = evaluate_transform(target, t);
-            let (ex, ey) = pan_ndc(t, tracked_before.position_secs, vel);
+            let tf = evaluate_transform(target, (t * 1e6).round() as i64);
+            let (ex, ey) = pan_ndc(t, tracked_before.start_us as f64 / 1e6, vel);
             max_err = max_err.max((tf.x - ex).abs()).max((tf.y - ey).abs());
         }
         eprintln!("track_motion target max NDC error: {max_err:.5}");
@@ -1704,7 +1717,7 @@ mod tests {
             let (ex, ey) = pan_ndc(t, 2.0, vel);
             let (px, py) = (0.5 * ex, 0.5 * ey);
             let want = (-py + 0.3, px - 0.2);
-            let tf = evaluate_transform(target, t);
+            let tf = evaluate_transform(target, (t * 1e6).round() as i64);
             max_err = max_err
                 .max((tf.x - want.0).abs())
                 .max((tf.y - want.1).abs());
@@ -1756,7 +1769,7 @@ mod tests {
         let target = clip_ref(&project, ttid, tcid);
         for j in 0..=4 {
             let t = 3.0 + j as f64 / 4.0;
-            let tf = evaluate_transform(target, t);
+            let tf = evaluate_transform(target, (t * 1e6).round() as i64);
             let (ex, ey) = pan_ndc(t, 2.0, vel);
             assert!((tf.x - (ex + base.x)).abs() < 0.005, "x at {t}: {tf:?}");
             assert!((tf.y - (ey + base.y)).abs() < 0.005, "y at {t}: {tf:?}");
@@ -1815,6 +1828,7 @@ mod tests {
                 name: "A".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .expect("audio track")
@@ -1834,6 +1848,7 @@ mod tests {
                 name: "Adj".into(),
                 id: None,
                 sequence_id: None,
+                magnetic: Some(false),
             },
         )
         .expect("adj track")
@@ -1845,8 +1860,8 @@ mod tests {
             &mut project,
             Command::AddAdjustmentLayer {
                 track_id: adj_track,
-                position_secs: 3.0,
-                duration_secs: 1.0,
+                start: Time::Us(3000000),
+                duration: Time::Us(1000000),
             },
         )
         .expect("adjustment");
