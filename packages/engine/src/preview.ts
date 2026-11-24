@@ -36,6 +36,10 @@ export interface Preview {
   pause(): Promise<Flicks>;
   /** Shows the exact frame at `time`; resolves with the frame's start time, or null. */
   seek(time: Flicks): Promise<Flicks | null>;
+  /** Dragging the playhead: call on every move. Keyframe pictures while moving, exact at rest. */
+  scrub(time: Flicks): void;
+  /** The drag ended: resolves with the time of the exact frame on screen. */
+  scrubEnd(): Promise<Flicks>;
   setPreviewScale(scale: PreviewScale): void;
   /** Test hook: loses the WebGL context and restores it after `restoreAfterMs`. */
   loseContext(restoreAfterMs: number): void;
@@ -96,6 +100,7 @@ export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview>
       case "loaded":
       case "seeked":
       case "paused":
+      case "scrubbed":
         pending.get(message.id)?.resolve(message);
         pending.delete(message.id);
         return;
@@ -197,6 +202,17 @@ export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview>
         type: "seek",
         id,
         time,
+      }));
+      return reply.time;
+    },
+    scrub(time) {
+      audio.stop();
+      send({ type: "scrub", time });
+    },
+    async scrubEnd() {
+      const reply = await request<Extract<Reply, { type: "scrubbed" }>>((id) => ({
+        type: "scrub-end",
+        id,
       }));
       return reply.time;
     },

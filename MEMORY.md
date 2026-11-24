@@ -7,10 +7,9 @@ Last updated: 2026-11-24
 
 ## Status
 
-- Phase: M0 engine spike. S0.1 to S0.5 are merged into `main` (pull requests #1 to #4).
-- S0.6 (multiple layers) is built on `s0.6-layers`; its three "done when" items pass. In review as
-  a pull request.
-- Next slices: **S0.7 Scrubbing** and **S0.8 Streaming export** (both depend on S0.6).
+- Phase: M0 engine spike. S0.1 to S0.6 are merged into `main` (pull requests #1 to #5).
+- S0.7 (scrubbing) is done, with the owner's acceptance of the after-idle hitch (decision below).
+- Next slice: **S0.8 Streaming export**.
 - The owner has authorised completing and merging M0 slices without asking (2026-11-25), as long as
   each slice's "done when" items pass. Stop and report if a target is missed. The go / no-go
   decision record (S0.9) is the owner's to accept; nightly GPU CI needs a self-hosted runner from
@@ -47,6 +46,8 @@ Last updated: 2026-11-24
 | 2026-11-25 | Layers: each cut has a layer and a static transform (position, scale, opacity). Each layer keeps its own render target; the compositor draws layers bottom to top with premultiplied alpha. Sound comes from layer 0 until the audio engine mixes layers (M2). |
 | 2026-11-25 | Decoder budget: a pool of six decoders, five for streams and one for keyframe-only updates and seeks. Current runs get decoders first, top layer first; layers left over show their nearest keyframe twice a second. |
 | 2026-11-25 | The renderer accounts for its GPU memory (render targets, upload texture, decoded frames on loan) against a 1.5 GB ceiling; targets past it are refused. The browser does not report GPU memory, so this is accounting, not measurement. |
+| 2026-11-25 | Scrubbing: one seek in flight per layer, newest request wins; keyframe pictures at reduced size (within 960×540, no mipmaps) while the playhead moves, spaced at least 25 ms apart (up to 40 updates a second); exact frames once it rests 120 ms or the drag ends; a 12-entry cache of exact composites at half size. |
+| 2026-11-25 | Accepted by the owner: a 4K drag that starts after the GPU has idled may show UI frames up to ~55 ms for its first ~0.4 s. S0.7 counts as done; proxies (M6) are the later fix. |
 | 2026-11-24 | Design system v1: dark-first with a full light theme, strictly neutral grey chrome, one amber accent (chosen over blue, violet and magenta; warning is yellow), Geist for the interface and Geist Mono for numbers (both OFL, shipped with the app), 4px grid, 22–28px controls, shadows only on floating surfaces and knobs. It lives in the repository: rules in `docs/design-system/`, tokens and styles in `packages/ui/`. `tokens.json` is the source of truth. |
 
 ## Open questions
@@ -84,6 +85,7 @@ Ask the project owner for the locations.
 
 ## Log
 
+- 2026-11-25 — S0.7 scrubbing (Chrome 156, RTX 5060), 4-second drags, one request per display frame: with the GPU awake, 4K H.264, 4K HEVC, 1080p and three 1080p layers all gave 40 picture updates a second per layer, worst UI frame 6–12 ms, exact resting frame. After 10 s of GPU idle, the first ~0.4 s of a 4K drag had 6 UI frames over 20 ms (worst 42–55 ms); 1080p one at 24 ms. Measured: decoding keyframes alone does not stall after idle; importing the 4K frame into a texture does, at any target size. A start ramp and reduced-size uploads did not remove it.
 - 2026-11-25 — S0.6 layers (Chrome 156, RTX 5060): three 1080p60 layers at 60 fps, 0 dropped, 127 MB accounted. Two 4K60 layers at full preview resolution (3840×2160) at 59.6–60.6 fps, 6 dropped per layer, all at the start; at 1/2 resolution 60 fps with 0 dropped, 232 MB. A 5-minute two-4K play at full resolution peaked at 374 MB of the 1,536 MB ceiling, 0 late, 0 of 49,477 refreshes out of sync. Seven 1080p layers with five stream decoders: the top five at 59.6 fps, the bottom two on keyframe updates (2 a second), no stall. Known issue: 4K playback still drops 2–6 frames at the very start on the audio clock (decoder warm-up); worth a look in S0.9.
 - 2026-11-25 — S0.5 cuts: a seeded 400-cut list (320 s) over two H.264 and one HEVC 4K60 file played with 308 decoder switches, 0 cuts held, 0 inexact, 0 frames dropped, 0 late, 19,221 frames presented, 0 of 52,778 refreshes out of sync, 0 audio underruns. Strings of 2, 3 and 4 three-frame clips between 1 s clips: 0 held, 0 inexact. Found and fixed on the way: start-of-run decoders started at the run start instead of the playhead; burst decoding stalling the GPU; a flush deadlock when the decoder's output surfaces were all held; one-at-a-time packet reads; the audio clock stopping one output latency short of the end. Known limit: hard cuts between different audio make a small step (no edit-point fades until M2).
 - 2026-11-25 — S0.4 audio clock: a 10-minute play of 1080p60 with AAC audio (Chrome 156) gave 36,060 frames, 0 dropped, 0 late, 0 of 99,167 refreshes out of sync, 0 audio underruns, main thread 0 long tasks. Beep onsets decoded through our path match ffmpeg's decode of the same file to the sample, from four start positions. 10 of 10 pause/resume cycles resumed on the frame shown at pause; the largest output step at fades (0.065) stays below normal playback (0.246). Not measured acoustically: output latency comes from the browser's `getOutputTimestamp()`, and display latency is assumed to be one refresh.
