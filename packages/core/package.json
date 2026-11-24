@@ -13,6 +13,7 @@
     "build:schema": "node scripts/build-schema.mjs"
   },
   "dependencies": {
+    "immer": "^11.2.10",
     "zod": "^4.6.7"
   },
   "devDependencies": {
