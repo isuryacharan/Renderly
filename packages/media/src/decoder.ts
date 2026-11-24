@@ -15,6 +15,7 @@ import {
 } from "mediabunny";
 import { CreditGate } from "./credits";
 import { createExactSeeker, type ExactSeeker } from "./exact-seek";
+import { decodeRange } from "./range-decode";
 import type {
   DecodeStats,
   FromWorker,
@@ -36,6 +37,8 @@ interface OpenFile {
   samples: VideoSampleSink;
   packets: EncodedPacketSink;
   seeker: ExactSeeker | null;
+  config: VideoDecoderConfig;
+  codec: string;
   /** Timestamp of the first video frame, in seconds. Source time 0 maps to it. */
   first: number;
   credits: CreditGate;
@@ -87,6 +90,8 @@ export function serveDecoder(endpoint: Endpoint): void {
         samples: new VideoSampleSink(video),
         packets,
         seeker: createExactSeeker(packets, config, codec),
+        config,
+        codec,
         first,
         credits: new CreditGate(maxFramesInFlight),
       };
@@ -152,18 +157,18 @@ export function serveDecoder(endpoint: Endpoint): void {
     }
   }
 
-  async function play(f: OpenFile, id: number, from: Flicks, to: Flicks): Promise<number> {
-    let frames = 0;
-    // The end is exclusive: a frame starting exactly at `to` belongs to whatever comes next.
-    const samples = f.samples.samples(lookupSeconds(from, f.first), f.first + flicksToSeconds(to));
-    for await (const sample of samples) {
-      const frame = sample.toVideoFrame();
-      const { timestamp, duration } = sample;
-      sample.close();
-      if (!(await send(f, id, frame, timestamp, duration))) break;
-      frames++;
-    }
-    return frames;
+  function play(f: OpenFile, id: number, from: Flicks, to: Flicks, paceMs: number) {
+    return decodeRange({
+      packets: f.packets,
+      config: f.config,
+      codec: f.codec,
+      from: lookupSeconds(from, f.first),
+      // The end is exclusive: a frame starting exactly at `to` belongs to whatever comes next.
+      end: f.first + flicksToSeconds(to),
+      paceMs,
+      cancelled: () => current !== id,
+      deliver: (frame, timestamp, duration) => send(f, id, frame, timestamp, duration),
+    });
   }
 
   async function seek(f: OpenFile, id: number, time: Flicks, mode: SeekMode): Promise<number> {
@@ -222,7 +227,9 @@ export function serveDecoder(endpoint: Endpoint): void {
         });
         return;
       case "play":
-        return run(message.id, (f) => play(f, message.id, message.from, message.to));
+        return run(message.id, (f) =>
+          play(f, message.id, message.from, message.to, message.paceMs ?? 0),
+        );
       case "seek":
         return run(message.id, (f) => seek(f, message.id, message.time, message.mode));
       case "stop":

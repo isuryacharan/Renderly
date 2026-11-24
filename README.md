@@ -17,6 +17,7 @@ community-made packs, distributed through a free store.
 | S0.2 Decode worker | Opens files by byte range, streams frames, exact seek | 6.3 GB file opens in 26 ms; 4K long-GOP exact seek median 86 ms |
 | S0.3 Render worker | One clip on a worker-owned WebGL2 canvas | 4K60 for 2 minutes: 0 dropped frames, main thread idle |
 | S0.4 Audio clock | Sound plays from an AudioWorklet; the picture follows it | 10 minutes: 0 of 99,167 refreshes out of sync, no clicks on pause or resume |
+| S0.5 Cuts across files | An edit list over several files, decoders prepared ahead | 400 cuts over H.264 and HEVC 4K60: 0 dropped frames, every cut on its exact frame |
 
 ## Run it
 

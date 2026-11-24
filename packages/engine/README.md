@@ -1,19 +1,23 @@
 # @renderly/engine
 
-The render worker: a WebGL2 context on an `OffscreenCanvas`, fed by a decode worker over a
-`MessageChannel`. The main thread sends commands and receives a stats message once a second;
-frames never pass through it.
+The render worker: a WebGL2 context on an `OffscreenCanvas`, fed by a pool of decode workers over
+`MessageChannel`s. It plays an edit list of cuts across files on the audio clock. The main thread
+sends commands and receives a stats message once a second; frames never pass through it.
 
-Status: M0 spike (slice S0.3). One clip, no compositing yet (S0.6), and a display-refresh clock
-until the audio clock exists (S0.4).
+Status: M0 spike (slices S0.3 to S0.5). One track of cuts; no compositing yet (S0.6).
 
 ## Use
 
 ```ts
 import { createPreview } from "@renderly/engine";
 
-const preview = createPreview(canvas); // starts a decode worker and a render worker
-const info = await preview.open(file);
+const preview = await createPreview(canvas); // decode pool, render worker, audio output
+const info = await preview.open(file); // one file as a timeline of one cut
+// or an edit list over several files (times in flicks):
+await preview.load([fileA, fileB], [
+  { source: 0, in: 0, out: 2 * FLICKS_PER_SECOND, start: 0 },
+  { source: 1, in: 30 * FLICKS_PER_SECOND, out: 31 * FLICKS_PER_SECOND, start: 2 * FLICKS_PER_SECOND },
+]);
 preview.play(0); // flicks
 preview.pause();
 await preview.seek(time); // shows the exact frame
@@ -31,6 +35,18 @@ preview.onStats((s) => console.log(s.fps, s.dropped, s.late));
    closed straight after.
 4. `Presenter` draws the working target into the canvas, letterboxed, at device-pixel size.
 
+## Cuts and decoder scheduling
+
+Consecutive cuts that continue the same footage are merged into runs (`timeline.ts`), so split
+points play straight through. Each run gets a decoder stream: the run at the playhead, the two
+after it, and every run starting within 1.5 s (up to eight). A decoder is freed as soon as its run
+is fully decoded, so strings of clips a few frames long are prepared one after another. Idle
+decoders are reused, preferring one that already has the file open.
+
+Streams prepared while the picture plays are paced: one decode submission every 8 ms. Feeding a
+hardware decoder 4K frames in a burst stalls the browser's GPU thread for 12-70 ms and drops
+frames on screen; paced, three decoders at once cause no stall (measured in S0.5).
+
 ## Playback start
 
 Starting a hardware decoder stalls the GPU briefly; display refreshes arrive 30-100 ms late for
@@ -47,7 +63,8 @@ replaces it.
 ## Files
 
 ```
-src/preview.ts        main-thread client: workers, canvas transfer, resize observer
+src/preview.ts        main-thread client: workers, canvas transfer, resize observer, audio
+src/timeline.ts       cuts, runs and which runs to prepare (pure)
 src/renderer.ts       serveRenderer: the worker's loop and message handling
 src/render-worker.ts  worker entry point
 src/frame-upload.ts   VideoFrame → working target (mipmaps, rotation, contain fit)

@@ -1,8 +1,8 @@
 // The audio clock, shared between the AudioWorklet (writer), the main thread (writes the
 // output-time mapping) and the render worker (reader), in one SharedArrayBuffer.
 //
-// The worklet publishes, after every render quantum, the context frame at the end of the quantum
-// and how many session frames it has consumed by then. The main thread publishes
+// The worklet publishes, after every render quantum, how many session frames it has consumed and
+// the context frame where the last of them ends (the quantum end in steady play). The main thread publishes
 // `getOutputTimestamp()`: which context time is reaching the speakers at which wall-clock time.
 // Together they give the session time being heard at any wall-clock time, which is what the
 // picture must match. Float fields are guarded by sequence counters (a seqlock), since a reader
@@ -19,7 +19,7 @@ const UNDERRUNS = 4;
 const MAP_SEQ = 5;
 const INTS = 8;
 // Float64 fields
-const QUANTUM_END_FRAME = 0; // context frame at the end of the last quantum
+const QUANTUM_END_FRAME = 0; // context frame where the last consumed sample ends
 const CONSUMED = 1; // session frames consumed by then
 const SAMPLE_RATE = 2;
 const MAP_CONTEXT_TIME = 3; // context time reaching the speakers...

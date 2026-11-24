@@ -4,7 +4,7 @@ import "@renderly/ui/fonts.css";
 import "@renderly/ui/styles.css";
 import "./spike.css";
 import { AudioRing, OUTPUT_SAMPLE_RATE, serveAudioDecoder } from "@renderly/audio";
-import { createPreview, type PreviewScale, type RenderStats } from "@renderly/engine";
+import { createPreview, type Cut, type PreviewScale, type RenderStats } from "@renderly/engine";
 import {
   FLICKS_PER_SECOND,
   flicksToSeconds,
@@ -12,6 +12,7 @@ import {
   type MediaInput,
 } from "@renderly/media";
 import { beepOnsets } from "./beeps";
+import { shortClipList, stressList } from "./stress";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const mediaSelect = $<HTMLSelectElement>("media");
@@ -62,6 +63,11 @@ preview.onStats((stats) => {
     `worker tick mean ${stats.tickMeanMs} ms, max ${stats.tickMaxMs} ms; start ${stats.startLatencyMs} ms\n` +
     `working ${stats.working.width}x${stats.working.height}  frames on loan ${stats.framesOutstanding}\n` +
     `context ${stats.contextLost ? "LOST" : "ok"}, restored ${stats.contextRestores} times\n` +
+    `cuts: ${stats.cuts.passed} passed, ${stats.cuts.held} held (max ${stats.cuts.maxHoldMs} ms), ` +
+    `${stats.cuts.inexact} inexact, ${stats.cuts.droppedAtCuts} frames dropped at cuts
+` +
+    `decoders: ${stats.decoders.busy} of ${stats.decoders.pool} busy, ${stats.decoders.opens} opens
+` +
     `main thread: ${longTasks} long tasks, max timer lag ${Math.round(maxTimerLagMs)} ms`;
 });
 
@@ -91,25 +97,29 @@ async function pause(): Promise<number> {
 }
 
 /**
- * Decodes `seconds` of audio from `from` through the same decoder code the audio worker runs,
- * and returns where the beeps land, in samples from `from`.
+ * Decodes `seconds` of an edit list's audio from timeline time `from`, through the same decoder
+ * code the audio worker runs, and returns where the beeps land, in samples from `from`.
+ * One source and no cuts means the whole file.
  */
-async function decodedBeeps(input: MediaInput, from: number, seconds: number) {
+async function decodedBeeps(
+  sources: MediaInput[],
+  cuts: Cut[] | null,
+  from: number,
+  seconds: number,
+): Promise<number[]> {
   const channel = new MessageChannel();
   serveAudioDecoder(channel.port1 as unknown as Endpoint);
   const port = channel.port2;
-  const reply = (type: string) =>
-    new Promise<{ result?: { ok: boolean } }>((resolve) => {
-      port.onmessage = (event: MessageEvent<{ type: string }>) => {
-        if (event.data.type === type || event.data.type === "error")
-          resolve(event.data as { result?: { ok: boolean } });
-      };
-    });
-  const opened = reply("opened");
-  port.postMessage({ type: "open", id: 1, input });
-  if (!(await opened).result?.ok) throw new Error("No usable audio");
+  const loaded = new Promise<{ type: string; results?: { ok: boolean }[] }>((resolve) => {
+    port.onmessage = (event: MessageEvent<{ type: string; results?: { ok: boolean }[] }>) =>
+      resolve(event.data);
+  });
+  port.postMessage({ type: "load", id: 1, sources });
+  const reply = await loaded;
+  if (!reply.results?.some((result) => result.ok)) throw new Error("No usable audio");
   const frames = Math.round(seconds * OUTPUT_SAMPLE_RATE);
   const ring = AudioRing.create(1, frames + 1);
+  const list = cuts ?? [{ source: 0, in: 0, out: 24 * 3600 * FLICKS_PER_SECOND, start: 0 }];
   port.postMessage({
     type: "fill",
     session: 1,
@@ -117,6 +127,7 @@ async function decodedBeeps(input: MediaInput, from: number, seconds: number) {
     channels: 1,
     capacity: frames + 1,
     from,
+    cuts: list,
   });
   while (ring.readable < frames) await new Promise((r) => setTimeout(r, 20));
   port.postMessage({ type: "stop" });
@@ -136,6 +147,8 @@ const results = {
   },
   pause,
   decodedBeeps,
+  stressList,
+  shortClipList,
   FLICKS_PER_SECOND,
 };
 Object.assign(window, { previewResults: results, preview });

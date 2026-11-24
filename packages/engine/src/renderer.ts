@@ -1,26 +1,34 @@
-// The render worker: owns the OffscreenCanvas and its WebGL2 context, receives frames straight
-// from a decode worker over a MessagePort, and puts the frame due at the playhead on screen.
+// The render worker: owns the OffscreenCanvas and its WebGL2 context, plays an edit list from a
+// pool of decode workers (frames arrive straight from them over MessagePorts), and puts the frame
+// due at the playhead on screen.
 //
-// Clips with sound follow the audio clock: the playhead is the session time being heard when the
-// next refresh reaches the screen. Clips without sound run on the display refresh. Either way the
+// Clips with sound follow the audio clock: the playhead is the timeline time being heard when the
+// next refresh reaches the screen. Otherwise playback runs on the display refresh. Either way the
 // start waits until the decoder is primed and the display is steady (see PREROLL_FRAMES).
+//
+// Decoder scheduling: the run at the playhead and the runs coming up (timeline.ts `plan`) each get
+// a decoder stream, pre-rolled before their cut. Idle decoders are reused, preferring one that
+// already has the right file open.
 
+import { ClockBuffer, heardSessionTime, PlaybackState } from "@renderly/audio";
 import {
   DecodeClient,
   DEFAULT_MAX_FRAMES_IN_FLIGHT,
   FLICKS_PER_SECOND,
   type DecodedFrame,
   type Endpoint,
+  type MediaInput,
+  type OpenResult,
 } from "@renderly/media";
-import { ClockBuffer, heardSessionTime, PlaybackState } from "@renderly/audio";
 import * as THREE from "three";
 import { FrameQueue } from "./frame-queue";
 import { FrameUploader } from "./frame-upload";
 import { makeTarget } from "./gpu";
 import { containRect, workingSize, type PreviewScale, type Size } from "./layout";
 import { Presenter } from "./present";
+import type { FromRenderer, LoadResult, RenderStats, ToRenderer } from "./protocol";
 import { RefreshMeter } from "./refresh-meter";
-import type { FromRenderer, RenderStats, ToRenderer } from "./protocol";
+import { plan, runAt, sourceTime, timelineTime, toRuns, type Cut, type Run } from "./timeline";
 
 /** What the renderer needs from its worker scope. */
 export interface RendererScope extends Endpoint {
@@ -35,10 +43,31 @@ interface Gpu {
   target: THREE.WebGLRenderTarget;
 }
 
-interface Clip {
-  sequence: Size;
-  rotation: number;
+type SourceInfo = Extract<OpenResult, { ok: true }>;
+
+interface Slot {
+  client: DecodeClient;
+  /** Source the decoder has open, or -1. */
+  source: number;
+  stream: Stream | null;
+  lastUsed: number;
+}
+
+/** A decoded frame placed on the timeline. */
+interface TimelineFrame {
+  decoded: DecodedFrame;
+  run: number;
+  time: number;
   duration: number;
+}
+
+interface Stream {
+  run: number;
+  slot: Slot;
+  queue: FrameQueue<TimelineFrame>;
+  ended: boolean;
+  stopped: boolean;
+  stop: () => void;
 }
 
 const STATS_INTERVAL_MS = 1000;
@@ -53,34 +82,71 @@ const PREROLL_FRAMES = DEFAULT_MAX_FRAMES_IN_FLIGHT;
 const STEADY_REFRESHES = 3;
 const MAX_START_WAIT_MS = 1000;
 /**
- * For this long after the clock starts, a late refresh delays the clock instead of skipping
- * frames: the first uploads from a new decoder can still stall the GPU once or twice.
+ * For this long after the display clock starts, a late refresh delays the clock instead of
+ * skipping frames: the first uploads from a new decoder can still stall the GPU once or twice.
  */
 const START_GRACE_MS = 500;
+/** Runs after the current one that always have a decoder ready, and how far ahead in time. */
+const MIN_RUNS_AHEAD = 2;
+const LOOKAHEAD = 1.5 * FLICKS_PER_SECOND;
+/**
+ * Runs that may be prepared at once. More than there are decoders: a decoder is freed as soon as
+ * its run is fully decoded (its frames wait in the render queue), so a string of clips a few
+ * frames long is prepared one after another on whichever decoder frees up first.
+ */
+const MAX_PREPARED_RUNS = 8;
+/**
+ * Gap between decode submissions for streams prepared while the picture is playing. Feeding a
+ * hardware decoder 4K frames in a burst stalls the GPU thread and drops frames on screen; 8 ms
+ * per decoder does not (measured in S0.5, also with three decoders at once). The stream for the
+ * run where playback starts is not paced: nothing is on screen yet.
+ */
+const PREPARE_PACE_MS = 8;
 
 export function serveRenderer(scope: RendererScope): void {
   let gpu: Gpu | null = null;
-  let decoder: DecodeClient | null = null;
-  let clip: Clip | null = null;
+  let slots: Slot[] = [];
+  let sources: { input: MediaInput; info: SourceInfo | null }[] = [];
+  let runs: Run[] = [];
+  let duration = 0;
+  let sequence: Size = { width: 2, height: 2 };
   let canvasSize: Size = { width: 1, height: 1 };
   let scale: PreviewScale = 1;
   let contextLost = false;
   let contextRestores = 0;
+  let clock: ClockBuffer | null = null;
 
-  const queue = new FrameQueue<DecodedFrame>();
+  const streams = new Map<number, Stream>();
   let playing = false;
-  let playbackStop: (() => void) | null = null;
-  let decodeEnded = false;
   let playFrom = 0;
   let clockStart: number | null = null;
   let playhead = 0;
-  /** Interval of the frame in the working target, if any. */
-  let shown: { time: number; duration: number } | null = null;
+  /** The frame in the working target, if any. */
+  let shown: { time: number; duration: number; run: number } | null = null;
   let dirty = false;
+  /** Audio session this playback follows; 0 when it runs on the display refresh. */
+  let audioSession = 0;
+  let goSent = false;
+  /** Time of the first frame this play put on screen, to check resume continuity. */
+  let firstShown: number | null = null;
 
+  // Stats since the last play started.
   let presented = 0;
   let dropped = 0;
   let late = 0;
+  let syncChecks = 0;
+  let outOfSync = 0;
+  let syncMinMs = Infinity;
+  let syncMaxMs = -Infinity;
+  let currentRun = -1;
+  let cutAt: number | null = null;
+  let cutsPassed = 0;
+  let cutsHeld = 0;
+  let maxHoldMs = 0;
+  let cutsInexact = 0;
+  let droppedAtCuts = 0;
+  let opens = 0;
+  // Per report interval.
   let presentedSinceReport = 0;
   let tickTotal = 0;
   let tickMax = 0;
@@ -92,23 +158,12 @@ export function serveRenderer(scope: RendererScope): void {
   let steadyRefreshes = 0;
   let playRequestedAt = 0;
   let startLatency = 0;
-  let clock: ClockBuffer | null = null;
-  /** Audio session this playback follows; 0 when it runs on the display refresh. */
-  let audioSession = 0;
-  let goSent = false;
-  /** Time of the first frame this play put on screen, to check resume continuity. */
-  let firstShown: number | null = null;
-  // Picture against sound, per refresh: how far the heard time is into the frame on screen.
-  let syncChecks = 0;
-  let outOfSync = 0;
-  let syncMinMs = Infinity;
-  let syncMaxMs = -Infinity;
 
   const post = (message: FromRenderer) => scope.postMessage(message, []);
 
   function init(
     canvas: OffscreenCanvas,
-    port: MessagePort,
+    ports: MessagePort[],
     audioClock: SharedArrayBuffer,
     size: Size,
   ): void {
@@ -140,7 +195,12 @@ export function serveRenderer(scope: RendererScope): void {
       target: makeTarget(2, 2),
     };
     resize(size);
-    decoder = new DecodeClient(port);
+    slots = ports.map((port) => ({
+      client: new DecodeClient(port),
+      source: -1,
+      stream: null,
+      lastUsed: 0,
+    }));
     scope.requestAnimationFrame(tick);
     post({ type: "ready" });
   }
@@ -152,8 +212,8 @@ export function serveRenderer(scope: RendererScope): void {
   }
 
   function rebuildTarget(): void {
-    if (!gpu || !clip) return;
-    const size = workingSize(clip.sequence, scale);
+    if (!gpu) return;
+    const size = workingSize(sequence, scale);
     gpu.target.dispose();
     gpu.target = makeTarget(size.width, size.height);
   }
@@ -163,64 +223,192 @@ export function serveRenderer(scope: RendererScope): void {
     if (!playing && shown) void showExact(shown.time);
   }
 
-  function releaseQueued(): void {
-    for (const frame of queue.clear()) frame.release();
+  // --- decoders ---
+
+  async function openOn(slot: Slot, source: number): Promise<OpenResult> {
+    const entry = sources[source];
+    if (!entry) throw new Error(`No source ${source}`);
+    const result = await slot.client.open(entry.input);
+    slot.source = result.ok ? source : -1;
+    opens++;
+    return result;
   }
 
-  function stopPlayback(): void {
-    playing = false;
-    playbackStop?.();
-    playbackStop = null;
-    releaseQueued();
+  /** An idle decoder, preferring one that already has `source` open; null if all are busy. */
+  function idleSlot(source: number): Slot | null {
+    const idle = slots.filter((slot) => !slot.stream);
+    return (
+      idle.find((slot) => slot.source === source) ??
+      idle.sort((a, b) => a.lastUsed - b.lastUsed)[0] ??
+      null
+    );
   }
+
+  /**
+   * Starts a decoder stream for run `index` if it has none and a decoder is free. It decodes from
+   * timeline time `t` when that falls inside the run (playback starting mid-run), else from the
+   * run's start.
+   */
+  function ensureStream(index: number, t: number): void {
+    const run = runs[index];
+    if (!run || streams.has(index)) return;
+    const slot = idleSlot(run.source);
+    if (!slot) return;
+    const stream: Stream = {
+      run: index,
+      slot,
+      queue: new FrameQueue<TimelineFrame>(),
+      ended: false,
+      stopped: false,
+      stop: () => {},
+    };
+    slot.stream = stream;
+    slot.lastUsed = performance.now();
+    streams.set(index, stream);
+    const from = t > run.start ? sourceTime(run, t) : run.in;
+    const paceMs = clockStart === null && index === runAt(runs, playFrom) ? 0 : PREPARE_PACE_MS;
+    startStream(stream, run, from, paceMs).catch((error: unknown) => {
+      post({ type: "error", message: `Run ${index}: ${String(error)}` });
+      retire(stream);
+    });
+  }
+
+  async function startStream(
+    stream: Stream,
+    run: Run,
+    from: number,
+    paceMs: number,
+  ): Promise<void> {
+    const { slot } = stream;
+    if (slot.source !== run.source) {
+      const result = await openOn(slot, run.source);
+      if (!result.ok) throw new Error(`Cannot open source ${run.source}`);
+    }
+    if (stream.stopped) return;
+    const playback = slot.client.play(
+      from,
+      run.out,
+      (decoded) => {
+        if (stream.stopped) {
+          decoded.release();
+          return;
+        }
+        stream.queue.push({
+          decoded,
+          run: stream.run,
+          time: timelineTime(run, decoded.time),
+          duration: decoded.duration,
+        });
+      },
+      paceMs,
+    );
+    stream.stop = playback.stop;
+    await playback.done;
+    stream.ended = true;
+    // Everything is decoded and queued here: the decoder can prepare another run.
+    if (slot.stream === stream) slot.stream = null;
+  }
+
+  /** Stops a stream, frees its decoder and releases what it still holds. */
+  function retire(stream: Stream): number {
+    if (stream.stopped) return 0;
+    stream.stopped = true;
+    stream.stop();
+    const left = stream.queue.clear();
+    for (const frame of left) frame.decoded.release();
+    if (stream.slot.stream === stream) stream.slot.stream = null;
+    streams.delete(stream.run);
+    return left.length;
+  }
+
+  function retireAll(): void {
+    for (const stream of [...streams.values()]) retire(stream);
+  }
+
+  // --- pictures ---
 
   /**
    * Uploads a frame into the working target and releases it at once. Returns false when it
    * could not be uploaded because the context is lost.
    */
-  function show(frame: DecodedFrame): boolean {
+  function show(decoded: DecodedFrame, run: number, time: number, frameDuration: number): boolean {
     try {
-      shown = { time: frame.time, duration: frame.duration };
-      if (!gpu || !clip || contextLost) return false;
-      gpu.uploader.upload(frame.frame, clip.rotation, gpu.target);
+      shown = { time, duration: frameDuration, run };
+      const info = sources[runs[run]?.source ?? 0]?.info;
+      if (!gpu || !info || contextLost) return false;
+      gpu.uploader.upload(decoded.frame, info.rotation, gpu.target);
       dirty = true;
       return true;
     } finally {
-      frame.release();
+      decoded.release();
     }
   }
 
-  async function showExact(time: number): Promise<number | null> {
-    if (!decoder) return null;
-    const frame = await decoder.seek(time, "exact");
-    if (!frame) return null;
-    show(frame);
-    return frame.time;
+  /** Shows the exact frame at timeline time `t`. Resolves with the frame's timeline time. */
+  async function showExact(t: number): Promise<number | null> {
+    const index = runAt(runs, t);
+    const run = runs[index];
+    if (!run) return null;
+    const slot = idleSlot(run.source);
+    if (!slot) return null;
+    if (slot.source !== run.source && !(await openOn(slot, run.source)).ok) return null;
+    slot.lastUsed = performance.now();
+    const decoded = await slot.client.seek(sourceTime(run, t), "exact");
+    if (!decoded) return null;
+    const time = timelineTime(run, decoded.time);
+    show(decoded, index, time, decoded.duration);
+    return time;
+  }
+
+  // --- playback ---
+
+  function stopPlayback(): void {
+    playing = false;
+    retireAll();
   }
 
   function play(from: number, session: number): void {
-    if (!decoder || !clip) return;
+    if (runs.length === 0) return;
     stopPlayback();
     playing = true;
     audioSession = session;
     goSent = false;
     firstShown = null;
-    syncChecks = outOfSync = 0;
-    syncMinMs = Infinity;
-    syncMaxMs = -Infinity;
-    decodeEnded = false;
     playFrom = from;
     playhead = from;
     clockStart = null;
+    currentRun = runAt(runs, from);
+    cutAt = null;
     presented = dropped = late = 0;
+    syncChecks = outOfSync = 0;
+    syncMinMs = Infinity;
+    syncMaxMs = -Infinity;
+    cutsPassed = cutsHeld = cutsInexact = droppedAtCuts = opens = 0;
+    maxHoldMs = 0;
     playRequestedAt = performance.now();
     startLatency = 0;
-    const playback = decoder.play(from, clip.duration, (frame) => queue.push(frame));
-    playbackStop = playback.stop;
-    playback.done.then(
-      () => (decodeEnded = true),
-      (error: unknown) => post({ type: "error", message: String(error) }),
-    );
+    schedule(from);
+  }
+
+  /** Keeps decoder streams on the runs `plan` wants, and retires the ones already played. */
+  function schedule(t: number): void {
+    const wanted = plan(runs, t, {
+      minAhead: MIN_RUNS_AHEAD,
+      lookahead: LOOKAHEAD,
+      maxStreams: MAX_PREPARED_RUNS,
+    });
+    const first = wanted[0] ?? runs.length;
+    for (const stream of [...streams.values()]) {
+      if (stream.run < first) droppedAtCuts += retire(stream);
+    }
+    for (const index of wanted) ensureStream(index, t);
+  }
+
+  /** True when the stream for the run at the start of playback is primed. */
+  function primed(): boolean {
+    const stream = streams.get(runAt(runs, playFrom));
+    if (!stream) return false;
+    return stream.queue.length >= PREROLL_FRAMES || (stream.ended && stream.queue.length > 0);
   }
 
   function tick(now: number): void {
@@ -231,41 +419,20 @@ export function serveRenderer(scope: RendererScope): void {
     refreshes.add(refresh);
     const lateRefresh = refreshes.isLate(refresh);
     steadyRefreshes = refreshes.period !== null && !lateRefresh ? steadyRefreshes + 1 : 0;
+
     if (playing) {
+      const isPrimed = clockStart === null && primed();
       const ready =
-        (queue.length >= PREROLL_FRAMES && steadyRefreshes >= STEADY_REFRESHES) ||
-        (decodeEnded && queue.length > 0) ||
-        (queue.length > 0 && now - playRequestedAt > MAX_START_WAIT_MS);
+        isPrimed &&
+        (steadyRefreshes >= STEADY_REFRESHES || now - playRequestedAt > MAX_START_WAIT_MS);
       const time = audioSession
         ? audioTime(now, ready)
         : refreshTime(now, ready, refresh, lateRefresh);
-      if (time !== null) {
-        playhead = time;
-        const pick = queue.take(playhead);
-        for (const frame of pick.dropped) frame.release();
-        dropped += pick.dropped.length;
-        if (pick.frame) {
-          if (show(pick.frame)) {
-            firstShown ??= shown?.time ?? null;
-            presented++;
-            presentedSinceReport++;
-          } else {
-            dropped++;
-          }
-        } else if (shown && playhead >= shown.time + shown.duration && !decodeEnded) {
-          late++;
-        }
-        if (audioSession && shown) checkSync();
-        if (decodeEnded && queue.length === 0 && clip && playhead >= clip.duration) {
-          playing = false;
-          playbackStop = null;
-        }
-      }
+      if (time !== null) advance(time, now);
     }
 
-    if (dirty && gpu && clip && !contextLost) {
-      const picture = workingSize(clip.sequence, 1);
-      gpu.presenter.present(gpu.target.texture, containRect(picture, canvasSize));
+    if (dirty && gpu && !contextLost) {
+      gpu.presenter.present(gpu.target.texture, containRect(sequence, canvasSize));
       dirty = false;
     }
 
@@ -278,6 +445,60 @@ export function serveRenderer(scope: RendererScope): void {
       lastReport = now;
     }
     scope.requestAnimationFrame(tick);
+  }
+
+  /** Moves playback to timeline time `time`: schedules decoders and shows the frame due. */
+  function advance(time: number, now: number): void {
+    playhead = time;
+    if (playhead >= duration) {
+      stopPlayback();
+      return;
+    }
+    schedule(playhead);
+    const index = runAt(runs, playhead);
+    if (index !== currentRun) {
+      if (index >= 0) {
+        cutsPassed++;
+        cutAt = now;
+      }
+      currentRun = index;
+    }
+    const stream = streams.get(index);
+    if (!stream) {
+      if (index >= 0) late++;
+      return;
+    }
+    const pick = stream.queue.take(playhead);
+    for (const frame of pick.dropped) frame.decoded.release();
+    dropped += pick.dropped.length;
+    if (cutAt !== null) droppedAtCuts += pick.dropped.length;
+
+    const frame = pick.frame;
+    if (frame) {
+      if (cutAt !== null) firstFrameOfCut(frame, now);
+      if (show(frame.decoded, frame.run, frame.time, frame.duration)) {
+        firstShown ??= frame.time;
+        presented++;
+        presentedSinceReport++;
+      } else {
+        dropped++;
+      }
+    } else if (!shown || shown.run !== index || playhead >= shown.time + shown.duration) {
+      if (!stream.ended || stream.queue.length > 0) late++;
+    }
+    if (audioSession && shown) checkSync();
+  }
+
+  /** Records hold time and exactness for the first frame shown after a cut. */
+  function firstFrameOfCut(frame: TimelineFrame, now: number): void {
+    const holdMs = now - (cutAt ?? now);
+    if (holdMs > 0) {
+      cutsHeld++;
+      maxHoldMs = Math.max(maxHoldMs, holdMs);
+    }
+    // The first frame after a cut must be the one covering the playhead.
+    if (!(frame.time <= playhead && playhead < frame.time + frame.duration)) cutsInexact++;
+    cutAt = null;
   }
 
   /** Display-refresh clock, for clips without sound. */
@@ -351,8 +572,8 @@ export function serveRenderer(scope: RendererScope): void {
       working: gpu
         ? { width: gpu.target.width, height: gpu.target.height }
         : { width: 0, height: 0 },
-      framesOutstanding: decoder?.outstanding ?? 0,
-      queued: queue.length,
+      framesOutstanding: slots.reduce((n, slot) => n + slot.client.outstanding, 0),
+      queued: [...streams.values()].reduce((n, stream) => n + stream.queue.length, 0),
       audioClock: audioSession !== 0,
       firstShown,
       sync: {
@@ -361,36 +582,59 @@ export function serveRenderer(scope: RendererScope): void {
         minMs: syncChecks ? Math.round(syncMinMs * 10) / 10 : 0,
         maxMs: syncChecks ? Math.round(syncMaxMs * 10) / 10 : 0,
       },
+      cuts: {
+        passed: cutsPassed,
+        held: cutsHeld,
+        maxHoldMs: Math.round(maxHoldMs * 10) / 10,
+        inexact: cutsInexact,
+        droppedAtCuts,
+      },
+      decoders: { pool: slots.length, busy: slots.filter((slot) => slot.stream).length, opens },
     };
     post({ type: "stats", stats });
     presentedSinceReport = tickTotal = tickMax = ticks = refreshMax = 0;
   }
 
+  // --- loading ---
+
+  async function load(inputs: MediaInput[], cuts: Cut[] | null): Promise<LoadResult> {
+    if (slots.length === 0) throw new Error("Renderer is not initialised");
+    stopPlayback();
+    shown = null;
+    runs = [];
+    sources = inputs.map((input) => ({ input, info: null }));
+    // Open each source once to learn its size and duration, spreading them over the decoders.
+    const results: OpenResult[] = [];
+    for (const [i, entry] of sources.entries()) {
+      const result = await openOn(slots[i % slots.length] as Slot, i);
+      results.push(result);
+      if (result.ok) entry.info = result;
+    }
+    const first = results[0];
+    if (!first?.ok || results.some((result) => !result.ok)) {
+      return { sources: results, cuts: [], duration: 0 };
+    }
+    const resolved = cuts ?? [{ source: 0, in: 0, out: first.duration, start: 0 }];
+    runs = toRuns(resolved);
+    duration = runs[runs.length - 1]?.end ?? 0;
+    const opening = sources[runs[0]?.source ?? 0]?.info ?? first;
+    sequence = { width: opening.width, height: opening.height };
+    rebuildTarget();
+    await showExact(runs[0]?.start ?? 0);
+    return { sources: results, cuts: resolved, duration };
+  }
+
   async function handle(message: ToRenderer): Promise<void> {
     switch (message.type) {
       case "init":
-        init(message.canvas, message.decoder, message.audioClock, message.size);
+        init(message.canvas, message.decoders, message.audioClock, message.size);
         return;
       case "resize":
         resize(message.size);
         return;
-      case "open": {
-        if (!decoder) throw new Error("Renderer is not initialised");
-        stopPlayback();
-        shown = null;
-        const result = await decoder.open(message.input);
-        if (result.ok) {
-          clip = {
-            sequence: { width: result.width, height: result.height },
-            rotation: result.rotation,
-            duration: result.duration,
-          };
-          rebuildTarget();
-          await showExact(0);
-        }
-        post({ type: "opened", id: message.id, result });
+      case "load":
+        post({ type: "loaded", id: message.id, result: await load(message.sources, message.cuts) });
         return;
-      }
       case "play":
         play(message.from, message.session);
         return;

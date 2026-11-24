@@ -23,6 +23,22 @@ const media = {
   },
   // Short 1080p clip for quick play and leak tests.
   "b_1080p60_h264_1min.mp4": { size: "1920:1080", rate: 60, seconds: 60, bitrate: "12M", gop: 120 },
+  // 4K60 HEVC and a second H.264 file for the cut stress list (S0.5).
+  "f_4k60_hevc_60mbps_3min.mp4": {
+    size: "3840:2160",
+    rate: 60,
+    seconds: 180,
+    bitrate: "60M",
+    gop: 120,
+    codec: "hevc",
+  },
+  "g_4k60_h264_50mbps_3min.mp4": {
+    size: "3840:2160",
+    rate: 60,
+    seconds: 180,
+    bitrate: "50M",
+    gop: 120,
+  },
   // Long enough for the 10-minute audio/video sync run.
   "e_1080p60_h264_12min.mp4": {
     size: "1920:1080",
@@ -63,7 +79,11 @@ const systemFont =
     ? "C:/Windows/Fonts/arialbd.ttf"
     : "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
 
-function generate(name, { size, rate, seconds, bitrate, gop, rotation = 0 }, nvenc) {
+function generate(
+  name,
+  { size, rate, seconds, bitrate, gop, rotation = 0, codec = "h264" },
+  nvenc,
+) {
   const label = name.split("_")[0].toUpperCase();
   const text = `drawtext=fontfile=timecode-font.ttf:text='${label}  %{pts\\:hms}  f%{n}':fontsize=40:fontcolor=white:box=1:boxcolor=black@0.6:x=20:y=20`;
   const top =
@@ -71,10 +91,13 @@ function generate(name, { size, rate, seconds, bitrate, gop, rotation = 0 }, nve
   // Store the upright picture turned anticlockwise, so a clockwise display rotation restores it.
   const store = rotation === 90 ? ",transpose=2" : rotation === 270 ? ",transpose=1" : "";
   const coded = rotation ? `coded-${name}` : name;
+  const hevc = codec === "hevc";
   const video = nvenc
     ? [
         "-c:v",
-        "h264_nvenc",
+        hevc ? "hevc_nvenc" : "h264_nvenc",
+        // hvc1 is the HEVC sample entry browsers accept in MP4.
+        ...(hevc ? ["-tag:v", "hvc1"] : []),
         "-preset",
         "p4",
         "-rc",
@@ -86,7 +109,9 @@ function generate(name, { size, rate, seconds, bitrate, gop, rotation = 0 }, nve
         "-bufsize",
         bitrate,
       ]
-    : ["-c:v", "libx264", "-preset", "veryfast", "-b:v", bitrate];
+    : hevc
+      ? ["-c:v", "libx265", "-tag:v", "hvc1", "-preset", "veryfast", "-b:v", bitrate]
+      : ["-c:v", "libx264", "-preset", "veryfast", "-b:v", bitrate];
   execFileSync(
     "ffmpeg",
     [

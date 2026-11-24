@@ -24,6 +24,8 @@ export class PlaybackCore {
   private gain = 0;
   private target = 0;
   private consumed = 0;
+  /** Context frame where the last consumed sample ends; null before any is consumed. */
+  private consumedEnd: number | null = null;
   private readonly step: number;
   private readonly prefill: number;
   private readonly lastSample: number[];
@@ -79,8 +81,11 @@ export class PlaybackCore {
     ) {
       const read = session.ring.read(output, 0, frames);
       for (const channel of output) channel.fill(0, read);
-      if (read < frames && this.state === PlaybackState.Playing) this.clock.countUnderrun();
+      if (read < frames && this.state === PlaybackState.Playing && !session.ring.complete) {
+        this.clock.countUnderrun();
+      }
       this.consumed += read;
+      if (read > 0) this.consumedEnd = currentFrame + read;
       this.applyGain(output, frames);
       if (this.state === PlaybackState.Stopping && this.gain === 0) {
         this.goIdle();
@@ -92,7 +97,9 @@ export class PlaybackCore {
 
     this.measureSteps(output, frames);
     if (this.session) {
-      this.clock.publish(currentFrame + frames, this.consumed, this.sampleRate);
+      // After an underrun or the end, the last consumed sample stays where it was output, so
+      // the heard time keeps catching up with it instead of stopping one output latency short.
+      this.clock.publish(this.consumedEnd ?? currentFrame + frames, this.consumed, this.sampleRate);
     }
     this.clock.setState(this.state);
   }
@@ -104,6 +111,7 @@ export class PlaybackCore {
     this.gain = 0;
     this.target = 0;
     this.consumed = 0;
+    this.consumedEnd = null;
     this.clock.setSession(session.id, PlaybackState.Priming);
   }
 
