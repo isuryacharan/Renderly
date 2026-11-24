@@ -19,7 +19,9 @@
 }
 /* The focus ring hugs the field instead of sitting outside it. */
 .r-field:focus-within {
-  box-shadow: inset 0 0 0 1px var(--focus), 0 0 0 2px var(--accent-subtle);
+  box-shadow:
+    inset 0 0 0 1px var(--focus),
+    0 0 0 2px var(--accent-subtle);
 }
 
 .r-field > input,

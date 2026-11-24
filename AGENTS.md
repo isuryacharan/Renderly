@@ -18,7 +18,7 @@ caption styles and templates are community-made **packs** distributed through a 
 | `docs/design-system/` | Design system rules, component guidelines and a live preview page. Committed. |
 | `packages/ui/` | Design system as code: `tokens/tokens.json` (source of truth), generated `tokens.css` and `tokens.ts`, base and component styles. Committed. |
 | `MEMORY.md` | Project memory: decisions made, open questions, current status. Committed. |
-| `apps/`, `packages/`, `packs/` | Code (not created yet; layout in the spec, §13). |
+| `apps/`, `packages/`, `packs/` | Code (layout in the spec, §13). `apps/spike` is the M0 test page; `packs/` does not exist yet. |
 
 If `SPEC.md` or `docs/plans/` are missing in your checkout, ask the project owner for them. Do
 not recreate them from guesswork. The rules below are enough to work safely without them.

@@ -25,8 +25,10 @@ for (const t of [...themed, ...plain]) {
   seen.add(t.name);
 }
 
-const valueFor = (t, theme) => (typeof t.value === "string" ? t.value : (t.value[theme] ?? t.value[first]));
-const decls = (list, theme, indent = "  ") => list.map((t) => `${indent}--${t.name}: ${valueFor(t, theme)};`).join("\n");
+const valueFor = (t, theme) =>
+  typeof t.value === "string" ? t.value : (t.value[theme] ?? t.value[first]);
+const decls = (list, theme, indent = "  ") =>
+  list.map((t) => `${indent}--${t.name}: ${valueFor(t, theme)};`).join("\n");
 const differs = (theme) => themed.filter((t) => valueFor(t, theme) !== valueFor(t, first));
 
 // ---- tokens.css
@@ -39,7 +41,8 @@ for (const theme of rest) {
   css += `@media (prefers-color-scheme: ${theme}) {\n  :root:not([data-theme]) {\n    color-scheme: ${theme};\n${decls(d, theme, "    ")}\n  }\n}\n\n`;
 }
 css += `:root {\n${decls(plain, first)}\n`;
-for (const [key, stack] of Object.entries(tokens.type.families)) css += `  --font-${key}: ${stack};\n`;
+for (const [key, stack] of Object.entries(tokens.type.families))
+  css += `  --font-${key}: ${stack};\n`;
 css += `}\n\n`;
 for (const group of tokens.type.groups) {
   for (const s of group.styles) {
@@ -52,23 +55,42 @@ for (const group of tokens.type.groups) {
 
 // ---- tokens.ts (resolved values, for canvas drawing: timeline, scopes, waveforms)
 const camel = (s) => s.replace(/[-.](\w)/g, (_, c) => c.toUpperCase());
-const obj = (pairs, indent) => pairs.map(([k, v]) => `${indent}${k}: ${JSON.stringify(v)},`).join("\n");
-const px = (v) => (typeof v === "string" && /^-?\d+(\.\d+)?px$/.test(v) ? Number(v.slice(0, -2)) : v);
+const obj = (pairs, indent) =>
+  pairs.map(([k, v]) => `${indent}${k}: ${JSON.stringify(v)},`).join("\n");
+const px = (v) =>
+  typeof v === "string" && /^-?\d+(\.\d+)?px$/.test(v) ? Number(v.slice(0, -2)) : v;
 
 let ts = `// Renderly design tokens — generated from tokens/tokens.json. Do not edit.\n`;
 ts += `// Use these resolved values where CSS variables cannot reach: canvas drawing for the\n// timeline, scopes and waveforms. Everywhere else, use the CSS variables in tokens.css.\n\n`;
 ts += `export type ThemeId = ${themes.map((t) => JSON.stringify(t)).join(" | ")};\n\n`;
 ts += `export const themeIds: readonly ThemeId[] = ${JSON.stringify(themes)};\n\n`;
 ts += `export const colors = {\n`;
-for (const theme of themes) ts += `  ${theme}: {\n${obj(tokens.color.tokens.map((t) => [camel(t.name), valueFor(t, theme)]), "    ")}\n  },\n`;
+for (const theme of themes)
+  ts += `  ${theme}: {\n${obj(
+    tokens.color.tokens.map((t) => [camel(t.name), valueFor(t, theme)]),
+    "    ",
+  )}\n  },\n`;
 ts += `} as const satisfies Record<ThemeId, Record<string, string>>;\n\n`;
 ts += `export type ColorToken = keyof (typeof colors)[ThemeId];\n\n`;
 ts += `export const shadows = {\n`;
-for (const theme of themes) ts += `  ${theme}: {\n${obj(tokens.shadow.tokens.map((t) => [camel(t.name), valueFor(t, theme)]), "    ")}\n  },\n`;
+for (const theme of themes)
+  ts += `  ${theme}: {\n${obj(
+    tokens.shadow.tokens.map((t) => [camel(t.name), valueFor(t, theme)]),
+    "    ",
+  )}\n  },\n`;
 ts += `} as const;\n\n`;
-ts += `/** Pixel values. */\nexport const spacing = {\n${obj(tokens.spacing.tokens.map((t) => [camel(t.name), px(t.value)]), "  ")}\n} as const;\n\n`;
-ts += `/** Pixel values. */\nexport const radius = {\n${obj(tokens.radius.tokens.map((t) => [camel(t.name), px(t.value)]), "  ")}\n} as const;\n\n`;
-ts += `/** Pixel values. */\nexport const size = {\n${obj(tokens.size.tokens.map((t) => [camel(t.name), px(t.value)]), "  ")}\n} as const;\n\n`;
+ts += `/** Pixel values. */\nexport const spacing = {\n${obj(
+  tokens.spacing.tokens.map((t) => [camel(t.name), px(t.value)]),
+  "  ",
+)}\n} as const;\n\n`;
+ts += `/** Pixel values. */\nexport const radius = {\n${obj(
+  tokens.radius.tokens.map((t) => [camel(t.name), px(t.value)]),
+  "  ",
+)}\n} as const;\n\n`;
+ts += `/** Pixel values. */\nexport const size = {\n${obj(
+  tokens.size.tokens.map((t) => [camel(t.name), px(t.value)]),
+  "  ",
+)}\n} as const;\n\n`;
 ts += `export const fonts = {\n${obj(Object.entries(tokens.type.families), "  ")}\n} as const;\n\n`;
 ts += `export const textStyles = {\n`;
 for (const group of tokens.type.groups) {
@@ -88,7 +110,16 @@ let stale = false;
 for (const [file, content] of targets) {
   const current = existsSync(file) ? readFileSync(file, "utf8").replace(/\r\n/g, "\n") : null;
   if (current === content) continue;
-  if (check) { console.error(`Out of date: ${file}`); stale = true; } else { writeFileSync(file, content); console.log(`Wrote ${file}`); }
+  if (check) {
+    console.error(`Out of date: ${file}`);
+    stale = true;
+  } else {
+    writeFileSync(file, content);
+    console.log(`Wrote ${file}`);
+  }
 }
-if (check && stale) { console.error("Run: node scripts/build-tokens.mjs"); process.exit(1); }
+if (check && stale) {
+  console.error("Run: node scripts/build-tokens.mjs");
+  process.exit(1);
+}
 if (check && !stale) console.log("Tokens are up to date.");

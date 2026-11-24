@@ -52,18 +52,28 @@
 
 .r-slider:hover::-webkit-slider-thumb,
 .r-slider:active::-webkit-slider-thumb {
-  box-shadow: var(--shadow-thumb), 0 0 0 4px var(--accent-subtle);
+  box-shadow:
+    var(--shadow-thumb),
+    0 0 0 4px var(--accent-subtle);
 }
 .r-slider:hover::-moz-range-thumb,
 .r-slider:active::-moz-range-thumb {
-  box-shadow: var(--shadow-thumb), 0 0 0 4px var(--accent-subtle);
+  box-shadow:
+    var(--shadow-thumb),
+    0 0 0 4px var(--accent-subtle);
 }
 
 .r-slider:focus-visible::-webkit-slider-thumb {
-  box-shadow: var(--shadow-thumb), 0 0 0 2px var(--surface), 0 0 0 4px var(--focus);
+  box-shadow:
+    var(--shadow-thumb),
+    0 0 0 2px var(--surface),
+    0 0 0 4px var(--focus);
 }
 .r-slider:focus-visible::-moz-range-thumb {
-  box-shadow: var(--shadow-thumb), 0 0 0 2px var(--surface), 0 0 0 4px var(--focus);
+  box-shadow:
+    var(--shadow-thumb),
+    0 0 0 2px var(--surface),
+    0 0 0 4px var(--focus);
 }
 
 /* Mixed value (multi-selection): no fill, hollow knob. */
