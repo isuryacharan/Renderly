@@ -9,12 +9,14 @@ Last updated: 2026-11-24
 
 - Phase: **M0 is complete.** S0.1 to S0.9 are merged; the engine decision
   (`docs/decisions/0001-engine.md`) is **go**, accepted by the owner on 2026-11-25.
-- Next: **M1 Foundations**, starting with S1.1 (time, ids and schema in `packages/core`).
+- M1 in progress. S1.1 (time, ids and schema, `packages/core`) is built; in review as a pull
+  request.
+- The owner authorised building and merging M1 slices when CI passes and the automated checks
+  pass (2026-11-25). Manual checks in S1.4 (disk folder) and S1.6 (moving and relinking files,
+  permission prompts after a restart) are written as scripts and batched for the owner.
 - Waiting on the owner: a self-hosted GitHub Actions runner labelled `gpu`, so the nightly
   benchmark (`.github/workflows/bench.yml`) runs. Until then run `pnpm bench` by hand before
   merging engine changes.
-- The owner authorised completing and merging M0 slices without asking (2026-11-25). That
-  authorisation covered M0; ask before assuming it for M1.
 
 ## Decisions
 
@@ -52,6 +54,7 @@ Last updated: 2026-11-24
 | 2026-11-25 | Accepted by the owner: during a 30-minute export the page's renderer process grows ~370–430 MB before levelling off and releases it afterwards, while the main heap and accounted GPU memory stay flat. S0.8 counts as done; S0.9's benchmark should track process memory over long exports. |
 | 2026-11-25 | M0 engine decision `docs/decisions/0001-engine.md`: **go**, accepted by the owner. Every measurable §6.4 target passes in `pnpm bench` (headless Edge, RTX 5060). |
 | 2026-11-25 | The engine benchmark is `pnpm bench` (Playwright driving installed Edge or Chrome on the GPU); nightly in CI on a self-hosted runner labelled `gpu`. |
+| 2026-11-25 | Project schema: Zod 4 (MIT) defines it once; JSON Schema is generated into `docs/schema/` and a test fails when stale. Property tests use fast-check (MIT). Ids are 16 random Crockford base-32 characters. Frame rates are exact `[num, den]` pairs; times past ±2^53 flicks (~147 days) are refused, not rounded. |
 | 2026-11-24 | Design system v1: dark-first with a full light theme, strictly neutral grey chrome, one amber accent (chosen over blue, violet and magenta; warning is yellow), Geist for the interface and Geist Mono for numbers (both OFL, shipped with the app), 4px grid, 22–28px controls, shadows only on floating surfaces and knobs. It lives in the repository: rules in `docs/design-system/`, tokens and styles in `packages/ui/`. `tokens.json` is the source of truth. |
 
 ## Open questions
@@ -89,6 +92,7 @@ Ask the project owner for the locations.
 
 ## Log
 
+- 2026-11-25 — S1.1: `packages/core` with flicks, rates, drop-frame timecode, ids, schema v1, `migrate()`, a component registry and generated JSON Schema. Property tests (20,000 runs each across the full exact range at all 16 rates) found and fixed two overflow bugs before they shipped. The fixture project round-trips byte for byte.
 - 2026-11-25 — S0.9: full benchmark at commit f0809b3, headless Edge 158 on the RTX 5060: open 47 ms, main heap 8.6 MB, 4K60 0 dropped of 3,538, three 1080p layers 59.6 fps, two 4K layers 59.6 fps (9 dropped at start, full resolution), exact seek median 111 ms, 100 cuts 0 held, scrub 40/s with worst UI frame 6.1 ms, export 15.4× real time, parity 20/20, cold start 165 ms.
 - 2026-11-25 — S0.7 scrubbing (Chrome 156, RTX 5060), 4-second drags, one request per display frame: with the GPU awake, 4K H.264, 4K HEVC, 1080p and three 1080p layers all gave 40 picture updates a second per layer, worst UI frame 6–12 ms, exact resting frame. After 10 s of GPU idle, the first ~0.4 s of a 4K drag had 6 UI frames over 20 ms (worst 42–55 ms); 1080p one at 24 ms. Measured: decoding keyframes alone does not stall after idle; importing the 4K frame into a texture does, at any target size. A start ramp and reduced-size uploads did not remove it.
 - 2026-11-25 — S0.8 export (Chrome 156, RTX 5060): a 30-minute 1080p30 export of six cuts ran in 132.8 s (13.6× real time), 1.85 GB; ffmpeg decodes exactly 54,000 frames, video and audio are both 1,800.000 s, and all 1,799 beeps sit within 0.21 ms of their whole seconds. Parity: 20 of 20 sampled frames of a three-layer timeline are byte-identical between preview and export. Cancel stops and removes the partial file. Memory: main heap 53.7–54.3 MB and accounted GPU 61 MB stayed flat, but the renderer process (OS private bytes) rose from 683 MB to about 1,050 MB, levelled off, and fell back after; not under the 100 MB target as measured at process level.
