@@ -199,11 +199,25 @@ export class DecodeClient {
   }
 }
 
-/** Starts a decode worker and returns its client. */
-export function createDecodeClient(): DecodeClient {
+export interface DecodeWorker {
+  /** Talks to the decoder. Transfer it to another worker, or wrap it in a DecodeClient here. */
+  port: MessagePort;
+  terminate(): void;
+}
+
+/** Starts a decode worker and returns the port that reaches it. */
+export function startDecodeWorker(): DecodeWorker {
   const worker = new Worker(new URL("./decode-worker.ts", import.meta.url), {
     type: "module",
     name: "decode",
   });
-  return new DecodeClient(worker as unknown as Endpoint, () => worker.terminate());
+  const channel = new MessageChannel();
+  worker.postMessage({ type: "connect" }, [channel.port1]);
+  return { port: channel.port2, terminate: () => worker.terminate() };
+}
+
+/** Starts a decode worker and returns a client for it on this thread. */
+export function createDecodeClient(): DecodeClient {
+  const worker = startDecodeWorker();
+  return new DecodeClient(worker.port, () => worker.terminate());
 }

@@ -102,3 +102,20 @@
   font-family: var(--font-mono);
   white-space: pre-wrap;
 }
+
+/* Preview page */
+.spike--wide {
+  max-width: 1024px;
+}
+
+.preview-view {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--viewer);
+  border-radius: var(--radius-md);
+}
+
+.preview-controls {
+  margin-top: var(--space-12);
+}

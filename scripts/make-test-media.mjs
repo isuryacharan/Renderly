@@ -7,7 +7,7 @@
 // Needs ffmpeg on PATH. Uses NVENC when available (fast), otherwise libx264.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 const outDir = join(import.meta.dirname, "..", "test-media");
@@ -23,6 +23,24 @@ const media = {
   },
   // Short 1080p clip for quick play and leak tests.
   "b_1080p60_h264_1min.mp4": { size: "1920:1080", rate: 60, seconds: 60, bitrate: "12M", gop: 120 },
+  // Phone-style portrait clips: `size` is the upright picture. The coded frames are landscape and
+  // the file carries a clockwise display rotation, as phones record them. "TOP" marks the top.
+  "c_portrait_rot90_h264_20s.mp4": {
+    size: "1080:1920",
+    rate: 30,
+    seconds: 20,
+    bitrate: "10M",
+    gop: 60,
+    rotation: 90,
+  },
+  "d_portrait_rot270_h264_20s.mp4": {
+    size: "1080:1920",
+    rate: 30,
+    seconds: 20,
+    bitrate: "10M",
+    gop: 60,
+    rotation: 270,
+  },
 };
 
 const hasNvenc = () =>
@@ -37,9 +55,14 @@ const systemFont =
     ? "C:/Windows/Fonts/arialbd.ttf"
     : "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
 
-function generate(name, { size, rate, seconds, bitrate, gop }, nvenc) {
+function generate(name, { size, rate, seconds, bitrate, gop, rotation = 0 }, nvenc) {
   const label = name.split("_")[0].toUpperCase();
   const text = `drawtext=fontfile=timecode-font.ttf:text='${label}  %{pts\\:hms}  f%{n}':fontsize=40:fontcolor=white:box=1:boxcolor=black@0.6:x=20:y=20`;
+  const top =
+    "drawtext=fontfile=timecode-font.ttf:text='TOP':fontsize=96:fontcolor=white:box=1:boxcolor=red@0.8:x=(w-tw)/2:y=80";
+  // Store the upright picture turned anticlockwise, so a clockwise display rotation restores it.
+  const store = rotation === 90 ? ",transpose=2" : rotation === 270 ? ",transpose=1" : "";
+  const coded = rotation ? `coded-${name}` : name;
   const video = nvenc
     ? [
         "-c:v",
@@ -67,13 +90,13 @@ function generate(name, { size, rate, seconds, bitrate, gop }, nvenc) {
       "-f",
       "lavfi",
       "-i",
-      `testsrc2=size=960x540:rate=${rate}:duration=${seconds}`,
+      `testsrc2=size=${rotation ? "540x960" : "960x540"}:rate=${rate}:duration=${seconds}`,
       "-f",
       "lavfi",
       "-i",
       `sine=frequency=440:beep_factor=4:sample_rate=48000:duration=${seconds}`,
       "-vf",
-      `${text},scale=${size}:flags=bicubic,format=yuv420p`,
+      `${text}${rotation ? `,${top}` : ""},scale=${size}:flags=bicubic${store},format=yuv420p`,
       ...video,
       "-g",
       String(gop),
@@ -83,10 +106,30 @@ function generate(name, { size, rate, seconds, bitrate, gop }, nvenc) {
       "aac",
       "-b:a",
       "192k",
-      join(outDir, name),
+      join(outDir, coded),
     ],
     { stdio: "inherit", cwd: outDir },
   );
+  if (!rotation) return;
+  // Tag the display rotation without re-encoding. ffmpeg counts this angle anticlockwise.
+  execFileSync(
+    "ffmpeg",
+    [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-y",
+      "-display_rotation:v:0",
+      String(-rotation),
+      "-i",
+      coded,
+      "-c",
+      "copy",
+      name,
+    ],
+    { stdio: "inherit", cwd: outDir },
+  );
+  rmSync(join(outDir, coded));
 }
 
 mkdirSync(outDir, { recursive: true });

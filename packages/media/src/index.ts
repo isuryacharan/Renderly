@@ -1,5 +1,10 @@
-export { createDecodeClient, DecodeClient, DEFAULT_MAX_FRAMES_IN_FLIGHT } from "./client";
-export type { DecodedFrame, Playback } from "./client";
+export {
+  createDecodeClient,
+  DecodeClient,
+  DEFAULT_MAX_FRAMES_IN_FLIGHT,
+  startDecodeWorker,
+} from "./client";
+export type { DecodedFrame, DecodeWorker, Playback } from "./client";
 export { serveDecoder } from "./decoder";
 export type { Endpoint } from "./decoder";
 export type * from "./protocol";
