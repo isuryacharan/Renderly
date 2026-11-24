@@ -10,7 +10,7 @@ Last updated: 2026-11-24
 - Phase: M0 engine spike. S0.1 (scaffold) and S0.2 (decode worker) are done and in review as
   pull request #1 (`m0-engine-spike` into `main`, CI green).
 - S0.3 (render worker, `packages/engine`) is built on `s0.3-render-worker`, branched from
-  `m0-engine-spike`; its three "done when" items pass. Not committed yet.
+  `m0-engine-spike`, and committed; its three "done when" items pass. Not pushed yet.
 - Next slice: **S0.4 Audio clock**. Its clock start must allow for the decoder start-up stall
   described in the S0.3 decision below.
 - Nothing after M0 should be built on the engine until the M0 go / no-go record exists.
