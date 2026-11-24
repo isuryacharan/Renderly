@@ -21,6 +21,7 @@ community-made packs, distributed through a free store.
 | S0.6 Multiple layers | Layers with position, scale and opacity, composited on the GPU | Three 1080p60 layers and two 4K60 layers at 60 fps |
 | S0.7 Scrubbing | Keyframe pictures while dragging, exact frames at rest, a frame cache | 40 updates a second, UI frames under 13 ms with the GPU awake |
 | S0.8 Streaming export | The same compositor into an MP4 streamed to disk | 30 minutes of 1080p30 in 133 s; preview and export frames byte-identical |
+| S0.9 Benchmarks | A headless benchmark of every engine target, an on-page HUD | See `docs/decisions/0001-engine.md` |
 
 ## Run it
 
@@ -45,7 +46,9 @@ burned in (needs ffmpeg) and pick it from the list:
 node scripts/make-test-media.mjs
 ```
 
-Other commands: `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm build`.
+Other commands: `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm build`, and `pnpm bench`, which
+runs the engine benchmark headless in Edge on this machine's GPU and writes JSON to
+`bench-results/` (needs the test media).
 
 ## Repository layout
 
