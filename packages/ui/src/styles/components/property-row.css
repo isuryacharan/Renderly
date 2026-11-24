@@ -1,0 +1,55 @@
+/* Property row. Guidelines: docs/design-system/components/property-row.md
+   Label, slider, numeric field, keyframe control, reset — on one compact line.
+   Uses .r-slider, .r-field.r-field--sm.r-field--number and .r-button--icon.r-button--sm. */
+
+.r-property-section {
+  display: grid;
+  gap: var(--space-6);
+}
+.r-property-section__title {
+  padding-bottom: var(--space-4);
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+}
+.r-property-section + .r-property-section {
+  margin-top: var(--space-16);
+  padding-top: var(--space-16);
+  border-top: 1px solid var(--border);
+}
+
+.r-property-row {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr) 60px var(--control-sm) var(--control-sm);
+  align-items: center;
+  gap: var(--space-8);
+  height: var(--control-sm);
+  font-size: 12px;
+  line-height: 16px;
+}
+.r-property-row__label {
+  overflow: hidden;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  /* Dragging on the label scrubs the value. */
+  cursor: ew-resize;
+}
+
+/* Keyframe diamond: three states. */
+.r-keyframe {
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid currentColor;
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+/* The property is animated, and the playhead is between keys. */
+.r-keyframe--animated {
+  border-color: var(--accent-text);
+}
+/* The playhead is on a key. */
+.r-keyframe--on {
+  border-color: var(--accent);
+  background: var(--accent);
+}

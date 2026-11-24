@@ -15,6 +15,8 @@ caption styles and templates are community-made **packs** distributed through a 
 | `SPEC.md` | Product and technical specification. **Local only, git-ignored.** |
 | `docs/plans/` | Sliced implementation plans (M0–M8). **Local only, git-ignored.** Start at `docs/plans/README.md`. |
 | `docs/decisions/` | Decision records. Committed. |
+| `docs/design-system/` | Design system rules, component guidelines and a live preview page. Committed. |
+| `packages/ui/` | Design system as code: `tokens/tokens.json` (source of truth), generated `tokens.css` and `tokens.ts`, base and component styles. Committed. |
 | `MEMORY.md` | Project memory: decisions made, open questions, current status. Committed. |
 | `apps/`, `packages/`, `packs/` | Code (not created yet; layout in the spec, §13). |
 
@@ -74,6 +76,25 @@ with graceful fallbacks; probe capabilities at run time instead of assuming.
 - **Do not commit or push unless asked.**
 - **Keep it small.** Prefer the simplest change that satisfies the slice. No speculative
   abstractions, no unrequested dependencies.
+
+## Interface work
+
+Read `docs/design-system/README.md` before building or changing any interface.
+
+- **Use tokens, never literals.** Every colour, size, radius and shadow comes from a variable in
+  `packages/ui/src/styles/tokens.css`, or from `packages/ui/src/tokens.ts` for canvas drawing.
+  If a token is missing, add it to `packages/ui/tokens/tokens.json` with a usage note and run
+  `node packages/ui/scripts/build-tokens.mjs`. Never edit the generated files.
+- **Use the existing component styles** (`.r-*` classes in `packages/ui/src/styles/components/`)
+  and follow the matching guideline in `docs/design-system/components/`. Every numeric property
+  in the inspector uses the property row.
+- **One accent, amber.** Text on an accent fill uses `--on-accent`, which is not always white.
+  Marks drawn on clips or on the picture use `--selection` with a `--selection-edge` line.
+- **Both themes.** Check any interface change in dark and light. After changing tokens or
+  component styles, run `node packages/ui/scripts/build-preview.mjs` and open
+  `docs/design-system/preview/index.html`.
+- **Audio clips always show waveforms and video clips always show thumbnails.**
+- Status colours always come with an icon or a word. Focus rings are never removed.
 
 ## Dependencies and licences
 

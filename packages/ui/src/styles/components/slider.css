@@ -1,0 +1,101 @@
+/* Slider. Guidelines: docs/design-system/components/field.md
+   Styles a native <input type="range">. Set --value to the filled share,
+   e.g. style="--value: 72%", and keep it in sync as the value changes. */
+
+.r-slider {
+  --value: 50%;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  /* The hit area is the full control height, not just the 4px track. */
+  height: var(--control-sm);
+  margin: 0;
+  background: transparent;
+  outline: 0;
+  cursor: default;
+}
+
+.r-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: linear-gradient(to right, var(--accent) var(--value), var(--groove) var(--value));
+}
+.r-slider::-moz-range-track {
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--groove);
+}
+.r-slider::-moz-range-progress {
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+}
+
+.r-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border-radius: var(--radius-full);
+  background: var(--thumb);
+  box-shadow: var(--shadow-thumb);
+  transition: box-shadow var(--motion-fast) var(--motion-ease);
+}
+.r-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--thumb);
+  box-shadow: var(--shadow-thumb);
+}
+
+.r-slider:hover::-webkit-slider-thumb,
+.r-slider:active::-webkit-slider-thumb {
+  box-shadow: var(--shadow-thumb), 0 0 0 4px var(--accent-subtle);
+}
+.r-slider:hover::-moz-range-thumb,
+.r-slider:active::-moz-range-thumb {
+  box-shadow: var(--shadow-thumb), 0 0 0 4px var(--accent-subtle);
+}
+
+.r-slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: var(--shadow-thumb), 0 0 0 2px var(--surface), 0 0 0 4px var(--focus);
+}
+.r-slider:focus-visible::-moz-range-thumb {
+  box-shadow: var(--shadow-thumb), 0 0 0 2px var(--surface), 0 0 0 4px var(--focus);
+}
+
+/* Mixed value (multi-selection): no fill, hollow knob. */
+.r-slider--mixed::-webkit-slider-runnable-track {
+  background: var(--groove);
+}
+.r-slider--mixed::-moz-range-progress {
+  background: var(--groove);
+}
+.r-slider--mixed::-webkit-slider-thumb {
+  background: var(--groove);
+  box-shadow: inset 0 0 0 1.5px var(--text-tertiary);
+}
+.r-slider--mixed::-moz-range-thumb {
+  background: var(--groove);
+  box-shadow: inset 0 0 0 1.5px var(--text-tertiary);
+}
+
+.r-slider:disabled {
+  pointer-events: none;
+}
+.r-slider:disabled::-webkit-slider-runnable-track {
+  background: var(--groove);
+}
+.r-slider:disabled::-moz-range-progress {
+  background: var(--groove);
+}
+.r-slider:disabled::-webkit-slider-thumb {
+  background: var(--text-disabled);
+  box-shadow: none;
+}
+.r-slider:disabled::-moz-range-thumb {
+  background: var(--text-disabled);
+  box-shadow: none;
+}

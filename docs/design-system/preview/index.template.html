@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Renderly design system — preview</title>
+<!-- GENERATED from index.template.html by scripts/build-preview.mjs. Edit the template, not this file. -->
+<!-- The app ships its fonts (packages/ui/src/styles/fonts.css). This page loads them from Google Fonts so it opens straight from disk. -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@500&display=swap">
+<link rel="stylesheet" href="../../../packages/ui/src/styles/index.css">
+<style>
+  /* Gallery chrome only. Everything inside .g-stage comes from the design system. */
+  body { user-select: text; }
+  .g-page { max-width: 1040px; margin: 0 auto; padding: var(--space-32) var(--space-16) 64px; display: grid; gap: var(--space-32); }
+  .g-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-16); }
+  .g-top h1 { margin: 0; }
+  .g-top p { margin: var(--space-4) 0 0; color: var(--text-secondary); }
+  .g-section { display: grid; gap: var(--space-12); }
+  .g-section > h2 { margin: 0; }
+  .g-section > p { margin: 0; color: var(--text-secondary); max-width: 72ch; }
+  .g-stage { padding: var(--space-16); border-radius: var(--radius-lg); background: var(--surface); box-shadow: inset 0 0 0 1px var(--border); }
+  .g-stage--flush { padding: 0; overflow: hidden; }
+  .g-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-8); }
+  .g-row + .g-row { margin-top: var(--space-12); }
+  .g-swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--space-12); }
+  .g-swatch { display: grid; gap: var(--space-4); min-width: 0; }
+  .g-swatch i { height: 40px; border-radius: var(--radius-md); box-shadow: inset 0 0 0 1px var(--border); }
+  .g-swatch b { font-weight: 500; }
+  .g-swatch span { color: var(--text-tertiary); font-size: 11px; line-height: 14px; }
+  .g-type { display: grid; gap: var(--space-12); }
+  .g-type > div { display: grid; grid-template-columns: 120px minmax(0, 1fr); align-items: baseline; gap: var(--space-16); }
+  .g-type code { color: var(--text-tertiary); font: 500 11px/14px var(--font-mono); }
+  .g-narrow { max-width: 360px; }
+  .g-scroll { overflow-x: auto; }
+  .tl-ref { min-width: 720px; }
+</style>
+</head>
+<body>
+<div class="g-page">
+
+  <header class="g-top">
+    <div>
+      <h1 class="text-display">Renderly design system</h1>
+      <p>Live preview of the tokens and component styles in <code>packages/ui</code>. Rules are in <code>docs/design-system/README.md</code>.</p>
+    </div>
+    <div class="r-segmented" role="group" aria-label="Theme" id="theme">
+      <button aria-pressed="true" data-theme-value="dark">Dark</button>
+      <button aria-pressed="false" data-theme-value="light">Light</button>
+      <button aria-pressed="false" data-theme-value="">System</button>
+    </div>
+  </header>
+
+  <section class="g-section">
+    <h2 class="text-heading">Colour</h2>
+    <p>Neutral chrome, one amber accent, four clip colours, three status colours. Values change with the theme switch above.</p>
+    <div class="g-stage"><div class="g-swatches"><!--SWATCHES--></div></div>
+  </section>
+
+  <section class="g-section">
+    <h2 class="text-heading">Type</h2>
+    <p>Geist for the interface, Geist Mono for numbers that change or line up.</p>
+    <div class="g-stage"><div class="g-type"><!--TYPE--></div></div>
+  </section>
+
+  <section class="g-section">
+    <h2 class="text-heading">Button</h2>
+    <div class="g-stage">
+      <div class="g-row">
+        <button class="r-button r-button--primary">Export</button>
+        <button class="r-button">Import media</button>
+        <button class="r-button r-button--ghost">Cancel</button>
+        <button class="r-button r-button--danger">Delete project</button>
+        <button class="r-button r-button--icon" aria-label="Split clip" title="Split clip"><svg class="r-icon" viewBox="0 0 16 16"><path d="M8 2v12M3 5l3 3-3 3M13 5l-3 3 3 3"/></svg></button>
+        <button class="r-button r-button--icon" aria-pressed="true" aria-label="Snapping" title="Snapping"><svg class="r-icon" viewBox="0 0 16 16"><path d="M4 3v5a4 4 0 0 0 8 0V3M4 6h2M10 6h2"/></svg></button>
+        <button class="r-button" disabled>Relink</button>
+      </div>
+      <div class="g-row">
+        <button class="r-button r-button--primary r-button--lg">Export video</button>
+        <button class="r-button r-button--lg">Save preset</button>
+        <button class="r-button r-button--sm">Reset</button>
+        <button class="r-button r-button--sm r-button--ghost">Apply to all</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="g-section">
+    <h2 class="text-heading">Field</h2>
+    <div class="g-stage">
+      <div class="r-form g-narrow">
+        <label for="f-name">Name</label>
+        <div class="r-field"><input id="f-name" type="text" value="Holiday edit" spellcheck="false"></div>
+
+        <label for="f-res">Resolution</label>
+        <div class="r-field">
+          <select id="f-res"><option>1920 × 1080</option><option>3840 × 2160</option><option>1080 × 1920</option></select>
+          <svg class="r-icon" viewBox="0 0 16 16"><path d="M4.5 6.5 8 10l3.5-3.5"/></svg>
+        </div>
+
+        <label for="f-fps">Frame rate</label>
+        <div class="r-field r-field--number"><input id="f-fps" type="text" inputmode="decimal" value="29.97"><span class="r-field__unit">fps</span></div>
+
+        <label for="f-q">Quality</label>
+        <div class="g-row" style="flex-wrap:nowrap"><input id="f-q" class="r-slider" type="range" min="0" max="100" value="72" style="--value:72%"><output class="r-tabular" for="f-q" style="width:28px;text-align:right;color:var(--text-secondary);font-size:12px">72</output></div>
+
+        <label for="f-rate">Bitrate</label>
+        <div style="display:grid;gap:var(--space-4)">
+          <div class="r-field r-field--number r-field--invalid"><input id="f-rate" type="text" inputmode="decimal" value="0" aria-invalid="true" aria-describedby="f-rate-msg"><span class="r-field__unit">Mbps</span></div>
+          <div class="r-field-message" id="f-rate-msg"><svg class="r-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5M8 11v.01"/></svg>Enter a bitrate above 0.</div>
+        </div>
+
+        <label for="f-codec">Audio codec</label>
+        <div class="r-field r-field--disabled"><input id="f-codec" type="text" value="AAC" disabled></div>
+
+        <span></span>
+        <label class="r-choice"><input class="r-checkbox" type="checkbox" checked>Burn in captions</label>
+        <span></span>
+        <label class="r-choice"><input class="r-switch" type="checkbox" role="switch" checked>Use proxies for preview</label>
+        <span></span>
+        <label class="r-choice"><input class="r-checkbox" type="checkbox" disabled>Export alpha channel</label>
+      </div>
+    </div>
+  </section>
+
+  <section class="g-section">
+    <h2 class="text-heading">Property row</h2>
+    <div class="g-stage">
+      <div class="r-property-section g-narrow">
+        <div class="r-property-section__title">Transform</div>
+        <div class="r-property-row">
+          <span class="r-property-row__label">Scale</span>
+          <input class="r-slider" type="range" min="0" max="200" value="110" style="--value:55%" aria-label="Scale">
+          <div class="r-field r-field--sm r-field--number"><input type="text" inputmode="decimal" value="110" aria-label="Scale value"><span class="r-field__unit">%</span></div>
+          <button class="r-button r-button--icon r-button--sm" title="Remove keyframe"><span class="r-keyframe r-keyframe--on"></span></button>
+          <button class="r-button r-button--icon r-button--sm" title="Reset"><svg class="r-icon" viewBox="0 0 16 16"><path d="M3 8a5 5 0 1 0 1.5-3.5M3 3v3h3"/></svg></button>
+        </div>
+        <div class="r-property-row">
+          <span class="r-property-row__label">Rotation</span>
+          <input class="r-slider" type="range" min="-180" max="180" value="0" style="--value:50%" aria-label="Rotation">
+          <div class="r-field r-field--sm r-field--number"><input type="text" inputmode="decimal" value="0" aria-label="Rotation value"><span class="r-field__unit">°</span></div>
+          <button class="r-button r-button--icon r-button--sm" title="Add keyframe"><span class="r-keyframe r-keyframe--animated"></span></button>
+          <button class="r-button r-button--icon r-button--sm" title="Reset"><svg class="r-icon" viewBox="0 0 16 16"><path d="M3 8a5 5 0 1 0 1.5-3.5M3 3v3h3"/></svg></button>
+        </div>
+        <div class="r-property-row">
+          <span class="r-property-row__label">Opacity</span>
+          <input class="r-slider" type="range" min="0" max="100" value="100" style="--value:100%" aria-label="Opacity">
+          <div class="r-field r-field--sm r-field--number"><input type="text" inputmode="decimal" value="100" aria-label="Opacity value"><span class="r-field__unit">%</span></div>
+          <button class="r-button r-button--icon r-button--sm" title="Add keyframe"><span class="r-keyframe"></span></button>
+          <button class="r-button r-button--icon r-button--sm" title="Reset"><svg class="r-icon" viewBox="0 0 16 16"><path d="M3 8a5 5 0 1 0 1.5-3.5M3 3v3h3"/></svg></button>
+        </div>
+        <div class="r-property-row">
+          <span class="r-property-row__label">Blur</span>
+          <input class="r-slider r-slider--mixed" type="range" min="0" max="100" value="50" aria-label="Blur, mixed values">
+          <div class="r-field r-field--sm r-field--number"><input type="text" value="–" aria-label="Blur value, mixed"><span class="r-field__unit">px</span></div>
+          <button class="r-button r-button--icon r-button--sm" title="Add keyframe"><span class="r-keyframe"></span></button>
+          <button class="r-button r-button--icon r-button--sm" title="Reset"><svg class="r-icon" viewBox="0 0 16 16"><path d="M3 8a5 5 0 1 0 1.5-3.5M3 3v3h3"/></svg></button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="g-section">
+    <h2 class="text-heading">Segmented control and tabs</h2>
+    <div class="g-stage">
+      <div class="g-row">
+        <div class="r-segmented" role="group" aria-label="Preview quality">
+          <button aria-pressed="true">Full</button><button aria-pressed="false">1/2</button><button aria-pressed="false">1/4</button>
+        </div>
+      </div>
+      <div class="g-row">
+        <div class="r-tabs" role="tablist" style="flex:1">
+          <button role="tab" aria-selected="true">Basic</button><button role="tab" aria-selected="false">Audio</button><button role="tab" aria-selected="false">Speed</button><button role="tab" aria-selected="false">Animation</button><button role="tab" aria-selected="false">Adjust</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="g-section">
+    <h2 class="text-heading">Menu</h2>
+    <div class="g-stage">
+      <div class="r-menu" role="menu" style="width:232px">
+        <button class="r-menu__item" role="menuitem" data-highlighted>Split at playhead <span class="r-menu__shortcut">Ctrl B</span></button>
+        <button class="r-menu__item" role="menuitem">Copy <span class="r-menu__shortcut">Ctrl C</span></button>
+        <button class="r-menu__item" role="menuitem">Paste attributes… <span class="r-menu__shortcut">Ctrl Alt V</span></button>
+        <button class="r-menu__item" role="menuitem" disabled>Detach audio</button>
+        <div class="r-menu__separator" role="separator"></div>
+        <button class="r-menu__item" role="menuitem">Freeze frame</button>
+        <button class="r-menu__item" role="menuitem">Replace media…</button>
+        <div class="r-menu__separator" role="separator"></div>
+        <button class="r-menu__item r-menu__item--danger" role="menuitem">Ripple delete <span class="r-menu__shortcut">Shift Del</span></button>
+      </div>
+    </div>
+  </section>
+
+  <section class="g-section">
+    <h2 class="text-heading">Timeline clip</h2>
+    <p>A styling reference. In the app the track area is drawn on a canvas using the resolved values in <code>packages/ui/src/tokens.ts</code>. Thumbnails and waveforms here are stand-in pictures.</p>
+    <div class="g-stage g-stage--flush g-scroll"><!--TIMELINE--></div>
+  </section>
+
+</div>
+<script>
+  // Theme switch
+  document.getElementById("theme").addEventListener("click", function (e) {
+    var b = e.target.closest("button"); if (!b) return;
+    var v = b.dataset.themeValue;
+    if (v) document.documentElement.setAttribute("data-theme", v); else document.documentElement.removeAttribute("data-theme");
+    this.querySelectorAll("button").forEach(function (x) { x.setAttribute("aria-pressed", String(x === b)); });
+  });
+  // Open with #light or #dark in the address to start in that theme
+  var start = location.hash.slice(1);
+  if (start === "light" || start === "dark") { var sb = document.querySelector("[data-theme-value=\"" + start + "\"]"); if (sb) sb.click(); }
+  // Keep each slider's fill in sync with its value
+  document.querySelectorAll(".r-slider").forEach(function (s) {
+    s.addEventListener("input", function () {
+      s.style.setProperty("--value", ((s.value - s.min) / (s.max - s.min) * 100) + "%");
+      var row = s.closest(".r-property-row, .g-row");
+      var out = row && (row.querySelector(".r-field input") || row.querySelector("output"));
+      if (out) { if ("value" in out && out.tagName === "INPUT") out.value = s.value; else out.textContent = s.value; }
+    });
+  });
+</script>
+</body>
+</html>

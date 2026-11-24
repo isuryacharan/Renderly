@@ -1,0 +1,188 @@
+/* Renderly design tokens — generated from tokens/tokens.json. Do not edit. */
+
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --viewer: #0e0e0f;
+  --bg: #161617;
+  --surface: #1c1c1e;
+  --surface-raised: #262628;
+  --surface-hover: #2f2f32;
+  --field: #121213;
+  --groove: #3a3a3e;
+  --thumb: #ffffff;
+  --border: #333336;
+  --border-strong: #6e6e73;
+  --text: #ececee;
+  --text-secondary: #a8a8ad;
+  --text-tertiary: #909095;
+  --text-disabled: #5c5c61;
+  --accent: #f5a524;
+  --accent-hover: #ffb53d;
+  --on-accent: #1a1205;
+  --accent-text: #f7b955;
+  --accent-subtle: #3a2a10;
+  --focus: #f7b955;
+  --selection: #f5a524;
+  --selection-edge: #1a1205;
+  --playhead: #ffffff;
+  --danger: #ff6b61;
+  --warning: #e8d44d;
+  --success: #45c4c0;
+  --clip-video: #2d4f8a;
+  --clip-audio: #2b6b5c;
+  --clip-text: #8a5a2b;
+  --clip-effect: #6a3f8a;
+  --on-clip: #ffffff;
+  --scrim: rgba(0, 0, 0, 0.5);
+  --shadow-popover: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-dialog: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 24px 64px rgba(0, 0, 0, 0.6);
+  --shadow-thumb: 0 0 0 0.5px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --viewer: #dedee1;
+  --bg: #ececee;
+  --surface: #f6f6f7;
+  --surface-raised: #ffffff;
+  --surface-hover: #e6e6e9;
+  --field: #ffffff;
+  --groove: #d2d2d7;
+  --border: #d8d8dc;
+  --border-strong: #8a8a8f;
+  --text: #1a1a1c;
+  --text-secondary: #55555a;
+  --text-tertiary: #68686d;
+  --text-disabled: #a4a4a9;
+  --accent: #c2560a;
+  --accent-hover: #a84908;
+  --on-accent: #ffffff;
+  --accent-text: #9a4406;
+  --accent-subtle: #fbe8d3;
+  --focus: #9a4406;
+  --playhead: #1a1a1c;
+  --danger: #c62a21;
+  --warning: #6e6000;
+  --success: #0b7a75;
+  --scrim: rgba(20, 20, 22, 0.3);
+  --shadow-popover: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 8px 24px rgba(0, 0, 0, 0.14);
+  --shadow-dialog: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 24px 64px rgba(0, 0, 0, 0.2);
+  --shadow-thumb: 0 0 0 0.5px rgba(0, 0, 0, 0.2), 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+    --viewer: #dedee1;
+    --bg: #ececee;
+    --surface: #f6f6f7;
+    --surface-raised: #ffffff;
+    --surface-hover: #e6e6e9;
+    --field: #ffffff;
+    --groove: #d2d2d7;
+    --border: #d8d8dc;
+    --border-strong: #8a8a8f;
+    --text: #1a1a1c;
+    --text-secondary: #55555a;
+    --text-tertiary: #68686d;
+    --text-disabled: #a4a4a9;
+    --accent: #c2560a;
+    --accent-hover: #a84908;
+    --on-accent: #ffffff;
+    --accent-text: #9a4406;
+    --accent-subtle: #fbe8d3;
+    --focus: #9a4406;
+    --playhead: #1a1a1c;
+    --danger: #c62a21;
+    --warning: #6e6000;
+    --success: #0b7a75;
+    --scrim: rgba(20, 20, 22, 0.3);
+    --shadow-popover: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 8px 24px rgba(0, 0, 0, 0.14);
+    --shadow-dialog: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 24px 64px rgba(0, 0, 0, 0.2);
+    --shadow-thumb: 0 0 0 0.5px rgba(0, 0, 0, 0.2), 0 1px 3px rgba(0, 0, 0, 0.25);
+  }
+}
+
+:root {
+  --space-2: 2px;
+  --space-4: 4px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-full: 999px;
+  --control-sm: 22px;
+  --control-md: 28px;
+  --control-lg: 32px;
+  --toolbar: 36px;
+  --icon: 16px;
+  --track-video: 72px;
+  --track-audio: 48px;
+  --track-aux: 40px;
+  --font-sans: "Geist Variable", "Geist", system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono Variable", "Geist Mono", ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+}
+
+.text-caption {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 500;
+}
+.text-small {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 400;
+}
+.text-body {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 400;
+}
+.text-body-strong {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+}
+.text-title {
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 600;
+}
+.text-heading {
+  font-family: var(--font-sans);
+  font-size: 20px;
+  line-height: 26px;
+  font-weight: 600;
+}
+.text-display {
+  font-family: var(--font-sans);
+  font-size: 28px;
+  line-height: 34px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.text-timecode {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.text-timecode-large {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  line-height: 24px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}

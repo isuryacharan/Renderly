@@ -26,6 +26,7 @@ Last updated: 2026-11-24
 | 2026-11-24 | The store is free. No paid items for now. |
 | 2026-11-24 | No other video editors are named anywhere in the repository. |
 | 2026-11-24 | `SPEC.md` and `docs/plans/` are git-ignored and kept locally. |
+| 2026-11-24 | Design system v1: dark-first with a full light theme, strictly neutral grey chrome, one amber accent (chosen over blue, violet and magenta; warning is yellow), Geist for the interface and Geist Mono for numbers (both OFL, shipped with the app), 4px grid, 22–28px controls, shadows only on floating surfaces and knobs. It lives in the repository: rules in `docs/design-system/`, tokens and styles in `packages/ui/`. `tokens.json` is the source of truth. |
 
 ## Open questions
 
@@ -62,5 +63,6 @@ Ask the project owner for the locations.
 
 ## Log
 
+- 2026-11-24 — Design system written to the repository (`packages/ui`, `docs/design-system`). Font packages are declared but not installed; there is no workspace root yet (slice S0.1).
 - 2026-11-24 — Spec written. Implementation plans sliced into 74 slices across M0–M8 and the 1.0
   release. Repository initialised.

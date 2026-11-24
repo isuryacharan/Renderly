@@ -1,0 +1,123 @@
+/* Field: text, number and select. Guidelines: docs/design-system/components/field.md
+   A recessed well with a hairline edge. The wrapper carries the look; the
+   native input or select inside it is transparent. */
+
+.r-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  height: var(--control-md);
+  padding: 0 var(--space-8);
+  border-radius: var(--radius-md);
+  background: var(--field);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--text);
+  transition: box-shadow var(--motion-fast) var(--motion-ease);
+}
+.r-field:hover {
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+/* The focus ring hugs the field instead of sitting outside it. */
+.r-field:focus-within {
+  box-shadow: inset 0 0 0 1px var(--focus), 0 0 0 2px var(--accent-subtle);
+}
+
+.r-field > input,
+.r-field > select {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.r-field > input::placeholder {
+  color: var(--text-tertiary);
+}
+.r-field > select option {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.r-field__unit {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+.r-field > .r-icon {
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+
+/* Numeric: right-aligned, tabular, scrubbable by dragging sideways. */
+.r-field--number > input {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  cursor: ew-resize;
+}
+.r-field--number > input:focus {
+  cursor: text;
+}
+.r-field--number .r-field__unit {
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+/* Compact size for the inspector and track headers. */
+.r-field--sm {
+  gap: var(--space-2);
+  height: var(--control-sm);
+  padding: 0 var(--space-6);
+  border-radius: var(--radius-sm);
+}
+
+/* States */
+.r-field--invalid,
+.r-field--invalid:hover {
+  box-shadow: inset 0 0 0 1px var(--danger);
+}
+.r-field--disabled,
+.r-field--disabled:hover {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--text-disabled);
+  pointer-events: none;
+}
+
+/* Message under an invalid field. Always an icon plus words. */
+.r-field-message {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 16px;
+}
+.r-field-message > .r-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* Label + control rows, as in dialogs and the inspector. */
+.r-form {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-12);
+}
+.r-form > label,
+.r-label {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 16px;
+}

@@ -1,0 +1,28 @@
+{
+  "name": "@renderly/ui",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Renderly design system: tokens, base styles and component styles.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "exports": {
+    ".": "./src/index.ts",
+    "./tokens": "./src/tokens.ts",
+    "./tokens.json": "./tokens/tokens.json",
+    "./styles.css": "./src/styles/index.css",
+    "./tokens.css": "./src/styles/tokens.css",
+    "./fonts.css": "./src/styles/fonts.css"
+  },
+  "scripts": {
+    "build:tokens": "node scripts/build-tokens.mjs",
+    "check:tokens": "node scripts/build-tokens.mjs --check",
+    "build:preview": "node scripts/build-preview.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/geist-mono": "^5.3.0"
+  }
+}

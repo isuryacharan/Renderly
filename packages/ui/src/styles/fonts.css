@@ -1,0 +1,7 @@
+/* Interface typefaces, shipped with the app so the editor works offline.
+   Both are under the SIL Open Font License 1.1.
+   Import this file once, at the app entry. It needs a bundler that resolves
+   package imports in CSS (Vite does). */
+
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";

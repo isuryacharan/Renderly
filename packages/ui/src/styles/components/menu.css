@@ -1,0 +1,68 @@
+/* Menu. Guidelines: docs/design-system/components/menu.md
+   Floats on surface-raised. The shadow carries a 1px ring, so there is no border. */
+
+.r-menu {
+  min-width: 200px;
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-popover);
+  color: var(--text);
+}
+
+.r-menu__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-16);
+  width: 100%;
+  height: var(--control-md);
+  padding: 0 var(--space-8);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: default;
+}
+.r-menu__shortcut {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+/* The highlighted item fills with the accent, the way a system menu does. */
+.r-menu__item:hover,
+.r-menu__item:focus-visible,
+.r-menu__item[data-highlighted] {
+  outline: 0;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.r-menu__item:hover .r-menu__shortcut,
+.r-menu__item:focus-visible .r-menu__shortcut,
+.r-menu__item[data-highlighted] .r-menu__shortcut {
+  color: var(--on-accent);
+}
+
+.r-menu__item--danger {
+  color: var(--danger);
+}
+
+.r-menu__item:disabled,
+.r-menu__item[aria-disabled="true"] {
+  background: transparent;
+  color: var(--text-disabled);
+  pointer-events: none;
+}
+.r-menu__item:disabled .r-menu__shortcut,
+.r-menu__item[aria-disabled="true"] .r-menu__shortcut {
+  color: var(--text-disabled);
+}
+
+.r-menu__separator {
+  height: 1px;
+  margin: var(--space-4) var(--space-8);
+  background: var(--border);
+}
