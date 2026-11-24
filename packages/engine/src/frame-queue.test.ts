@@ -33,3 +33,12 @@ describe("FrameQueue", () => {
     expect(queue.length).toBe(0);
   });
 });
+
+describe("FrameQueue.lastTime", () => {
+  it("is the newest frame's start, or -Infinity when empty", () => {
+    const queue = new FrameQueue<Timed>();
+    expect(queue.lastTime()).toBe(-Infinity);
+    for (const f of frames(0, 10, 20)) queue.push(f);
+    expect(queue.lastTime()).toBe(20);
+  });
+});

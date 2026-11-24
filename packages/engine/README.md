@@ -68,6 +68,21 @@ a moment. The clock therefore waits until the decoder has filled its frames-in-f
 three refreshes in a row were on time (at most 1 s), and for the first 500 ms a late refresh
 moves the clock start later instead of skipping frames.
 
+## Export
+
+`createExporter()` starts an export worker with its own four decode workers, so an export never
+competes with the preview. For each output frame the worker waits until each layer's decoder has
+delivered past that frame's time, composites with the same `FrameUploader` and `Compositor` as
+the preview, wraps the canvas in a `VideoFrame` and hands it to the encoder (mediabunny over
+`VideoEncoder`), awaiting its back-pressure. Audio for the bottom layer is decoded by the same
+code as playback into a 2-second ring and encoded in 1,024-sample chunks after each frame. The MP4
+streams to a `FileSystemWritableFileStream` with the index at the end; nothing grows with the
+length of the export except that index.
+
+Jobs report progress, can be cancelled (the partial file is removed), and resolve with a typed
+result. `renderFrame` and the preview's `readFrame` read the composite through the same code for
+the parity test: the two paths must give identical bytes.
+
 ## Context loss
 
 three.js re-creates its GPU objects when the context comes back. The working target's contents
@@ -82,7 +97,9 @@ src/timeline.ts       cuts, runs and which runs to prepare (pure)
 src/renderer.ts       serveRenderer: the worker's loop and message handling
 src/render-worker.ts  worker entry point
 src/frame-upload.ts   VideoFrame → working target (mipmaps, rotation, contain fit)
-src/compositor.ts     per-layer targets and the composite pass
+src/compositor.ts     per-layer targets, the composite pass and pixel readback
+src/export.ts         main-thread export client: worker, decoders, jobs
+src/exporter.ts       the export worker: decode, composite, encode, write
 src/memory.ts         GPU memory accounting against the ceiling (pure)
 src/present.ts        composite → canvas
 src/gpu.ts            full-screen GLSL ES 3.00 passes and half-float targets

@@ -116,6 +116,8 @@ export type ToRenderer =
   | { type: "pause"; id: number }
   /** Shows the exact frame at `time`. */
   | { type: "seek"; id: number; time: Flicks }
+  /** Parity test: shows the exact frame at `time` and replies with the composite's pixels. */
+  | { type: "read-frame"; id: number; time: Flicks }
   /** Dragging: keyframe pictures while it moves, exact frames once it rests. Fire and forget. */
   | { type: "scrub"; time: Flicks }
   /** The drag ended: replies once every layer shows its exact frame. */
@@ -129,6 +131,7 @@ export type FromRenderer =
   | { type: "loaded"; id: number; result: LoadResult }
   | { type: "seeked"; id: number; time: Flicks | null }
   | { type: "paused"; id: number; time: Flicks }
+  | { type: "frame-pixels"; id: number; pixels: Uint8Array; width: number; height: number }
   | { type: "scrubbed"; id: number; time: Flicks }
   | { type: "stats"; stats: RenderStats }
   /** `id` is set when the error belongs to a request (open, seek); that request fails. */

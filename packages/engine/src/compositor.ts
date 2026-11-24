@@ -31,6 +31,14 @@ void main() {
   fragColor = texture(tLayer, vec2(p.x, 1.0 - p.y)) * uOpacity; // premultiplied
 }`;
 
+const COPY = /* glsl */ `
+uniform sampler2D tImage;
+in vec2 vUv;
+out vec4 fragColor;
+void main() {
+  fragColor = texture(tImage, vUv);
+}`;
+
 export interface LayerDraw {
   layer: number;
   transform: Transform;
@@ -50,6 +58,7 @@ export class Compositor {
     },
     { premultiplied: true },
   );
+  private readonly copy = new Pass(COPY, { tImage: { value: null } });
   /** Layers refused a target because of the memory ceiling, since the last reset. */
   refused = 0;
 
@@ -118,6 +127,25 @@ export class Compositor {
     }
   }
 
+  /**
+   * The composite's pixels as 8-bit RGBA, rows bottom first (GL order). Preview and export both
+   * read through here for the parity test.
+   */
+  readPixels(): Uint8Array | null {
+    if (!this.output) return null;
+    const { width, height } = this.size;
+    const target = makeTarget(width, height, true);
+    try {
+      (this.copy.uniforms["tImage"] as THREE.IUniform).value = this.output.texture;
+      this.copy.run(this.renderer, target);
+      const pixels = new Uint8Array(width * height * 4);
+      this.renderer.readRenderTargetPixels(target, 0, 0, width, height, pixels);
+      return pixels;
+    } finally {
+      target.dispose();
+    }
+  }
+
   dispose(): void {
     for (const layer of [...this.layers.keys()]) this.releaseLayer(layer);
     this.output?.dispose();
@@ -125,14 +153,6 @@ export class Compositor {
     this.pass.dispose();
   }
 }
-
-const COPY = /* glsl */ `
-uniform sampler2D tImage;
-in vec2 vUv;
-out vec4 fragColor;
-void main() {
-  fragColor = texture(tImage, vUv);
-}`;
 
 /**
  * A small cache of recently composited exact frames, for scrubbing back and forth. Entries are

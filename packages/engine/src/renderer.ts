@@ -195,6 +195,7 @@ export function serveRenderer(scope: RendererScope): void {
   let playhead = 0;
   let dirty = false;
   let keyframeBusy = false;
+  let exactChain: Promise<unknown> = Promise.resolve();
   /** What is on screen when it is not the composite: a cached frame while scrubbing. */
   let display: THREE.Texture | null = null;
 
@@ -455,7 +456,15 @@ export function serveRenderer(scope: RendererScope): void {
   }
 
   /** Shows the exact frames at timeline time `t`. Resolves with the bottom layer's frame time. */
-  async function showExact(t: number): Promise<number | null> {
+  function showExact(t: number): Promise<number | null> {
+    // One at a time: two running together seek the same decoder, and the newer seek cancels the
+    // older one, leaving a layer undrawn (seen in the S0.8 parity test).
+    const next = exactChain.then(() => showExactNow(t));
+    exactChain = next.catch(() => null);
+    return next;
+  }
+
+  async function showExactNow(t: number): Promise<number | null> {
     let bottom: number | null = null;
     for (const [i] of timeline.layers.entries()) {
       const state = layers[i] as LayerState;
@@ -1047,6 +1056,18 @@ export function serveRenderer(scope: RendererScope): void {
         const shown = layers[0]?.shown;
         if (shown && layers[0]?.currentRun === shown.run) playhead = shown.time;
         post({ type: "paused", id: message.id, time: playhead });
+        return;
+      }
+      case "read-frame": {
+        stopPlayback();
+        playhead = message.time;
+        await showExact(message.time);
+        const pixels = gpu?.compositor.readPixels();
+        if (!pixels) throw new Error("No composite to read");
+        const { width, height } = workingSize(sequence, scale);
+        scope.postMessage({ type: "frame-pixels", id: message.id, pixels, width, height }, [
+          pixels.buffer,
+        ]);
         return;
       }
       case "scrub":

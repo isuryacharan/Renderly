@@ -3,8 +3,17 @@
 //
 //   GET /__test-media/list         JSON [{ name, size }]
 //   GET /__test-media/file/<name>  the file (206 Partial Content when a Range header is sent)
+//   POST /__test-media/upload/<name>  streams the request body to test-media/out/<name>, so an
+//                                    exported file can be checked with ffprobe
 
-import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
+import {
+  createReadStream,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
 import { basename, join } from "node:path";
 import type { Plugin } from "vite";
 
@@ -17,6 +26,28 @@ export function testMedia(dir: string): Plugin {
     configureServer(server) {
       server.middlewares.use("/__test-media", (req, res) => {
         const path = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
+
+        if (req.method === "POST" && path.startsWith("/upload/")) {
+          const name = basename(path.slice("/upload/".length));
+          if (!VIDEO.test(name)) {
+            res.statusCode = 400;
+            res.end();
+            return;
+          }
+          const outDir = join(dir, "out");
+          mkdirSync(outDir, { recursive: true });
+          const out = createWriteStream(join(outDir, name));
+          req.pipe(out);
+          out.on("finish", () => {
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ bytes: statSync(join(outDir, name)).size }));
+          });
+          out.on("error", () => {
+            res.statusCode = 500;
+            res.end();
+          });
+          return;
+        }
 
         if (path === "/list") {
           const files = existsSync(dir)
