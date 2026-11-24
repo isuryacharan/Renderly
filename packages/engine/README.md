@@ -4,7 +4,7 @@ The render worker: a WebGL2 context on an `OffscreenCanvas`, fed by a pool of de
 `MessageChannel`s. It plays an edit list of cuts across files on the audio clock. The main thread
 sends commands and receives a stats message once a second; frames never pass through it.
 
-Status: M0 spike (slices S0.3 to S0.5). One track of cuts; no compositing yet (S0.6).
+Status: M0 spike (slices S0.3 to S0.6). Layers with static transforms; no effects yet.
 
 ## Use
 
@@ -34,6 +34,20 @@ preview.onStats((s) => console.log(s.fps, s.dropped, s.late));
    half-float working target at the preview size, applying the clip rotation. The frame is
    closed straight after.
 4. `Presenter` draws the working target into the canvas, letterboxed, at device-pixel size.
+
+## Layers
+
+A cut can sit on a layer (0 is the bottom) with a static transform: position, scale and opacity
+(`Transform` in `timeline.ts`). Each layer keeps its own render target with its last uploaded
+frame; `Compositor` draws the layers bottom to top with premultiplied alpha over black. Sound
+comes from layer 0 for now.
+
+The pool has six decoders: five for streams and one kept for keyframe-only updates and seeks.
+Current runs get decoders first, top layer first. A layer left without one shows the keyframe at
+or before the playhead, refreshed twice a second, instead of stalling the others.
+
+GPU memory: the renderer accounts for its render targets, the upload texture and the decoded
+frames on loan (`memory.ts`) against a 1.5 GB ceiling. Targets past the ceiling are refused.
 
 ## Cuts and decoder scheduling
 
@@ -68,7 +82,9 @@ src/timeline.ts       cuts, runs and which runs to prepare (pure)
 src/renderer.ts       serveRenderer: the worker's loop and message handling
 src/render-worker.ts  worker entry point
 src/frame-upload.ts   VideoFrame → working target (mipmaps, rotation, contain fit)
-src/present.ts        working target → canvas
+src/compositor.ts     per-layer targets and the composite pass
+src/memory.ts         GPU memory accounting against the ceiling (pure)
+src/present.ts        composite → canvas
 src/gpu.ts            full-screen GLSL ES 3.00 passes and half-float targets
 src/frame-queue.ts    which frame to show at the playhead (pure)
 src/layout.ts         working size, rotation and letterbox maths (pure)

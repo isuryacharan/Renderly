@@ -60,3 +60,23 @@ export function shortClipList(sourceFrames: number[], count: number, seed: numbe
   }
   return cuts;
 }
+
+export interface LayerSpec {
+  source: number;
+  /** First source frame and length, in 60 fps frames. */
+  inFrame: number;
+  frames: number;
+  transform?: Cut["transform"];
+}
+
+/** One long clip per layer, all starting at 0; the first spec is the bottom layer. */
+export function layerList(specs: LayerSpec[]): Cut[] {
+  return specs.map((spec, layer) => ({
+    source: spec.source,
+    in: spec.inFrame * FRAME,
+    out: (spec.inFrame + spec.frames) * FRAME,
+    start: 0,
+    layer,
+    ...(spec.transform ? { transform: spec.transform } : {}),
+  }));
+}

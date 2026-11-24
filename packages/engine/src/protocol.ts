@@ -4,8 +4,21 @@ import type { Flicks, MediaInput, OpenResult } from "@renderly/media";
 import type { PreviewScale, Size } from "./layout";
 import type { Cut } from "./timeline";
 
+export interface LayerStats {
+  layer: number;
+  /** Distinct frames uploaded per second over the last report interval. */
+  fps: number;
+  presented: number;
+  dropped: number;
+  late: number;
+  /** Keyframe-only updates, used when the layer had no decoder. */
+  keyframes: number;
+  /** True when the layer's current run has a decoder stream. */
+  decoding: boolean;
+}
+
 export interface RenderStats {
-  /** Distinct frames put on screen per second over the last report interval. */
+  /** The lowest per-layer fps among layers showing something, over the last report interval. */
   fps: number;
   /** Totals since the last play started. */
   presented: number;
@@ -51,11 +64,17 @@ export interface RenderStats {
   };
   decoders: {
     pool: number;
-    /** Decoders with a stream right now. */
+    /** Decoders decoding a stream right now (the pool keeps one more for keyframes and seeks). */
     busy: number;
     /** File opens since the last play started. */
     opens: number;
   };
+  layers: LayerStats[];
+  /**
+   * GPU memory the renderer accounts for: render targets, the upload texture, decoded frames on
+   * loan. Peak since the last play started. `refused`: targets not created at the ceiling.
+   */
+  memory: { usedMB: number; peakMB: number; ceilingMB: number; refused: number };
 }
 
 export interface LoadResult {

@@ -2,7 +2,8 @@
 //
 // The decoder's frame (3840×2160 for 4K) is uploaded once into a texture (the browser imports it
 // directly), a mipmap chain is built, and one pass samples it trilinearly into the working target
-// while applying the clip rotation and the contain fit. Scaling large frames through a 2D canvas
+// while applying the clip rotation and the contain fit. The result is premultiplied: opaque inside
+// the picture, transparent outside it. Scaling large frames through a 2D canvas
 // instead was measured in the POC to load the GPU far more for the same quality.
 
 import * as THREE from "three";
@@ -20,7 +21,7 @@ void main() {
   // Output pixel → upright display coordinates (x right, y down), then the contain fit.
   vec2 d = 0.5 + (vec2(vUv.x, 1.0 - vUv.y) - 0.5) * uScale;
   if (any(lessThan(d, vec2(0.0))) || any(greaterThan(d, vec2(1.0)))) {
-    fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+    fragColor = vec4(0.0); // outside the picture: transparent, so lower layers show
     return;
   }
   // Display coordinates → coded-frame coordinates (undo the clockwise rotation).
