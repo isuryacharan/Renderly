@@ -7,16 +7,14 @@ Last updated: 2026-11-24
 
 ## Status
 
-- Phase: M0 engine spike. S0.1 to S0.8 are merged into `main` (pull requests #1 to #7); S0.7 and
-  S0.8 with the owner's acceptance of their misses (decisions below).
-- S0.9 (benchmarks and decision) is built: `pnpm bench`, the HUD, the nightly workflow and
-  `docs/decisions/0001-engine.md` (status Proposed). Two things wait for the owner: accepting the
-  record, and registering a self-hosted runner labelled `gpu` so the nightly benchmark runs.
-- The owner has authorised completing and merging M0 slices without asking (2026-11-25), as long as
-  each slice's "done when" items pass. Stop and report if a target is missed. The go / no-go
-  decision record (S0.9) is the owner's to accept; nightly GPU CI needs a self-hosted runner from
-  the owner.
-- Nothing after M0 should be built on the engine until the M0 go / no-go record exists.
+- Phase: **M0 is complete.** S0.1 to S0.9 are merged; the engine decision
+  (`docs/decisions/0001-engine.md`) is **go**, accepted by the owner on 2026-11-25.
+- Next: **M1 Foundations**, starting with S1.1 (time, ids and schema in `packages/core`).
+- Waiting on the owner: a self-hosted GitHub Actions runner labelled `gpu`, so the nightly
+  benchmark (`.github/workflows/bench.yml`) runs. Until then run `pnpm bench` by hand before
+  merging engine changes.
+- The owner authorised completing and merging M0 slices without asking (2026-11-25). That
+  authorisation covered M0; ask before assuming it for M1.
 
 ## Decisions
 
@@ -52,7 +50,7 @@ Last updated: 2026-11-24
 | 2026-11-25 | Accepted by the owner: a 4K drag that starts after the GPU has idled may show UI frames up to ~55 ms for its first ~0.4 s. S0.7 counts as done; proxies (M6) are the later fix. |
 | 2026-11-25 | Export runs in its own worker with its own four decoders, composites with the same uploader and compositor as the preview, encodes through mediabunny (VideoEncoder, AAC) and streams the MP4 to a FileSystemWritableFileStream with the index at the end. Audio comes from the bottom layer through the playback decode code, encoded in 1,024-sample chunks. Exact-frame requests in the renderer are serialised. |
 | 2026-11-25 | Accepted by the owner: during a 30-minute export the page's renderer process grows ~370–430 MB before levelling off and releases it afterwards, while the main heap and accounted GPU memory stay flat. S0.8 counts as done; S0.9's benchmark should track process memory over long exports. |
-| 2026-11-25 | M0 engine decision drafted as `docs/decisions/0001-engine.md`: **go**, status Proposed until the owner accepts it. Every measurable §6.4 target passes in `pnpm bench` (headless Edge, RTX 5060). |
+| 2026-11-25 | M0 engine decision `docs/decisions/0001-engine.md`: **go**, accepted by the owner. Every measurable §6.4 target passes in `pnpm bench` (headless Edge, RTX 5060). |
 | 2026-11-25 | The engine benchmark is `pnpm bench` (Playwright driving installed Edge or Chrome on the GPU); nightly in CI on a self-hosted runner labelled `gpu`. |
 | 2026-11-24 | Design system v1: dark-first with a full light theme, strictly neutral grey chrome, one amber accent (chosen over blue, violet and magenta; warning is yellow), Geist for the interface and Geist Mono for numbers (both OFL, shipped with the app), 4px grid, 22–28px controls, shadows only on floating surfaces and knobs. It lives in the repository: rules in `docs/design-system/`, tokens and styles in `packages/ui/`. `tokens.json` is the source of truth. |
 

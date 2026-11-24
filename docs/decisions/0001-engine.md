@@ -1,6 +1,6 @@
 # 0001. The WebCodecs engine: go
 
-- Status: Proposed
+- Status: Accepted (by the owner, 2026-11-25)
 - Date: 2026-11-25
 - Slice: S0.9
 
@@ -75,7 +75,7 @@ re-planning.
 
 ## Consequences
 
-- M1 can start once this record is accepted. The engine packages (`media`, `audio`, `engine`)
+- M1 can start. The engine packages (`media`, `audio`, `engine`)
   become the base for the editor instead of a throwaway spike.
 - The nightly benchmark guards these numbers. It needs a self-hosted runner labelled `gpu`
   before it runs; until then `pnpm bench` is run by hand before merging engine changes.
