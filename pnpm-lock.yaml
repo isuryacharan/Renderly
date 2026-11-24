@@ -35,6 +35,9 @@ importers:
 
   apps/spike:
     dependencies:
+      '@renderly/audio':
+        specifier: workspace:*
+        version: link:../../packages/audio
       '@renderly/engine':
         specifier: workspace:*
         version: link:../../packages/engine
@@ -55,8 +58,24 @@ importers:
         specifier: ^8.3.8
         version: 8.3.8(@types/node@26.6.6)
 
+  packages/audio:
+    dependencies:
+      '@renderly/media':
+        specifier: workspace:*
+        version: link:../media
+      mediabunny:
+        specifier: ^1.66.4
+        version: 1.66.4
+    devDependencies:
+      typescript:
+        specifier: ~6.0.3
+        version: 6.0.3
+
   packages/engine:
     dependencies:
+      '@renderly/audio':
+        specifier: workspace:*
+        version: link:../audio
       '@renderly/media':
         specifier: workspace:*
         version: link:../media

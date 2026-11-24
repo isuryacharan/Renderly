@@ -28,15 +28,33 @@ export interface RenderStats {
   framesOutstanding: number;
   /** Frames received and waiting for their time. */
   queued: number;
+  /** True when playback follows the audio clock. */
+  audioClock: boolean;
+  /** Start time of the first frame the current play put on screen. */
+  firstShown: Flicks | null;
+  /**
+   * Picture against sound, checked every refresh while following the audio clock: how far the
+   * heard time is into the frame on screen, in ms. In sync means 0 <= offset < frame duration.
+   */
+  sync: { checks: number; outOfSync: number; minMs: number; maxMs: number };
 }
 
 export type ToRenderer =
-  | { type: "init"; canvas: OffscreenCanvas; decoder: MessagePort; size: Size }
+  | {
+      type: "init";
+      canvas: OffscreenCanvas;
+      decoder: MessagePort;
+      /** The audio clock (see @renderly/audio ClockBuffer). */
+      audioClock: SharedArrayBuffer;
+      size: Size;
+    }
   /** The canvas's size in device pixels changed. */
   | { type: "resize"; size: Size }
   | { type: "open"; id: number; input: MediaInput }
-  | { type: "play"; from: Flicks }
-  | { type: "pause" }
+  /** `session` is the audio session to follow, or 0 to run on the display refresh. */
+  | { type: "play"; from: Flicks; session: number }
+  /** Stops and replies with the start of the frame on screen, where playback should resume. */
+  | { type: "pause"; id: number }
   /** Shows the exact frame at `time`. */
   | { type: "seek"; id: number; time: Flicks }
   | { type: "preview-scale"; scale: PreviewScale }
@@ -47,6 +65,7 @@ export type FromRenderer =
   | { type: "ready" }
   | { type: "opened"; id: number; result: OpenResult }
   | { type: "seeked"; id: number; time: Flicks | null }
+  | { type: "paused"; id: number; time: Flicks }
   | { type: "stats"; stats: RenderStats }
   /** `id` is set when the error belongs to a request (open, seek); that request fails. */
   | { type: "error"; id?: number; message: string };

@@ -12,6 +12,7 @@
     "typecheck": "tsc -p ."
   },
   "dependencies": {
+    "@renderly/audio": "workspace:*",
     "@renderly/media": "workspace:*",
     "three": "^0.187.0"
   },

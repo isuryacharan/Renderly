@@ -6,7 +6,7 @@ projects stay on your device. Effects, transitions, caption styles and templates
 community-made packs, distributed through a free store.
 
 > **Status: early engine spike (milestone M0).** There is no editor yet. The code here proves
-> the playback engine: WebCodecs decoding in a worker and WebGL2 rendering in a worker. The
+> the playback engine: WebCodecs decoding and WebGL2 rendering in workers, on an audio clock. The
 > editor itself is built only after the engine passes its go / no-go measurements.
 
 ## What works so far
@@ -16,6 +16,7 @@ community-made packs, distributed through a free store.
 | S0.1 Scaffold | pnpm workspace, cross-origin-isolated dev server, CI | CI green |
 | S0.2 Decode worker | Opens files by byte range, streams frames, exact seek | 6.3 GB file opens in 26 ms; 4K long-GOP exact seek median 86 ms |
 | S0.3 Render worker | One clip on a worker-owned WebGL2 canvas | 4K60 for 2 minutes: 0 dropped frames, main thread idle |
+| S0.4 Audio clock | Sound plays from an AudioWorklet; the picture follows it | 10 minutes: 0 of 99,167 refreshes out of sync, no clicks on pause or resume |
 
 ## Run it
 
@@ -48,6 +49,7 @@ Other commands: `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm build`.
 apps/spike/          test pages for the engine spike
 packages/media/      decode worker: demux, decode, exact seek
 packages/engine/     render worker: WebGL2 upload, presentation, playback clock
+packages/audio/      audio decode worker, AudioWorklet playback, the audio clock
 packages/ui/         design system: tokens and component styles
 docs/design-system/  interface rules and a live preview page
 docs/decisions/      decision records

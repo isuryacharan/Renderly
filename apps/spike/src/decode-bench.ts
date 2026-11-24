@@ -296,7 +296,10 @@ $("soak").addEventListener(
 );
 Object.assign(window, { bench: { openSelected, seekBench, soak } });
 
-const list = (await (await fetch("/__test-media/list")).json()) as { name: string; size: number }[];
+// The test-media list exists only on the dev server; a production build uses the file picker.
+const list = (await fetch("/__test-media/list")
+  .then((response) => response.json())
+  .catch(() => [])) as { name: string; size: number }[];
 for (const { name, size } of list) {
   const option = new Option(`${name} (${(size / 1e9).toFixed(2)} GB)`, name);
   option.dataset["size"] = String(size);
