@@ -7,12 +7,14 @@ Last updated: 2026-11-24
 
 ## Status
 
-- Phase: M0 engine spike. S0.1 (scaffold) and S0.2 (decode worker) are done and in review as
-  pull request #1 (`m0-engine-spike` into `main`, CI green).
-- S0.3 (render worker, `packages/engine`) is built on `s0.3-render-worker`, branched from
-  `m0-engine-spike`, and committed; its three "done when" items pass. Not pushed yet.
-- Next slice: **S0.4 Audio clock**. Its clock start must allow for the decoder start-up stall
-  described in the S0.3 decision below.
+- Phase: M0 engine spike. S0.1, S0.2 and S0.3 are merged into `main` (pull requests #1 and #2).
+- S0.4 (audio clock, `packages/audio`) is built on `s0.4-audio-clock`; its two "done when" items
+  pass. In review as a pull request.
+- Next slice: **S0.5 Cuts across files**.
+- The owner has authorised completing and merging M0 slices without asking (2026-11-25), as long as
+  each slice's "done when" items pass. Stop and report if a target is missed. The go / no-go
+  decision record (S0.9) is the owner's to accept; nightly GPU CI needs a self-hosted runner from
+  the owner.
 - Nothing after M0 should be built on the engine until the M0 go / no-go record exists.
 
 ## Decisions
@@ -35,6 +37,10 @@ Last updated: 2026-11-24
 | 2026-11-24 | Decode back-pressure is by credit: a worker sends at most N frames (default 6) until the receiver closes some, so a leak stalls decoding instead of filling GPU memory. |
 | 2026-11-25 | Render worker playback start: the clock waits until the decoder has filled its frames-in-flight budget and three display refreshes in a row were on time (at most 1 s), and for the first 500 ms a late refresh delays the clock instead of skipping frames. Starting a hardware decoder stalls the GPU for 30-100 ms; without this, 4K starts dropped 1-8 frames. |
 | 2026-11-25 | The decode worker is reached through a MessagePort, so the render worker receives frames directly. |
+| 2026-11-25 | Audio clock: the AudioWorklet publishes the context frame and session frames consumed after every quantum; the main thread writes `getOutputTimestamp()` into the same SharedArrayBuffer every 100 ms; the render worker computes the session time heard when its next refresh reaches the screen (assumed one refresh ahead) and shows the frame for it. Clips without audio keep the display-refresh clock. |
+| 2026-11-25 | Audio and video start together: the worklet holds a session until 100 ms is buffered and the render worker sets the session's go flag after its video pre-roll. Every start and stop is a 5 ms gain ramp. |
+| 2026-11-25 | A paused playhead snaps to the start of the frame on screen; resume starts there. |
+| 2026-11-25 | Audio output runs at 48 kHz; other source rates are refused until there is a resampler (M2). |
 | 2026-11-24 | Design system v1: dark-first with a full light theme, strictly neutral grey chrome, one amber accent (chosen over blue, violet and magenta; warning is yellow), Geist for the interface and Geist Mono for numbers (both OFL, shipped with the app), 4px grid, 22–28px controls, shadows only on floating surfaces and knobs. It lives in the repository: rules in `docs/design-system/`, tokens and styles in `packages/ui/`. `tokens.json` is the source of truth. |
 
 ## Open questions
@@ -52,7 +58,8 @@ Last updated: 2026-11-24
 
 These come from the spec and have no proof of concept behind them yet.
 
-- Multi-layer WebCodecs playback on an audio clock, rendered in a worker (M0 exists to test it).
+- Multi-layer WebCodecs playback on an audio clock, rendered in a worker. Single-layer playback on
+  the audio clock is proven (S0.4); several layers and cuts are S0.5 and S0.6.
 - Streaming export to disk with flat memory (S0.8).
 - A real audio engine: many tracks, effects, pitch-preserving speed, chunked offline mix (S2.4, S2.5).
 - The text engine: HarfBuzz in WASM with a GPU glyph atlas (S4.1).
@@ -71,6 +78,7 @@ Ask the project owner for the locations.
 
 ## Log
 
+- 2026-11-25 — S0.4 audio clock: a 10-minute play of 1080p60 with AAC audio (Chrome 156) gave 36,060 frames, 0 dropped, 0 late, 0 of 99,167 refreshes out of sync, 0 audio underruns, main thread 0 long tasks. Beep onsets decoded through our path match ffmpeg's decode of the same file to the sample, from four start positions. 10 of 10 pause/resume cycles resumed on the frame shown at pause; the largest output step at fades (0.065) stays below normal playback (0.246). Not measured acoustically: output latency comes from the browser's `getOutputTimestamp()`, and display latency is assumed to be one refresh.
 - 2026-11-25 — S0.3 render worker measured in Chrome 156 (RTX 5060, ~160 Hz display): 4K60 at full preview resolution played 2 minutes with 7,576 frames, 0 dropped, 0 late, 59.6-61 fps, worker work 0.15 ms per refresh; main thread had 0 long tasks and at most 9 ms of timer lag (not a DevTools trace). 10 starts over four files: 0 dropped, start latency 19-251 ms. Phone clips tagged 90° and 270° display upright. Context loss (simulated with WEBGL_lose_context, paused and mid-play) recovers without a reload.
 - 2026-11-24 — S0.1 CI passed on pull request #1.
 - 2026-11-24 — S0.2 decode worker measured in Chrome 156 (RTX 5060) on a 6.31 GB 4K60 H.264 file at 120 Mbps with a 2 s GOP and the index at the end: open 26 ms; main heap 11.9 → 12.0 MB; exact seek median 86 ms (p90 167 ms), 0 wrong frames, 0 pixel mismatches against a full decode; 5-minute soak (779 plays, 333 seeks, 88,066 frames) left the leak counter, worker in-flight and held frames all at 0. Measured through the dev server's HTTP range endpoint; the `File` path was checked for correctness only. Test media comes from `scripts/make-test-media.mjs`.

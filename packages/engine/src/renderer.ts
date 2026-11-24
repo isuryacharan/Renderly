@@ -1,8 +1,9 @@
 // The render worker: owns the OffscreenCanvas and its WebGL2 context, receives frames straight
 // from a decode worker over a MessagePort, and puts the frame due at the playhead on screen.
 //
-// Until the audio clock exists (S0.4), playback runs on the worker's display refresh. The clock
-// starts once the decoder is primed and the display is steady (see PREROLL_FRAMES).
+// Clips with sound follow the audio clock: the playhead is the session time being heard when the
+// next refresh reaches the screen. Clips without sound run on the display refresh. Either way the
+// start waits until the decoder is primed and the display is steady (see PREROLL_FRAMES).
 
 import {
   DecodeClient,
@@ -11,6 +12,7 @@ import {
   type DecodedFrame,
   type Endpoint,
 } from "@renderly/media";
+import { ClockBuffer, heardSessionTime, PlaybackState } from "@renderly/audio";
 import * as THREE from "three";
 import { FrameQueue } from "./frame-queue";
 import { FrameUploader } from "./frame-upload";
@@ -90,10 +92,27 @@ export function serveRenderer(scope: RendererScope): void {
   let steadyRefreshes = 0;
   let playRequestedAt = 0;
   let startLatency = 0;
+  let clock: ClockBuffer | null = null;
+  /** Audio session this playback follows; 0 when it runs on the display refresh. */
+  let audioSession = 0;
+  let goSent = false;
+  /** Time of the first frame this play put on screen, to check resume continuity. */
+  let firstShown: number | null = null;
+  // Picture against sound, per refresh: how far the heard time is into the frame on screen.
+  let syncChecks = 0;
+  let outOfSync = 0;
+  let syncMinMs = Infinity;
+  let syncMaxMs = -Infinity;
 
   const post = (message: FromRenderer) => scope.postMessage(message, []);
 
-  function init(canvas: OffscreenCanvas, port: MessagePort, size: Size): void {
+  function init(
+    canvas: OffscreenCanvas,
+    port: MessagePort,
+    audioClock: SharedArrayBuffer,
+    size: Size,
+  ): void {
+    clock = new ClockBuffer(audioClock);
     const renderer = new THREE.WebGLRenderer({
       canvas,
       antialias: false,
@@ -179,10 +198,16 @@ export function serveRenderer(scope: RendererScope): void {
     return frame.time;
   }
 
-  function play(from: number): void {
+  function play(from: number, session: number): void {
     if (!decoder || !clip) return;
     stopPlayback();
     playing = true;
+    audioSession = session;
+    goSent = false;
+    firstShown = null;
+    syncChecks = outOfSync = 0;
+    syncMinMs = Infinity;
+    syncMaxMs = -Infinity;
     decodeEnded = false;
     playFrom = from;
     playhead = from;
@@ -207,25 +232,21 @@ export function serveRenderer(scope: RendererScope): void {
     const lateRefresh = refreshes.isLate(refresh);
     steadyRefreshes = refreshes.period !== null && !lateRefresh ? steadyRefreshes + 1 : 0;
     if (playing) {
-      if (clockStart === null) {
-        const ready = queue.length >= PREROLL_FRAMES && steadyRefreshes >= STEADY_REFRESHES;
-        const shortClip = decodeEnded && queue.length > 0;
-        const waitedTooLong = queue.length > 0 && now - playRequestedAt > MAX_START_WAIT_MS;
-        if (ready || shortClip || waitedTooLong) {
-          clockStart = now;
-          startLatency = now - playRequestedAt;
-        }
-      }
-      if (clockStart !== null && now - clockStart < START_GRACE_MS && lateRefresh) {
-        clockStart += refresh - (refreshes.period ?? refresh);
-      }
-      if (clockStart !== null) {
-        playhead = playFrom + Math.round(((now - clockStart) * FLICKS_PER_SECOND) / 1000);
+      const ready =
+        (queue.length >= PREROLL_FRAMES && steadyRefreshes >= STEADY_REFRESHES) ||
+        (decodeEnded && queue.length > 0) ||
+        (queue.length > 0 && now - playRequestedAt > MAX_START_WAIT_MS);
+      const time = audioSession
+        ? audioTime(now, ready)
+        : refreshTime(now, ready, refresh, lateRefresh);
+      if (time !== null) {
+        playhead = time;
         const pick = queue.take(playhead);
         for (const frame of pick.dropped) frame.release();
         dropped += pick.dropped.length;
         if (pick.frame) {
           if (show(pick.frame)) {
+            firstShown ??= shown?.time ?? null;
             presented++;
             presentedSinceReport++;
           } else {
@@ -234,6 +255,7 @@ export function serveRenderer(scope: RendererScope): void {
         } else if (shown && playhead >= shown.time + shown.duration && !decodeEnded) {
           late++;
         }
+        if (audioSession && shown) checkSync();
         if (decodeEnded && queue.length === 0 && clip && playhead >= clip.duration) {
           playing = false;
           playbackStop = null;
@@ -258,6 +280,60 @@ export function serveRenderer(scope: RendererScope): void {
     scope.requestAnimationFrame(tick);
   }
 
+  /** Display-refresh clock, for clips without sound. */
+  function refreshTime(now: number, ready: boolean, refresh: number, lateRefresh: boolean) {
+    if (clockStart === null && ready) {
+      clockStart = now;
+      startLatency = now - playRequestedAt;
+    }
+    if (clockStart === null) return null;
+    if (now - clockStart < START_GRACE_MS && lateRefresh) {
+      clockStart += refresh - (refreshes.period ?? refresh);
+    }
+    return playFrom + Math.round(((now - clockStart) * FLICKS_PER_SECOND) / 1000);
+  }
+
+  /**
+   * Audio clock: the session time heard when this refresh reaches the screen (assumed to be one
+   * refresh period from now). Before the picture is ready the audio is held with the go flag.
+   */
+  function audioTime(now: number, ready: boolean) {
+    if (!clock) return null;
+    if (!goSent && ready) {
+      clock.setGo(audioSession);
+      goSent = true;
+    }
+    const reading = clock.read();
+    const mapping = clock.readMapping();
+    if (
+      !reading ||
+      !mapping ||
+      reading.session !== audioSession ||
+      (reading.state !== PlaybackState.Playing && reading.state !== PlaybackState.Stopping)
+    ) {
+      return null;
+    }
+    const displayAt = performance.timeOrigin + now + (refreshes.period ?? 0);
+    const heard = heardSessionTime(reading, mapping, displayAt);
+    if (heard === null) return null;
+    if (clockStart === null) {
+      clockStart = now;
+      startLatency = now - playRequestedAt;
+    }
+    return playFrom + heard;
+  }
+
+  /** Records how far the heard time is into the frame on screen. In sync: 0 <= offset < duration. */
+  function checkSync(): void {
+    if (!shown) return;
+    const offset = playhead - shown.time;
+    const ms = (offset * 1000) / FLICKS_PER_SECOND;
+    syncChecks++;
+    if (offset < 0 || offset >= shown.duration) outOfSync++;
+    syncMinMs = Math.min(syncMinMs, ms);
+    syncMaxMs = Math.max(syncMaxMs, ms);
+  }
+
   function report(intervalMs: number): void {
     const stats: RenderStats = {
       fps: Math.round((presentedSinceReport * 10000) / intervalMs) / 10,
@@ -277,6 +353,14 @@ export function serveRenderer(scope: RendererScope): void {
         : { width: 0, height: 0 },
       framesOutstanding: decoder?.outstanding ?? 0,
       queued: queue.length,
+      audioClock: audioSession !== 0,
+      firstShown,
+      sync: {
+        checks: syncChecks,
+        outOfSync,
+        minMs: syncChecks ? Math.round(syncMinMs * 10) / 10 : 0,
+        maxMs: syncChecks ? Math.round(syncMaxMs * 10) / 10 : 0,
+      },
     };
     post({ type: "stats", stats });
     presentedSinceReport = tickTotal = tickMax = ticks = refreshMax = 0;
@@ -285,7 +369,7 @@ export function serveRenderer(scope: RendererScope): void {
   async function handle(message: ToRenderer): Promise<void> {
     switch (message.type) {
       case "init":
-        init(message.canvas, message.decoder, message.size);
+        init(message.canvas, message.decoder, message.audioClock, message.size);
         return;
       case "resize":
         resize(message.size);
@@ -308,10 +392,13 @@ export function serveRenderer(scope: RendererScope): void {
         return;
       }
       case "play":
-        play(message.from);
+        play(message.from, message.session);
         return;
       case "pause":
         stopPlayback();
+        // A resting playhead is frame-exact: the start of the frame on screen. Resuming from
+        // there shows that same frame first.
+        post({ type: "paused", id: message.id, time: shown?.time ?? playhead });
         return;
       case "seek":
         stopPlayback();

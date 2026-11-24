@@ -1,0 +1,21 @@
+{
+  "name": "@renderly/audio",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Audio playback: decode in a worker, play from a shared ring buffer in an AudioWorklet, publish the clock.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@renderly/media": "workspace:*",
+    "mediabunny": "^1.66.4"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.3"
+  }
+}

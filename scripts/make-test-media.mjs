@@ -23,6 +23,14 @@ const media = {
   },
   // Short 1080p clip for quick play and leak tests.
   "b_1080p60_h264_1min.mp4": { size: "1920:1080", rate: 60, seconds: 60, bitrate: "12M", gop: 120 },
+  // Long enough for the 10-minute audio/video sync run.
+  "e_1080p60_h264_12min.mp4": {
+    size: "1920:1080",
+    rate: 60,
+    seconds: 720,
+    bitrate: "8M",
+    gop: 120,
+  },
   // Phone-style portrait clips: `size` is the upright picture. The coded frames are landscape and
   // the file carries a clockwise display rotation, as phones record them. "TOP" marks the top.
   "c_portrait_rot90_h264_20s.mp4": {

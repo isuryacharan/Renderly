@@ -1,15 +1,24 @@
-// Main-thread side of the preview: starts a decode worker and a render worker, connects them
-// with a MessageChannel, and hands the canvas to the render worker. After that the main thread
-// only sends commands and receives a stats message once a second.
+// Main-thread side of the preview: starts a decode worker, a render worker and the audio output,
+// connects the decoder to the renderer with a MessageChannel and hands the canvas and the audio
+// clock to the renderer. After that the main thread only forwards commands, receives a stats
+// message once a second, and lets the audio output refresh its timing mapping.
 
+import { createAudioOutput, type AudioOpenResult, type AudioOutput } from "@renderly/audio";
 import { startDecodeWorker, type Flicks, type MediaInput, type OpenResult } from "@renderly/media";
 import type { PreviewScale, Size } from "./layout";
 import type { FromRenderer, RenderStats, ToRenderer } from "./protocol";
 
+export interface OpenedMedia {
+  video: OpenResult;
+  /** When this is not ok, playback runs on the display refresh, silently. */
+  audio: AudioOpenResult;
+}
+
 export interface Preview {
-  open(input: MediaInput): Promise<OpenResult>;
+  open(input: MediaInput): Promise<OpenedMedia>;
   play(from: Flicks): void;
-  pause(): void;
+  /** Stops; resolves with the playhead, where `play` should resume. */
+  pause(): Promise<Flicks>;
   /** Shows the exact frame at `time`; resolves with the frame's start time, or null. */
   seek(time: Flicks): Promise<Flicks | null>;
   setPreviewScale(scale: PreviewScale): void;
@@ -17,6 +26,7 @@ export interface Preview {
   loseContext(restoreAfterMs: number): void;
   onStats(listener: (stats: RenderStats) => void): void;
   onError(listener: (message: string) => void): void;
+  readonly audio: AudioOutput;
   dispose(): void;
 }
 
@@ -31,7 +41,10 @@ function devicePixelSize(entry: ResizeObserverEntry): Size {
   };
 }
 
-export function createPreview(canvas: HTMLCanvasElement): Preview {
+type Reply = Extract<FromRenderer, { id: number }>;
+
+export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview> {
+  const audio = await createAudioOutput();
   const decode = startDecodeWorker();
   const render = new Worker(new URL("./render-worker.ts", import.meta.url), {
     type: "module",
@@ -41,12 +54,14 @@ export function createPreview(canvas: HTMLCanvasElement): Preview {
     render.postMessage(message, transfer);
 
   let nextId = 1;
-  const pending = new Map<
-    number,
-    { resolve: (message: FromRenderer) => void; reject: (error: Error) => void }
-  >();
+  let session = 0;
+  let hasAudio = false;
+  const pending = new Map<number, { resolve: (m: Reply) => void; reject: (e: Error) => void }>();
   const statsListeners: ((stats: RenderStats) => void)[] = [];
   const errorListeners: ((message: string) => void)[] = [];
+  const reportError = (message: string) => {
+    for (const listener of errorListeners) listener(message);
+  };
 
   render.onmessage = (event: MessageEvent<FromRenderer>) => {
     const message = event.data;
@@ -60,10 +75,11 @@ export function createPreview(canvas: HTMLCanvasElement): Preview {
           pending.delete(message.id);
           return;
         }
-        for (const listener of errorListeners) listener(message.message);
+        reportError(message.message);
         return;
       case "opened":
       case "seeked":
+      case "paused":
         pending.get(message.id)?.resolve(message);
         pending.delete(message.id);
         return;
@@ -79,6 +95,7 @@ export function createPreview(canvas: HTMLCanvasElement): Preview {
       type: "init",
       canvas: offscreen,
       decoder: decode.port,
+      audioClock: audio.clock,
       size: {
         width: Math.round(canvas.clientWidth * ratio),
         height: Math.round(canvas.clientHeight * ratio),
@@ -96,7 +113,7 @@ export function createPreview(canvas: HTMLCanvasElement): Preview {
     observer.observe(canvas);
   }
 
-  function request<T extends FromRenderer>(build: (id: number) => ToRenderer): Promise<T> {
+  function request<T extends Reply>(build: (id: number) => ToRenderer): Promise<T> {
     const id = nextId++;
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve: (message) => resolve(message as T), reject });
@@ -105,18 +122,35 @@ export function createPreview(canvas: HTMLCanvasElement): Preview {
   }
 
   return {
+    audio,
     async open(input) {
-      const reply = await request<Extract<FromRenderer, { type: "opened" }>>((id) => ({
-        type: "open",
-        id,
-        input,
-      }));
-      return reply.result;
+      audio.stop();
+      const [video, sound] = await Promise.all([
+        request<Extract<Reply, { type: "opened" }>>((id) => ({ type: "open", id, input })),
+        audio.open(input).catch((error: unknown): AudioOpenResult => {
+          reportError(`Audio: ${String(error)}`);
+          return { ok: false, reason: "unsupported-format" };
+        }),
+      ]);
+      hasAudio = video.result.ok && sound.ok;
+      return { video: video.result, audio: sound };
     },
-    play: (from) => send({ type: "play", from }),
-    pause: () => send({ type: "pause" }),
+    play(from) {
+      session++;
+      if (hasAudio) audio.play(session, from);
+      send({ type: "play", from, session: hasAudio ? session : 0 });
+    },
+    async pause() {
+      audio.stop();
+      const reply = await request<Extract<Reply, { type: "paused" }>>((id) => ({
+        type: "pause",
+        id,
+      }));
+      return reply.time;
+    },
     async seek(time) {
-      const reply = await request<Extract<FromRenderer, { type: "seeked" }>>((id) => ({
+      audio.stop();
+      const reply = await request<Extract<Reply, { type: "seeked" }>>((id) => ({
         type: "seek",
         id,
         time,
@@ -131,6 +165,7 @@ export function createPreview(canvas: HTMLCanvasElement): Preview {
       observer.disconnect();
       render.terminate();
       decode.terminate();
+      audio.dispose();
     },
   };
 }
