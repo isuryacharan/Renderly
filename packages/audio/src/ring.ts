@@ -2,9 +2,10 @@
 // The audio decode worker writes; the AudioWorklet reads. Neither side ever blocks: the writer
 // retries later when the ring is full, the reader outputs what is there.
 
-const HEADER_INTS = 4; // [write index, read index, unused, unused]
+const HEADER_INTS = 4; // [write index, read index, complete flag, unused]
 const WRITE = 0;
 const READ = 1;
+const COMPLETE = 2;
 
 export class AudioRing {
   private readonly header: Int32Array;
@@ -36,6 +37,15 @@ export class AudioRing {
       { length: channels },
       (_, c) => new Float32Array(buffer, HEADER_INTS * 4 + c * capacity * 4, capacity),
     );
+  }
+
+  /** The writer has written everything it will; an empty ring now means the end, not an underrun. */
+  get complete(): boolean {
+    return Atomics.load(this.header, COMPLETE) === 1;
+  }
+
+  markComplete(): void {
+    Atomics.store(this.header, COMPLETE, 1);
   }
 
   /** Frames waiting to be read. */

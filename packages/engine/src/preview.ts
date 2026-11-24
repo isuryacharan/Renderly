@@ -1,12 +1,13 @@
-// Main-thread side of the preview: starts a decode worker, a render worker and the audio output,
-// connects the decoder to the renderer with a MessageChannel and hands the canvas and the audio
-// clock to the renderer. After that the main thread only forwards commands, receives a stats
+// Main-thread side of the preview: starts a pool of decode workers, a render worker and the audio
+// output, connects the decoders to the renderer with MessageChannels and hands the canvas and the
+// audio clock to the renderer. After that the main thread only forwards commands, receives a stats
 // message once a second, and lets the audio output refresh its timing mapping.
 
 import { createAudioOutput, type AudioOpenResult, type AudioOutput } from "@renderly/audio";
 import { startDecodeWorker, type Flicks, type MediaInput, type OpenResult } from "@renderly/media";
 import type { PreviewScale, Size } from "./layout";
-import type { FromRenderer, RenderStats, ToRenderer } from "./protocol";
+import type { FromRenderer, LoadResult, RenderStats, ToRenderer } from "./protocol";
+import type { Cut } from "./timeline";
 
 export interface OpenedMedia {
   video: OpenResult;
@@ -14,8 +15,19 @@ export interface OpenedMedia {
   audio: AudioOpenResult;
 }
 
+export interface LoadedTimeline extends LoadResult {
+  /** Audio result per source. Playback follows the audio clock when any source has audio. */
+  audio: AudioOpenResult[];
+}
+
+/** Decode workers in the pool: the current run, two ahead, and one spare for short clips. */
+export const DECODER_POOL_SIZE = 4;
+
 export interface Preview {
+  /** Opens one file as a timeline of one cut. */
   open(input: MediaInput): Promise<OpenedMedia>;
+  /** Opens several files and plays `cuts` over them. */
+  load(sources: MediaInput[], cuts: Cut[]): Promise<LoadedTimeline>;
   play(from: Flicks): void;
   /** Stops; resolves with the playhead, where `play` should resume. */
   pause(): Promise<Flicks>;
@@ -45,7 +57,7 @@ type Reply = Extract<FromRenderer, { id: number }>;
 
 export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview> {
   const audio = await createAudioOutput();
-  const decode = startDecodeWorker();
+  const decoders = Array.from({ length: DECODER_POOL_SIZE }, () => startDecodeWorker());
   const render = new Worker(new URL("./render-worker.ts", import.meta.url), {
     type: "module",
     name: "render",
@@ -56,6 +68,7 @@ export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview>
   let nextId = 1;
   let session = 0;
   let hasAudio = false;
+  let cuts: Cut[] = [];
   const pending = new Map<number, { resolve: (m: Reply) => void; reject: (e: Error) => void }>();
   const statsListeners: ((stats: RenderStats) => void)[] = [];
   const errorListeners: ((message: string) => void)[] = [];
@@ -77,7 +90,7 @@ export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview>
         }
         reportError(message.message);
         return;
-      case "opened":
+      case "loaded":
       case "seeked":
       case "paused":
         pending.get(message.id)?.resolve(message);
@@ -94,14 +107,14 @@ export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview>
     {
       type: "init",
       canvas: offscreen,
-      decoder: decode.port,
+      decoders: decoders.map((decoder) => decoder.port),
       audioClock: audio.clock,
       size: {
         width: Math.round(canvas.clientWidth * ratio),
         height: Math.round(canvas.clientHeight * ratio),
       },
     },
-    [offscreen, decode.port],
+    [offscreen, ...decoders.map((decoder) => decoder.port)],
   );
 
   const observer = new ResizeObserver(([entry]) => {
@@ -121,23 +134,44 @@ export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview>
     });
   }
 
+  async function loadTimeline(sources: MediaInput[], list: Cut[] | null): Promise<LoadedTimeline> {
+    audio.stop();
+    const [video, sound] = await Promise.all([
+      request<Extract<Reply, { type: "loaded" }>>((id) => ({
+        type: "load",
+        id,
+        sources,
+        cuts: list,
+      })),
+      audio.load(sources).catch((error: unknown): AudioOpenResult[] => {
+        reportError(`Audio: ${String(error)}`);
+        return sources.map(() => ({ ok: false, reason: "unsupported-format" }));
+      }),
+    ]);
+    cuts = video.result.cuts;
+    hasAudio = cuts.length > 0 && sound.some((result) => result.ok);
+    return { ...video.result, audio: sound };
+  }
+
   return {
     audio,
+    async load(sources, list) {
+      return loadTimeline(sources, list);
+    },
     async open(input) {
-      audio.stop();
-      const [video, sound] = await Promise.all([
-        request<Extract<Reply, { type: "opened" }>>((id) => ({ type: "open", id, input })),
-        audio.open(input).catch((error: unknown): AudioOpenResult => {
-          reportError(`Audio: ${String(error)}`);
-          return { ok: false, reason: "unsupported-format" };
-        }),
-      ]);
-      hasAudio = video.result.ok && sound.ok;
-      return { video: video.result, audio: sound };
+      const loaded = await loadTimeline([input], null);
+      return {
+        video: loaded.sources[0] ?? {
+          ok: false,
+          reason: "unsupported-format",
+          detail: "Nothing loaded",
+        },
+        audio: loaded.audio[0] ?? { ok: false, reason: "no-audio-track" },
+      };
     },
     play(from) {
       session++;
-      if (hasAudio) audio.play(session, from);
+      if (hasAudio) audio.play(session, from, cuts);
       send({ type: "play", from, session: hasAudio ? session : 0 });
     },
     async pause() {
@@ -164,7 +198,7 @@ export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview>
     dispose() {
       observer.disconnect();
       render.terminate();
-      decode.terminate();
+      for (const decoder of decoders) decoder.terminate();
       audio.dispose();
     },
   };

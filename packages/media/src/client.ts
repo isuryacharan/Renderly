@@ -73,11 +73,14 @@ export class DecodeClient {
     return reply.result;
   }
 
-  /** Streams frames from `from` (the frame showing at that time) up to `to` (exclusive). */
-  play(from: Flicks, to: Flicks, onFrame: (frame: DecodedFrame) => void): Playback {
+  /**
+   * Streams frames from `from` (the frame showing at that time) up to `to` (exclusive).
+   * `paceMs` spaces decode submissions, for streams prepared while something else is on screen.
+   */
+  play(from: Flicks, to: Flicks, onFrame: (frame: DecodedFrame) => void, paceMs = 0): Playback {
     const id = this.nextId++;
     const done = this.stream(id, onFrame);
-    this.send({ type: "play", id, from, to });
+    this.send({ type: "play", id, from, to, paceMs });
     return { done, stop: () => this.send({ type: "stop", id }) };
   }
 

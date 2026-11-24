@@ -2,6 +2,7 @@
 
 import type { Flicks, MediaInput, OpenResult } from "@renderly/media";
 import type { PreviewScale, Size } from "./layout";
+import type { Cut } from "./timeline";
 
 export interface RenderStats {
   /** Distinct frames put on screen per second over the last report interval. */
@@ -37,20 +38,48 @@ export interface RenderStats {
    * heard time is into the frame on screen, in ms. In sync means 0 <= offset < frame duration.
    */
   sync: { checks: number; outOfSync: number; minMs: number; maxMs: number };
+  /** Cut boundaries crossed since the last play started. */
+  cuts: {
+    passed: number;
+    /** Boundaries where the old picture stayed up for at least one refresh. */
+    held: number;
+    maxHoldMs: number;
+    /** Boundaries whose first frame was not the source frame due at that moment. */
+    inexact: number;
+    /** Frames decoded for either side of a cut but never shown. */
+    droppedAtCuts: number;
+  };
+  decoders: {
+    pool: number;
+    /** Decoders with a stream right now. */
+    busy: number;
+    /** File opens since the last play started. */
+    opens: number;
+  };
+}
+
+export interface LoadResult {
+  /** One result per source, in order. */
+  sources: OpenResult[];
+  /** The edit list in use: the one given, or one cut over the whole of source 0. */
+  cuts: Cut[];
+  duration: Flicks;
 }
 
 export type ToRenderer =
   | {
       type: "init";
       canvas: OffscreenCanvas;
-      decoder: MessagePort;
+      /** One port per decode worker in the pool. */
+      decoders: MessagePort[];
       /** The audio clock (see @renderly/audio ClockBuffer). */
       audioClock: SharedArrayBuffer;
       size: Size;
     }
   /** The canvas's size in device pixels changed. */
   | { type: "resize"; size: Size }
-  | { type: "open"; id: number; input: MediaInput }
+  /** Opens the sources and sets the edit list (null: one cut over the whole of source 0). */
+  | { type: "load"; id: number; sources: MediaInput[]; cuts: Cut[] | null }
   /** `session` is the audio session to follow, or 0 to run on the display refresh. */
   | { type: "play"; from: Flicks; session: number }
   /** Stops and replies with the start of the frame on screen, where playback should resume. */
@@ -63,7 +92,7 @@ export type ToRenderer =
 
 export type FromRenderer =
   | { type: "ready" }
-  | { type: "opened"; id: number; result: OpenResult }
+  | { type: "loaded"; id: number; result: LoadResult }
   | { type: "seeked"; id: number; time: Flicks | null }
   | { type: "paused"; id: number; time: Flicks }
   | { type: "stats"; stats: RenderStats }

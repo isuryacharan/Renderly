@@ -12,6 +12,7 @@ import {
   type ToAudioDecoder,
 } from "./audio-decoder";
 import { ClockBuffer } from "./clock";
+import type { AudioCut } from "./cut-frames";
 import processorUrl from "./processor?worker&url";
 import { PROCESSOR_NAME, type ToProcessor } from "./processor-protocol";
 import { AudioRing } from "./ring";
@@ -20,15 +21,27 @@ import { AudioRing } from "./ring";
 const RING_SECONDS = 2;
 const MAPPING_INTERVAL_MS = 100;
 
+export interface FillResult {
+  session: number;
+  frames: number;
+  error: string | null;
+}
+
 export interface AudioOutput {
   /** Shared with the render worker, which follows it. */
   readonly clock: SharedArrayBuffer;
-  open(input: MediaInput): Promise<AudioOpenResult>;
-  /** Starts session `session` at `from`. It plays once the render worker sets the go flag. */
-  play(session: number, from: Flicks): void;
+  /** Opens every source's audio; one result per source. */
+  load(sources: MediaInput[]): Promise<AudioOpenResult[]>;
+  /**
+   * Starts session `session` at timeline time `from` over `cuts`. It plays once the render
+   * worker sets the go flag.
+   */
+  play(session: number, from: Flicks, cuts: AudioCut[]): void;
   /** Fades out and stops. */
   stop(): void;
   diagnostics(): ReturnType<ClockBuffer["diagnostics"]>;
+  /** How the most recent session's decode ended: samples written, or the error. */
+  lastFill(): FillResult | null;
   resetDiagnostics(): void;
   readonly context: AudioContext;
   dispose(): void;
@@ -52,16 +65,21 @@ export async function createAudioOutput(): Promise<AudioOutput> {
   });
   const toDecoder = (message: ToAudioDecoder) => worker.postMessage(message);
   let nextId = 1;
-  const pending = new Map<number, (result: AudioOpenResult | Error) => void>();
+  const pending = new Map<number, (results: AudioOpenResult[] | Error) => void>();
   let channels = 2;
+  let lastFill: FillResult | null = null;
   worker.onmessage = (event: MessageEvent<FromAudioDecoder>) => {
     const message = event.data;
-    if (message.type === "opened") {
-      pending.get(message.id)?.(message.result);
+    if (message.type === "loaded") {
+      pending.get(message.id)?.(message.results);
       pending.delete(message.id);
     } else if (message.type === "error" && message.id !== undefined) {
       pending.get(message.id)?.(new Error(message.message));
       pending.delete(message.id);
+    } else if (message.type === "filled") {
+      lastFill = { session: message.session, frames: message.frames, error: null };
+    } else if (message.type === "error" && message.session !== undefined) {
+      lastFill = { session: message.session, frames: 0, error: message.message };
     }
   };
 
@@ -75,28 +93,29 @@ export async function createAudioOutput(): Promise<AudioOutput> {
   return {
     clock: clock.buffer,
     context,
-    async open(input) {
+    async load(sources) {
       const id = nextId++;
-      const result = await new Promise<AudioOpenResult | Error>((resolve) => {
+      const results = await new Promise<AudioOpenResult[] | Error>((resolve) => {
         pending.set(id, resolve);
-        toDecoder({ type: "open", id, input });
+        toDecoder({ type: "load", id, sources });
       });
-      if (result instanceof Error) throw result;
-      if (result.ok) channels = result.channels;
-      return result;
+      if (results instanceof Error) throw results;
+      channels = Math.max(1, ...results.map((result) => (result.ok ? result.channels : 1)));
+      return results;
     },
-    play(session, from) {
+    play(session, from, cuts) {
       void context.resume();
       const capacity = RING_SECONDS * OUTPUT_SAMPLE_RATE;
       const ring = AudioRing.create(channels, capacity);
       toProcessor({ type: "start", session, ring: ring.buffer, channels, capacity });
-      toDecoder({ type: "fill", session, ring: ring.buffer, channels, capacity, from });
+      toDecoder({ type: "fill", session, ring: ring.buffer, channels, capacity, from, cuts });
     },
     stop() {
       toProcessor({ type: "stop" });
       toDecoder({ type: "stop" });
     },
     diagnostics: () => clock.diagnostics(),
+    lastFill: () => lastFill,
     resetDiagnostics: () => clock.resetDiagnostics(),
     dispose() {
       clearInterval(mapping);

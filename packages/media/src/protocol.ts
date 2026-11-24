@@ -52,7 +52,8 @@ export interface DecodeStats {
 
 export type ToWorker =
   | { type: "open"; id: number; input: MediaInput; maxFramesInFlight: number }
-  | { type: "play"; id: number; from: Flicks; to: Flicks }
+  /** `paceMs`: minimum gap between decode submissions (see range-decode.ts); 0 or absent: none. */
+  | { type: "play"; id: number; from: Flicks; to: Flicks; paceMs?: number }
   | { type: "seek"; id: number; time: Flicks; mode: SeekMode }
   /** Ends the current play or seek. */
   | { type: "stop"; id: number }

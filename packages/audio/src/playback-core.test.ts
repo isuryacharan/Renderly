@@ -94,3 +94,27 @@ describe("PlaybackCore", () => {
     expect(clock.diagnostics().underruns).toBeGreaterThan(0);
   });
 });
+
+describe("PlaybackCore at the end of the audio", () => {
+  it("stops the published clock where the last sample ended, so the heard time can reach it", () => {
+    const clock = new ClockBuffer();
+    const core = new PlaybackCore(clock, RATE);
+    const ring = sineRing(PREFILL_SECONDS + 0.01);
+    ring.markComplete();
+    core.start(1, ring);
+    clock.setGo(1);
+    let frame = 0;
+    const out = () => [new Float32Array(QUANTUM), new Float32Array(QUANTUM)];
+    for (let q = 0; q < 60; q++) {
+      core.process(out(), frame);
+      frame += QUANTUM;
+    }
+    const reading = clock.read();
+    const total = Math.round((PREFILL_SECONDS + 0.01) * RATE);
+    expect(reading?.consumed).toBe(total);
+    // The last consumed sample ended partway through an earlier quantum, not at the latest one.
+    expect(reading?.quantumEndFrame).toBe(total);
+    // A complete ring running dry is the end, not an underrun.
+    expect(clock.diagnostics().underruns).toBe(0);
+  });
+});

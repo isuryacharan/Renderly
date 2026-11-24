@@ -7,10 +7,10 @@ Last updated: 2026-11-24
 
 ## Status
 
-- Phase: M0 engine spike. S0.1, S0.2 and S0.3 are merged into `main` (pull requests #1 and #2).
-- S0.4 (audio clock, `packages/audio`) is built on `s0.4-audio-clock`; its two "done when" items
-  pass. In review as a pull request.
-- Next slice: **S0.5 Cuts across files**.
+- Phase: M0 engine spike. S0.1 to S0.4 are merged into `main` (pull requests #1 to #3).
+- S0.5 (cuts across files) is built on `s0.5-cuts`; both "done when" items pass. In review as a
+  pull request.
+- Next slice: **S0.6 Multiple layers**.
 - The owner has authorised completing and merging M0 slices without asking (2026-11-25), as long as
   each slice's "done when" items pass. Stop and report if a target is missed. The go / no-go
   decision record (S0.9) is the owner's to accept; nightly GPU CI needs a self-hosted runner from
@@ -41,6 +41,9 @@ Last updated: 2026-11-24
 | 2026-11-25 | Audio and video start together: the worklet holds a session until 100 ms is buffered and the render worker sets the session's go flag after its video pre-roll. Every start and stop is a 5 ms gain ramp. |
 | 2026-11-25 | A paused playhead snaps to the start of the frame on screen; resume starts there. |
 | 2026-11-25 | Audio output runs at 48 kHz; other source rates are refused until there is a resampler (M2). |
+| 2026-11-25 | Edit-list playback: consecutive cuts of continuous footage merge into runs; each run gets a decoder stream (the current run, two ahead, and any run starting within 1.5 s, up to eight). A pool of four decode workers is shared; a decoder is freed as soon as its run is fully decoded. |
+| 2026-11-25 | Decoders preparing upcoming cuts submit one frame every 8 ms. Bursts of 4K decode stall Chrome's GPU thread for 12-70 ms and drop frames on screen; paced decoding does not, even three at once. Playback decoding now runs in our own loop (`range-decode.ts`) instead of mediabunny's sample iterator, and skips non-reference H.264 frames before the first wanted frame. |
+| 2026-11-25 | The audio clock publishes where the last consumed sample ended, not the latest quantum, so the heard time reaches the end of the audio. A ring the decoder has marked complete running dry is the end, not an underrun. |
 | 2026-11-24 | Design system v1: dark-first with a full light theme, strictly neutral grey chrome, one amber accent (chosen over blue, violet and magenta; warning is yellow), Geist for the interface and Geist Mono for numbers (both OFL, shipped with the app), 4px grid, 22–28px controls, shadows only on floating surfaces and knobs. It lives in the repository: rules in `docs/design-system/`, tokens and styles in `packages/ui/`. `tokens.json` is the source of truth. |
 
 ## Open questions
@@ -78,6 +81,7 @@ Ask the project owner for the locations.
 
 ## Log
 
+- 2026-11-25 — S0.5 cuts: a seeded 400-cut list (320 s) over two H.264 and one HEVC 4K60 file played with 308 decoder switches, 0 cuts held, 0 inexact, 0 frames dropped, 0 late, 19,221 frames presented, 0 of 52,778 refreshes out of sync, 0 audio underruns. Strings of 2, 3 and 4 three-frame clips between 1 s clips: 0 held, 0 inexact. Found and fixed on the way: start-of-run decoders started at the run start instead of the playhead; burst decoding stalling the GPU; a flush deadlock when the decoder's output surfaces were all held; one-at-a-time packet reads; the audio clock stopping one output latency short of the end. Known limit: hard cuts between different audio make a small step (no edit-point fades until M2).
 - 2026-11-25 — S0.4 audio clock: a 10-minute play of 1080p60 with AAC audio (Chrome 156) gave 36,060 frames, 0 dropped, 0 late, 0 of 99,167 refreshes out of sync, 0 audio underruns, main thread 0 long tasks. Beep onsets decoded through our path match ffmpeg's decode of the same file to the sample, from four start positions. 10 of 10 pause/resume cycles resumed on the frame shown at pause; the largest output step at fades (0.065) stays below normal playback (0.246). Not measured acoustically: output latency comes from the browser's `getOutputTimestamp()`, and display latency is assumed to be one refresh.
 - 2026-11-25 — S0.3 render worker measured in Chrome 156 (RTX 5060, ~160 Hz display): 4K60 at full preview resolution played 2 minutes with 7,576 frames, 0 dropped, 0 late, 59.6-61 fps, worker work 0.15 ms per refresh; main thread had 0 long tasks and at most 9 ms of timer lag (not a DevTools trace). 10 starts over four files: 0 dropped, start latency 19-251 ms. Phone clips tagged 90° and 270° display upright. Context loss (simulated with WEBGL_lose_context, paused and mid-play) recovers without a reload.
 - 2026-11-24 — S0.1 CI passed on pull request #1.
