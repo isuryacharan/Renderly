@@ -7,10 +7,9 @@ Last updated: 2026-11-24
 
 ## Status
 
-- Phase: M0 engine spike. S0.1 (repository scaffold) is built on branch `s0.1-repo-scaffold`; its
-  last "done when" item, green CI on a pull request, waits for a GitHub remote.
-- S0.2 (decode worker, `packages/media`) is built and its three "done when" items pass; not yet
-  committed.
+- Phase: M0 engine spike. S0.1 (repository scaffold) and S0.2 (decode worker, `packages/media`)
+  are on branch `m0-engine-spike`, in review as a pull request into `main`. S0.1 is done once CI
+  is green on that pull request; S0.2's three "done when" items pass.
 - Next slice: **S0.3 Render worker**.
 - Nothing after M0 should be built on the engine until the M0 go / no-go record exists.
 
@@ -38,7 +37,7 @@ Last updated: 2026-11-24
 
 | # | Question | Blocks |
 |---|---|---|
-| 2 | Hosting and domain for the app, store site and pack CDN | S3.7, S3.8, R.6 |
+| 2 | Hosting and domain for the app, store site and pack CDN. The code is at github.com/isuryacharan/Renderly. | S3.7, S3.8, R.6 |
 | 3 | Allow optional cloud AI with the user's own key later? (On-device only is assumed for v1.) | Nothing before M7 |
 | 4 | Should the assistant move earlier than M8? | Position of S8.3–S8.5 |
 | 5 | Scripted-pack sandbox mechanism | Decided by prototype in S3.9 |
