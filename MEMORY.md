@@ -8,11 +8,8 @@ Last updated: 2026-11-24
 ## Status
 
 - Phase: M0 engine spike. S0.1 to S0.6 are merged into `main` (pull requests #1 to #5).
-- S0.7 (scrubbing) is built on `s0.7-scrub` but **not done**: with the GPU awake it meets every
-  target, but the first ~0.4 s of a 4K drag after ~10 s of GPU idle has UI frames up to 55 ms
-  (target: none over 20 ms). Draft pull request, not merged; needs the owner's decision (see open
-  question 8).
-- Next slice: **S0.8 Streaming export** (depends on S0.6, not S0.7).
+- S0.7 (scrubbing) is done, with the owner's acceptance of the after-idle hitch (decision below).
+- Next slice: **S0.8 Streaming export**.
 - The owner has authorised completing and merging M0 slices without asking (2026-11-25), as long as
   each slice's "done when" items pass. Stop and report if a target is missed. The go / no-go
   decision record (S0.9) is the owner's to accept; nightly GPU CI needs a self-hosted runner from
@@ -50,6 +47,7 @@ Last updated: 2026-11-24
 | 2026-11-25 | Decoder budget: a pool of six decoders, five for streams and one for keyframe-only updates and seeks. Current runs get decoders first, top layer first; layers left over show their nearest keyframe twice a second. |
 | 2026-11-25 | The renderer accounts for its GPU memory (render targets, upload texture, decoded frames on loan) against a 1.5 GB ceiling; targets past it are refused. The browser does not report GPU memory, so this is accounting, not measurement. |
 | 2026-11-25 | Scrubbing: one seek in flight per layer, newest request wins; keyframe pictures at reduced size (within 960×540, no mipmaps) while the playhead moves, spaced at least 25 ms apart (up to 40 updates a second); exact frames once it rests 120 ms or the drag ends; a 12-entry cache of exact composites at half size. |
+| 2026-11-25 | Accepted by the owner: a 4K drag that starts after the GPU has idled may show UI frames up to ~55 ms for its first ~0.4 s. S0.7 counts as done; proxies (M6) are the later fix. |
 | 2026-11-24 | Design system v1: dark-first with a full light theme, strictly neutral grey chrome, one amber accent (chosen over blue, violet and magenta; warning is yellow), Geist for the interface and Geist Mono for numbers (both OFL, shipped with the app), 4px grid, 22–28px controls, shadows only on floating surfaces and knobs. It lives in the repository: rules in `docs/design-system/`, tokens and styles in `packages/ui/`. `tokens.json` is the source of truth. |
 
 ## Open questions
@@ -62,7 +60,6 @@ Last updated: 2026-11-24
 | 5 | Scripted-pack sandbox mechanism | Decided by prototype in S3.9 |
 | 6 | How much launch content is required at 1.0? | R.5 |
 | 7 | Registry governance: who approves pull requests, and the content guidelines | S3.7 |
-| 8 | S0.7: accept a short hitch (UI frames up to ~55 ms for ~0.4 s) when a 4K drag starts after the GPU has idled, or require proxies (M6) or another fix before S0.7 counts as done? Importing a 4K frame into a texture costs ~40 ms while the GPU wakes; decoding alone does not. | S0.7, S0.9 record |
 
 ## Unproven assumptions
 
