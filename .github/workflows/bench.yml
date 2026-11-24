@@ -1,0 +1,35 @@
+name: Benchmark
+
+# Nightly engine benchmark on a real GPU (spec §6.4). GitHub's hosted runners have no GPU, so this
+# runs on a self-hosted runner labelled "gpu" with Chrome or Edge, ffmpeg and NVENC (or libx264).
+# Until such a runner is registered, scheduled runs wait in the queue and do nothing else.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Test media is several GB; keep it on the runner between runs.
+      - run: node scripts/make-test-media.mjs
+      - run: node scripts/bench.mjs --browser msedge --fail-on-miss --out bench-results/nightly.json
+      - uses: actions/upload-artifact@v4
+        if: always() # keep the results of a failing run too
+        with:
+          name: bench-${{ github.run_number }}
+          path: bench-results/nightly.json
+          retention-days: 90

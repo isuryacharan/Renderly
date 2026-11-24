@@ -119,3 +119,26 @@
 .preview-controls {
   margin-top: var(--space-12);
 }
+
+/* Performance HUD over the viewer; H toggles it. */
+.preview-stage {
+  position: relative;
+}
+
+.preview-hud {
+  position: absolute;
+  top: var(--space-8);
+  right: var(--space-8);
+  margin: 0;
+  padding: var(--space-6) var(--space-8);
+  border-radius: var(--radius-sm);
+  background: var(--scrim);
+  color: var(--text);
+  font-family: var(--font-mono);
+  pointer-events: none;
+  user-select: none;
+}
+
+.preview-hud[hidden] {
+  display: none;
+}

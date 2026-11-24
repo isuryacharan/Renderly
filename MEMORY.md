@@ -7,16 +7,14 @@ Last updated: 2026-11-24
 
 ## Status
 
-- Phase: M0 engine spike. S0.1 to S0.6 are merged into `main` (pull requests #1 to #5).
-- S0.7 (scrubbing) and S0.8 (streaming export) are done, with the owner's acceptance of the
-  after-idle scrub hitch and of the export's process-level memory (decisions below).
-- Next slice: **S0.9 Benchmarks and decision**. It needs a self-hosted GPU runner from the owner
-  for the nightly benchmark; the go / no-go record is the owner's to accept.
-- The owner has authorised completing and merging M0 slices without asking (2026-11-25), as long as
-  each slice's "done when" items pass. Stop and report if a target is missed. The go / no-go
-  decision record (S0.9) is the owner's to accept; nightly GPU CI needs a self-hosted runner from
-  the owner.
-- Nothing after M0 should be built on the engine until the M0 go / no-go record exists.
+- Phase: **M0 is complete.** S0.1 to S0.9 are merged; the engine decision
+  (`docs/decisions/0001-engine.md`) is **go**, accepted by the owner on 2026-11-25.
+- Next: **M1 Foundations**, starting with S1.1 (time, ids and schema in `packages/core`).
+- Waiting on the owner: a self-hosted GitHub Actions runner labelled `gpu`, so the nightly
+  benchmark (`.github/workflows/bench.yml`) runs. Until then run `pnpm bench` by hand before
+  merging engine changes.
+- The owner authorised completing and merging M0 slices without asking (2026-11-25). That
+  authorisation covered M0; ask before assuming it for M1.
 
 ## Decisions
 
@@ -52,6 +50,8 @@ Last updated: 2026-11-24
 | 2026-11-25 | Accepted by the owner: a 4K drag that starts after the GPU has idled may show UI frames up to ~55 ms for its first ~0.4 s. S0.7 counts as done; proxies (M6) are the later fix. |
 | 2026-11-25 | Export runs in its own worker with its own four decoders, composites with the same uploader and compositor as the preview, encodes through mediabunny (VideoEncoder, AAC) and streams the MP4 to a FileSystemWritableFileStream with the index at the end. Audio comes from the bottom layer through the playback decode code, encoded in 1,024-sample chunks. Exact-frame requests in the renderer are serialised. |
 | 2026-11-25 | Accepted by the owner: during a 30-minute export the page's renderer process grows ~370–430 MB before levelling off and releases it afterwards, while the main heap and accounted GPU memory stay flat. S0.8 counts as done; S0.9's benchmark should track process memory over long exports. |
+| 2026-11-25 | M0 engine decision `docs/decisions/0001-engine.md`: **go**, accepted by the owner. Every measurable §6.4 target passes in `pnpm bench` (headless Edge, RTX 5060). |
+| 2026-11-25 | The engine benchmark is `pnpm bench` (Playwright driving installed Edge or Chrome on the GPU); nightly in CI on a self-hosted runner labelled `gpu`. |
 | 2026-11-24 | Design system v1: dark-first with a full light theme, strictly neutral grey chrome, one amber accent (chosen over blue, violet and magenta; warning is yellow), Geist for the interface and Geist Mono for numbers (both OFL, shipped with the app), 4px grid, 22–28px controls, shadows only on floating surfaces and knobs. It lives in the repository: rules in `docs/design-system/`, tokens and styles in `packages/ui/`. `tokens.json` is the source of truth. |
 
 ## Open questions
@@ -89,6 +89,7 @@ Ask the project owner for the locations.
 
 ## Log
 
+- 2026-11-25 — S0.9: full benchmark at commit f0809b3, headless Edge 158 on the RTX 5060: open 47 ms, main heap 8.6 MB, 4K60 0 dropped of 3,538, three 1080p layers 59.6 fps, two 4K layers 59.6 fps (9 dropped at start, full resolution), exact seek median 111 ms, 100 cuts 0 held, scrub 40/s with worst UI frame 6.1 ms, export 15.4× real time, parity 20/20, cold start 165 ms.
 - 2026-11-25 — S0.7 scrubbing (Chrome 156, RTX 5060), 4-second drags, one request per display frame: with the GPU awake, 4K H.264, 4K HEVC, 1080p and three 1080p layers all gave 40 picture updates a second per layer, worst UI frame 6–12 ms, exact resting frame. After 10 s of GPU idle, the first ~0.4 s of a 4K drag had 6 UI frames over 20 ms (worst 42–55 ms); 1080p one at 24 ms. Measured: decoding keyframes alone does not stall after idle; importing the 4K frame into a texture does, at any target size. A start ramp and reduced-size uploads did not remove it.
 - 2026-11-25 — S0.8 export (Chrome 156, RTX 5060): a 30-minute 1080p30 export of six cuts ran in 132.8 s (13.6× real time), 1.85 GB; ffmpeg decodes exactly 54,000 frames, video and audio are both 1,800.000 s, and all 1,799 beeps sit within 0.21 ms of their whole seconds. Parity: 20 of 20 sampled frames of a three-layer timeline are byte-identical between preview and export. Cancel stops and removes the partial file. Memory: main heap 53.7–54.3 MB and accounted GPU 61 MB stayed flat, but the renderer process (OS private bytes) rose from 683 MB to about 1,050 MB, levelled off, and fell back after; not under the 100 MB target as measured at process level.
 - 2026-11-25 — S0.6 layers (Chrome 156, RTX 5060): three 1080p60 layers at 60 fps, 0 dropped, 127 MB accounted. Two 4K60 layers at full preview resolution (3840×2160) at 59.6–60.6 fps, 6 dropped per layer, all at the start; at 1/2 resolution 60 fps with 0 dropped, 232 MB. A 5-minute two-4K play at full resolution peaked at 374 MB of the 1,536 MB ceiling, 0 late, 0 of 49,477 refreshes out of sync. Seven 1080p layers with five stream decoders: the top five at 59.6 fps, the bottom two on keyframe updates (2 a second), no stall. Known issue: 4K playback still drops 2–6 frames at the very start on the audio clock (decoder warm-up); worth a look in S0.9.

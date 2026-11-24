@@ -307,3 +307,6 @@ for (const { name, size } of list) {
 }
 if (list.length === 0)
   mediaSelect.append(new Option("No test media (run scripts/make-test-media.mjs)", ""));
+
+// For the benchmark runner: when the page became usable, in ms since navigation started.
+Object.assign(window, { pageReadyAt: performance.now() });

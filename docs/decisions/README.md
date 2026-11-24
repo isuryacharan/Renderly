@@ -11,4 +11,4 @@ record.
 
 | # | Decision | Status |
 |---|---|---|
-| — | None yet | |
+| [0001](0001-engine.md) | The WebCodecs engine: go | Accepted |

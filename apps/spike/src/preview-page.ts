@@ -55,6 +55,23 @@ preview.onError((message) => {
   log(`Error: ${message}`);
 });
 
+// HUD: the benchmark's numbers over the viewer, updated with every stats report.
+const hud = $<HTMLPreElement>("hud");
+document.addEventListener("keydown", (event) => {
+  if (event.key === "h" && !(event.target instanceof HTMLInputElement)) hud.hidden = !hud.hidden;
+});
+preview.onStats((stats) => {
+  const audio = preview.audio.diagnostics();
+  const dropped = stats.presented ? ((stats.dropped / stats.presented) * 100).toFixed(2) : "0.00";
+  hud.textContent = [
+    `${stats.fps.toFixed(1)} fps  ${stats.dropped} dropped (${dropped}%)  ${stats.late} late`,
+    `sync ${stats.sync.outOfSync}/${stats.sync.checks} off  underruns ${audio.underruns}`,
+    `cuts ${stats.cuts.passed}  held ${stats.cuts.held} (max ${stats.cuts.maxHoldMs} ms)  inexact ${stats.cuts.inexact}`,
+    `decoders ${stats.decoders.busy}/${stats.decoders.pool}  GPU ${stats.memory.usedMB}/${stats.memory.ceilingMB} MB`,
+    `scrub ${stats.scrub.updates} updates  worker tick ${stats.tickMaxMs} ms`,
+  ].join("\n");
+});
+
 let playhead = 0;
 preview.onStats((stats) => {
   history.push(stats);
@@ -306,3 +323,6 @@ const list = (await fetch("/__test-media/list")
   .then((response) => response.json())
   .catch(() => [])) as { name: string }[];
 for (const { name } of list) mediaSelect.append(new Option(name, name));
+
+// For the benchmark runner: when the page became usable, in ms since navigation started.
+Object.assign(window, { pageReadyAt: performance.now() });
