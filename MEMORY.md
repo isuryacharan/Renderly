@@ -9,8 +9,8 @@ Last updated: 2026-11-24
 
 - Phase: **M0 is complete.** S0.1 to S0.9 are merged; the engine decision
   (`docs/decisions/0001-engine.md`) is **go**, accepted by the owner on 2026-11-25.
-- M1 in progress. S1.1 (time, ids and schema, `packages/core`) is built; in review as a pull
-  request.
+- M1 in progress. S1.1 (time, ids and schema, `packages/core`) is merged. S1.2 (commands,
+  store, undo, gestures) is built; in review as a pull request.
 - The owner authorised building and merging M1 slices when CI passes and the automated checks
   pass (2026-11-25). Manual checks in S1.4 (disk folder) and S1.6 (moving and relinking files,
   permission prompts after a restart) are written as scripts and batched for the owner.
@@ -55,6 +55,7 @@ Last updated: 2026-11-24
 | 2026-11-25 | M0 engine decision `docs/decisions/0001-engine.md`: **go**, accepted by the owner. Every measurable §6.4 target passes in `pnpm bench` (headless Edge, RTX 5060). |
 | 2026-11-25 | The engine benchmark is `pnpm bench` (Playwright driving installed Edge or Chrome on the GPU); nightly in CI on a self-hosted runner labelled `gpu`. |
 | 2026-11-25 | Project schema: Zod 4 (MIT) defines it once; JSON Schema is generated into `docs/schema/` and a test fails when stale. Property tests use fast-check (MIT). Ids are 16 random Crockford base-32 characters. Frame rates are exact `[num, den]` pairs; times past ±2^53 flicks (~147 days) are refused, not rounded. |
+| 2026-11-25 | Commands and undo: Immer 11 (MIT) patches, not snapshots. Commands are plain `{ type, payload }` data with Zod payloads; ids of new things travel in the payload so commands are deterministic. The store validates the whole project after each command and refuses one that breaks it. `revision` sits in the document but outside undo. A gesture previews against its starting state and commits one undo step; dispatch is refused while one runs. View state is a separate store. |
 | 2026-11-24 | Design system v1: dark-first with a full light theme, strictly neutral grey chrome, one amber accent (chosen over blue, violet and magenta; warning is yellow), Geist for the interface and Geist Mono for numbers (both OFL, shipped with the app), 4px grid, 22–28px controls, shadows only on floating surfaces and knobs. It lives in the repository: rules in `docs/design-system/`, tokens and styles in `packages/ui/`. `tokens.json` is the source of truth. |
 
 ## Open questions
@@ -92,6 +93,7 @@ Ask the project owner for the locations.
 
 ## Log
 
+- 2026-11-25 — S1.2: `ProjectStore` with typed dispatch (`expectedRevision`, `dryRun`, `requestId`, typed failures with hints), patch-based undo and redo, transactions, gestures, selector subscriptions, and a `ViewStore`. A fuzz test (1,000 runs of up to 60 random commands, undos, redos and transactions) undoes everything back to the original bytes and redoes back to the edit; it caught a mistake in its own redo bookkeeping, not in the store. A 200-step slider gesture makes one undo entry; a stale revision fails with a conflict and changes nothing; a dry run reports the same changes as the real run.
 - 2026-11-25 — S1.1: `packages/core` with flicks, rates, drop-frame timecode, ids, schema v1, `migrate()`, a component registry and generated JSON Schema. Property tests (20,000 runs each across the full exact range at all 16 rates) found and fixed two overflow bugs before they shipped. The fixture project round-trips byte for byte.
 - 2026-11-25 — S0.9: full benchmark at commit f0809b3, headless Edge 158 on the RTX 5060: open 47 ms, main heap 8.6 MB, 4K60 0 dropped of 3,538, three 1080p layers 59.6 fps, two 4K layers 59.6 fps (9 dropped at start, full resolution), exact seek median 111 ms, 100 cuts 0 held, scrub 40/s with worst UI frame 6.1 ms, export 15.4× real time, parity 20/20, cold start 165 ms.
 - 2026-11-25 — S0.7 scrubbing (Chrome 156, RTX 5060), 4-second drags, one request per display frame: with the GPU awake, 4K H.264, 4K HEVC, 1080p and three 1080p layers all gave 40 picture updates a second per layer, worst UI frame 6–12 ms, exact resting frame. After 10 s of GPU idle, the first ~0.4 s of a 4K drag had 6 UI frames over 20 ms (worst 42–55 ms); 1080p one at 24 ms. Measured: decoding keyframes alone does not stall after idle; importing the 4K frame into a texture does, at any target size. A start ramp and reduced-size uploads did not remove it.

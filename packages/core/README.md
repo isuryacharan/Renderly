@@ -3,7 +3,8 @@
 The project model: time, ids, the schema and loading. No DOM, React or GPU dependency, so it runs
 in workers and in plain unit tests (its `tsconfig` has no DOM library at all).
 
-Status: M1, slice S1.1. Commands, undo and queries come in S1.2 and S1.3.
+Status: M1. S1.1 (time, ids, schema) and S1.2 (commands, store, undo) are built. Timeline edits
+and queries come in S1.3.
 
 ## Time
 
@@ -47,3 +48,38 @@ if (!result.ok) {
 
 A clip's features are components. `registerComponent(type, fields)` adds a type; the clip type
 never changes. Every component may carry keyframes under `keys`. Built in so far: `transform`.
+
+## Commands and the store
+
+Every change to a project is a command: plain data, `{ type, payload }`, checked against the
+command's Zod schema. A command's `apply` edits an Immer draft and the store records the patches,
+so undo needs no snapshots. Commands are deterministic: ids of new things travel in the payload.
+
+```ts
+import { ProjectStore, createId } from "@renderly/core";
+
+const store = new ProjectStore(project);
+const result = store.dispatch(
+  { type: "marker.add", payload: { sequence, id: createId(), t: 0 } },
+  { expectedRevision: store.revision }, // optional: fail with "conflict" if the project moved on
+);
+// { ok: true, revision, changes: { added: [...], removed: [...], changed: [...] } }
+// or { ok: false, error: { code, message, path?, hint } }
+```
+
+- `revision` goes up on every change, undo and redo included, and never goes back. It is not
+  part of undo.
+- `dryRun` returns the change list without committing. `requestId` makes a retry return the first
+  result instead of applying twice.
+- The whole project is validated after each command; a command that would break it fails with
+  `invalid-result` and changes nothing.
+- `transaction(label, body)` groups commands into one undo step; returning `false` or throwing
+  rolls them back.
+- `beginGesture(key, type)` is for sliders and drags: `preview()` many times against the state the
+  gesture began from, then `commit()` once for one undo step, or `cancel()`.
+- `select(selector, listener)` calls back only when the selected part changed (structural sharing
+  makes that a reference check).
+- `ViewStore` holds the playhead, zoom, scroll and selection: never in undo or the saved file.
+
+Built-in commands so far: `project.rename`, `marker.add`, `marker.move`, `marker.remove`,
+`component.set`.
