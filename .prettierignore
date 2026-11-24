@@ -8,3 +8,8 @@ docs/design-system/preview/index.html
 # Hand-written prose and preview templates keep their authored layout
 *.md
 docs/design-system/preview/
+
+# Generated from packages/core/src/schema.ts
+docs/schema/
+# Canonical project fixtures: their exact bytes are tested
+packages/core/fixtures/

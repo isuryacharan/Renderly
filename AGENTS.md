@@ -15,6 +15,7 @@ caption styles and templates are community-made **packs** distributed through a 
 | `SPEC.md` | Product and technical specification. **Local only, git-ignored.** |
 | `docs/plans/` | Sliced implementation plans (M0–M8). **Local only, git-ignored.** Start at `docs/plans/README.md`. |
 | `docs/decisions/` | Decision records. Committed. |
+| `docs/schema/` | JSON Schema of the project file, generated from `packages/core`. Committed; never edit by hand. |
 | `docs/design-system/` | Design system rules, component guidelines and a live preview page. Committed. |
 | `packages/ui/` | Design system as code: `tokens/tokens.json` (source of truth), generated `tokens.css` and `tokens.ts`, base and component styles. Committed. |
 | `MEMORY.md` | Project memory: decisions made, open questions, current status. Committed. |
