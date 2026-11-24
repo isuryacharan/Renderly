@@ -4,7 +4,16 @@ import "@renderly/ui/fonts.css";
 import "@renderly/ui/styles.css";
 import "./spike.css";
 import { AudioRing, OUTPUT_SAMPLE_RATE, serveAudioDecoder } from "@renderly/audio";
-import { createPreview, type Cut, type PreviewScale, type RenderStats } from "@renderly/engine";
+import {
+  createExporter,
+  createPreview,
+  type Cut,
+  type ExportProgress,
+  type ExportSettings,
+  type Exporter,
+  type PreviewScale,
+  type RenderStats,
+} from "@renderly/engine";
 import {
   FLICKS_PER_SECOND,
   flicksToSeconds,
@@ -142,6 +151,83 @@ async function decodedBeeps(
   return beepOnsets(samples, OUTPUT_SAMPLE_RATE);
 }
 
+let exporter: Exporter | null = null;
+const getExporter = () => (exporter ??= createExporter());
+
+/**
+ * Exports into the browser's private file storage (automation cannot use a save dialog), then
+ * streams the file to test-media/out/ through the dev server so ffprobe can check it.
+ */
+async function exportTest(
+  sources: MediaInput[],
+  cuts: Cut[],
+  settings: ExportSettings,
+  name: string,
+  cancelAfterMs?: number,
+) {
+  const root = await navigator.storage.getDirectory();
+  const file = await root.getFileHandle(name, { create: true });
+  const progress: (ExportProgress & { atS: number; mainHeapMB: number | null })[] = [];
+  const startedAt = performance.now();
+  const job = getExporter().start({
+    file,
+    sources,
+    cuts,
+    settings,
+    onProgress: (p) => {
+      const memory = (performance as { memory?: { usedJSHeapSize: number } }).memory;
+      const mainHeapMB = memory ? Math.round(memory.usedJSHeapSize / 104857.6) / 10 : null;
+      progress.push({
+        ...p,
+        atS: Math.round((performance.now() - startedAt) / 100) / 10,
+        mainHeapMB,
+      });
+    },
+  });
+  if (cancelAfterMs !== undefined) setTimeout(() => job.cancel(), cancelAfterMs);
+  const result = await job.done;
+  let uploadedBytes: number | null = null;
+  let fileStillThere = true;
+  try {
+    const written = await (await root.getFileHandle(name)).getFile();
+    if (result.ok) {
+      const reply = await fetch(`/__test-media/upload/${encodeURIComponent(name)}`, {
+        method: "POST",
+        body: written,
+      });
+      uploadedBytes = ((await reply.json()) as { bytes: number }).bytes;
+    }
+  } catch {
+    fileStillThere = false;
+  }
+  return { result, progress, uploadedBytes, fileStillThere };
+}
+
+/** Compares the preview's and the export's composite of the same frames, byte by byte. */
+async function parityTest(
+  sources: MediaInput[],
+  cuts: Cut[],
+  settings: ExportSettings,
+  times: number[],
+) {
+  await preview.load(sources, cuts);
+  preview.setPreviewScale(1);
+  const frames = [];
+  for (const time of times) {
+    const a = await preview.readFrame(time);
+    const b = await getExporter().renderFrame(sources, cuts, settings, time);
+    let maxDiff = 0;
+    let differing = 0;
+    for (let i = 0; i < Math.min(a.length, b.length); i++) {
+      const d = Math.abs((a[i] ?? 0) - (b[i] ?? 0));
+      if (d > 0) differing++;
+      if (d > maxDiff) maxDiff = d;
+    }
+    frames.push({ time, sameSize: a.length === b.length, maxDiff, differing });
+  }
+  return frames;
+}
+
 const results = {
   history,
   errors,
@@ -155,6 +241,8 @@ const results = {
   stressList,
   shortClipList,
   layerList,
+  exportTest,
+  parityTest,
   FLICKS_PER_SECOND,
 };
 Object.assign(window, { previewResults: results, preview });

@@ -6,3 +6,6 @@ export type { Cut, Transform } from "./timeline";
 export type { LoadResult } from "./protocol";
 export type { LayerStats, RenderStats } from "./protocol";
 export type { PreviewScale, Rect, Size } from "./layout";
+export { createExporter } from "./export";
+export type { ExportJob, Exporter, ExportProgress } from "./export";
+export type { ExportResult, ExportSettings } from "./exporter";

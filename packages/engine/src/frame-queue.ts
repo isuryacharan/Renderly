@@ -22,6 +22,11 @@ export class FrameQueue<T extends Timed> {
     return this.frames.length;
   }
 
+  /** Start time of the newest queued frame, or -Infinity when empty. */
+  lastTime(): number {
+    return this.frames[this.frames.length - 1]?.time ?? -Infinity;
+  }
+
   push(frame: T): void {
     this.frames.push(frame);
   }

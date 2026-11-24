@@ -79,6 +79,9 @@ importers:
       '@renderly/media':
         specifier: workspace:*
         version: link:../media
+      mediabunny:
+        specifier: ^1.66.4
+        version: 1.66.4
       three:
         specifier: ^0.187.0
         version: 0.187.0

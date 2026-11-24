@@ -14,6 +14,7 @@
   "dependencies": {
     "@renderly/audio": "workspace:*",
     "@renderly/media": "workspace:*",
+    "mediabunny": "^1.66.4",
     "three": "^0.187.0"
   },
   "devDependencies": {

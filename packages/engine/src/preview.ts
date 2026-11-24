@@ -36,6 +36,8 @@ export interface Preview {
   pause(): Promise<Flicks>;
   /** Shows the exact frame at `time`; resolves with the frame's start time, or null. */
   seek(time: Flicks): Promise<Flicks | null>;
+  /** Parity test: the exact frame at `time`, composited, as 8-bit RGBA (rows bottom first). */
+  readFrame(time: Flicks): Promise<Uint8Array>;
   setPreviewScale(scale: PreviewScale): void;
   /** Test hook: loses the WebGL context and restores it after `restoreAfterMs`. */
   loseContext(restoreAfterMs: number): void;
@@ -96,6 +98,7 @@ export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview>
       case "loaded":
       case "seeked":
       case "paused":
+      case "frame-pixels":
         pending.get(message.id)?.resolve(message);
         pending.delete(message.id);
         return;
@@ -199,6 +202,14 @@ export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview>
         time,
       }));
       return reply.time;
+    },
+    async readFrame(time) {
+      const reply = await request<Extract<Reply, { type: "frame-pixels" }>>((id) => ({
+        type: "read-frame",
+        id,
+        time,
+      }));
+      return reply.pixels;
     },
     setPreviewScale: (scale) => send({ type: "preview-scale", scale }),
     loseContext: (restoreAfterMs) => send({ type: "lose-context", restoreAfterMs }),
