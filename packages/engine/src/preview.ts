@@ -38,6 +38,10 @@ export interface Preview {
   seek(time: Flicks): Promise<Flicks | null>;
   /** Parity test: the exact frame at `time`, composited, as 8-bit RGBA (rows bottom first). */
   readFrame(time: Flicks): Promise<Uint8Array>;
+  /** Dragging the playhead: call on every move. Keyframe pictures while moving, exact at rest. */
+  scrub(time: Flicks): void;
+  /** The drag ended: resolves with the time of the exact frame on screen. */
+  scrubEnd(): Promise<Flicks>;
   setPreviewScale(scale: PreviewScale): void;
   /** Test hook: loses the WebGL context and restores it after `restoreAfterMs`. */
   loseContext(restoreAfterMs: number): void;
@@ -99,6 +103,7 @@ export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview>
       case "seeked":
       case "paused":
       case "frame-pixels":
+      case "scrubbed":
         pending.get(message.id)?.resolve(message);
         pending.delete(message.id);
         return;
@@ -210,6 +215,17 @@ export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview>
         time,
       }));
       return reply.pixels;
+    },
+    scrub(time) {
+      audio.stop();
+      send({ type: "scrub", time });
+    },
+    async scrubEnd() {
+      const reply = await request<Extract<Reply, { type: "scrubbed" }>>((id) => ({
+        type: "scrub-end",
+        id,
+      }));
+      return reply.time;
     },
     setPreviewScale: (scale) => send({ type: "preview-scale", scale }),
     loseContext: (restoreAfterMs) => send({ type: "lose-context", restoreAfterMs }),

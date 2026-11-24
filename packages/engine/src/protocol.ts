@@ -75,6 +75,17 @@ export interface RenderStats {
    * loan. Peak since the last play started. `refused`: targets not created at the ceiling.
    */
   memory: { usedMB: number; peakMB: number; ceilingMB: number; refused: number };
+  /** Since the last scrub started. */
+  scrub: {
+    requests: number;
+    /** New pictures put on screen: keyframes, exact frames and cache hits. */
+    updates: number;
+    keyframes: number;
+    exact: number;
+    cacheHits: number;
+    /** Seek requests replaced by a newer one before they ran. */
+    skipped: number;
+  };
 }
 
 export interface LoadResult {
@@ -107,6 +118,10 @@ export type ToRenderer =
   | { type: "seek"; id: number; time: Flicks }
   /** Parity test: shows the exact frame at `time` and replies with the composite's pixels. */
   | { type: "read-frame"; id: number; time: Flicks }
+  /** Dragging: keyframe pictures while it moves, exact frames once it rests. Fire and forget. */
+  | { type: "scrub"; time: Flicks }
+  /** The drag ended: replies once every layer shows its exact frame. */
+  | { type: "scrub-end"; id: number }
   | { type: "preview-scale"; scale: PreviewScale }
   /** Test hook: loses the WebGL context and restores it after `restoreAfterMs`. */
   | { type: "lose-context"; restoreAfterMs: number };
@@ -117,6 +132,7 @@ export type FromRenderer =
   | { type: "seeked"; id: number; time: Flicks | null }
   | { type: "paused"; id: number; time: Flicks }
   | { type: "frame-pixels"; id: number; pixels: Uint8Array; width: number; height: number }
+  | { type: "scrubbed"; id: number; time: Flicks }
   | { type: "stats"; stats: RenderStats }
   /** `id` is set when the error belongs to a request (open, seek); that request fails. */
   | { type: "error"; id?: number; message: string };

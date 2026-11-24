@@ -36,12 +36,19 @@ export class FrameUploader {
   private readonly texture = new THREE.VideoFrameTexture();
   private readonly pass: Pass;
 
-  constructor(private readonly renderer: THREE.WebGLRenderer) {
+  /**
+   * `mipmaps` false skips the mipmap chain: cheaper, but large downscales alias. Used for the
+   * reduced-size pictures shown while dragging the playhead.
+   */
+  constructor(
+    private readonly renderer: THREE.WebGLRenderer,
+    mipmaps = true,
+  ) {
     const t = this.texture;
     t.colorSpace = THREE.NoColorSpace;
-    t.minFilter = THREE.LinearMipmapLinearFilter;
+    t.minFilter = mipmaps ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
     t.magFilter = THREE.LinearFilter;
-    t.generateMipmaps = true;
+    t.generateMipmaps = mipmaps;
     this.pass = new Pass(FRAGMENT, {
       tFrame: { value: t },
       uRotation: { value: 0 },

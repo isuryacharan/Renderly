@@ -228,6 +228,47 @@ async function parityTest(
   return frames;
 }
 
+/**
+ * Drags the playhead for `seconds`, one scrub request per animation frame, sweeping back and forth
+ * over `span` flicks from `from`. Measures main-thread frame times, then ends the drag and checks
+ * that the resting picture is the exact frame for the last position.
+ */
+async function scrubTest(from: number, span: number, seconds = 4) {
+  const frames: number[] = [];
+  let last = performance.now();
+  const startedAt = last;
+  let target = from;
+  await new Promise<void>((resolve) => {
+    const step = (now: number) => {
+      frames.push(now - last);
+      last = now;
+      const phase = ((now - startedAt) / 1000 / seconds) * 2;
+      const tri = phase % 2 < 1 ? phase % 1 : 1 - (phase % 1);
+      target = Math.round(from + tri * span);
+      preview.scrub(target);
+      if (now - startedAt < seconds * 1000) requestAnimationFrame(step);
+      else resolve();
+    };
+    requestAnimationFrame(step);
+  });
+  const resting = await preview.scrubEnd();
+  const frame = FLICKS_PER_SECOND / 60;
+  return {
+    requests: frames.length,
+    maxUiFrameMs: Math.round(Math.max(...frames.slice(1)) * 10) / 10,
+    uiFramesOver20ms: frames.slice(1).filter((ms) => ms > 20).length,
+    /** When the slow frames happened, in ms from the start of the drag. */
+    slowFramesAtMs: frames
+      .map((ms, i) => ({ ms, at: frames.slice(0, i + 1).reduce((sum, x) => sum + x, 0) }))
+      .slice(1)
+      .filter((frame) => frame.ms > 20)
+      .map((frame) => Math.round(frame.at)),
+    target,
+    resting,
+    exact: resting <= target && target < resting + frame,
+  };
+}
+
 const results = {
   history,
   errors,
@@ -243,6 +284,7 @@ const results = {
   layerList,
   exportTest,
   parityTest,
+  scrubTest,
   FLICKS_PER_SECOND,
 };
 Object.assign(window, { previewResults: results, preview });

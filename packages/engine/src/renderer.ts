@@ -22,14 +22,16 @@ import {
   type OpenResult,
 } from "@renderly/media";
 import * as THREE from "three";
-import { Compositor } from "./compositor";
+import { Compositor, FrameCache } from "./compositor";
 import { FrameQueue } from "./frame-queue";
 import { FrameUploader } from "./frame-upload";
+import { makeTarget } from "./gpu";
 import { containRect, workingSize, type PreviewScale, type Size } from "./layout";
 import { decodedFrameBytes, MemoryBudget, mipmappedTextureBytes } from "./memory";
 import { Presenter } from "./present";
 import type { FromRenderer, LayerStats, LoadResult, RenderStats, ToRenderer } from "./protocol";
 import { RefreshMeter } from "./refresh-meter";
+import { LatestWins, SETTLE_MS } from "./scrub";
 import {
   runIdAt,
   sourceTime,
@@ -52,6 +54,10 @@ interface Gpu {
   uploader: FrameUploader;
   presenter: Presenter;
   compositor: Compositor;
+  cache: FrameCache;
+  /** Reduced-size pictures while dragging (keyframes), with an uploader that skips mipmaps. */
+  scrubCompositor: Compositor;
+  fastUploader: FrameUploader;
 }
 
 type SourceInfo = Extract<OpenResult, { ok: true }>;
@@ -130,6 +136,25 @@ const PREPARE_PACE_MS = 8;
 /** How often a layer without a decoder is refreshed from its nearest keyframe. */
 const KEYFRAME_INTERVAL_MS = 500;
 /**
+ * Keyframe pictures shown while dragging fit within this size. Uploading and compositing them at
+ * full 4K, with mipmaps, delayed the page's own frames by 40-55 ms right after the GPU had been
+ * idle (S0.7); decoding alone did not.
+ */
+const SCRUB_PICTURE_MAX: Size = { width: 960, height: 540 };
+const scrubSize = (working: Size): Size => {
+  const fit = Math.min(
+    1,
+    SCRUB_PICTURE_MAX.width / working.width,
+    SCRUB_PICTURE_MAX.height / working.height,
+  );
+  return {
+    width: Math.max(2, Math.round(working.width * fit)),
+    height: Math.max(2, Math.round(working.height * fit)),
+  };
+};
+/** Minimum gap between a layer's keyframe seeks while scrubbing: up to 40 updates a second. */
+const MIN_KEYFRAME_SEEK_GAP_MS = 25;
+/**
  * The renderer's GPU memory ceiling: render targets, the upload texture and decoded frames on
  * loan. Targets past it are refused; frames are bounded by the decoders' in-flight limit.
  */
@@ -171,6 +196,21 @@ export function serveRenderer(scope: RendererScope): void {
   let dirty = false;
   let keyframeBusy = false;
   let exactChain: Promise<unknown> = Promise.resolve();
+  /** What is on screen when it is not the composite: a cached frame while scrubbing. */
+  let display: THREE.Texture | null = null;
+
+  // Scrubbing.
+  let scrubbing = false;
+  let scrubTarget = 0;
+  let lastMoveAt = 0;
+  let settled = true;
+  /** Exact time each layer's picture was decoded for, while settling. */
+  let layerExactAt: (number | null)[] = [];
+  const settleWaiters: (() => void)[] = [];
+  let scrubJobs: LatestWins<{ t: number; exact: boolean }>[] = [];
+  let lastKeyframeSeek: number[] = [];
+  const newScrubStats = () => ({ requests: 0, updates: 0, keyframes: 0, exact: 0, cacheHits: 0 });
+  let scrubStats = newScrubStats();
   /** Audio session this playback follows; 0 when it runs on the display refresh. */
   let audioSession = 0;
   let goSent = false;
@@ -235,6 +275,9 @@ export function serveRenderer(scope: RendererScope): void {
       uploader: new FrameUploader(renderer),
       presenter: new Presenter(renderer),
       compositor: new Compositor(renderer, budget),
+      cache: new FrameCache(renderer, budget),
+      scrubCompositor: new Compositor(renderer, budget, "scrub "),
+      fastUploader: new FrameUploader(renderer, false),
     };
     resize(size);
     const pool = ports.map((port) => ({
@@ -257,6 +300,9 @@ export function serveRenderer(scope: RendererScope): void {
 
   function rebuildTargets(): void {
     gpu?.compositor.resize(workingSize(sequence, scale));
+    gpu?.cache.resize(workingSize(sequence, scale));
+    gpu?.scrubCompositor.resize(scrubSize(workingSize(sequence, scale)));
+    display = null;
     for (const state of layers) state.shown = null;
   }
 
@@ -405,6 +451,7 @@ export function serveRenderer(scope: RendererScope): void {
       return [{ layer, transform: runOf(state.currentRun).transform }];
     });
     gpu.compositor.composite(draws);
+    display = null;
     dirty = true;
   }
 
@@ -465,6 +512,182 @@ export function serveRenderer(scope: RendererScope): void {
     })();
   }
 
+  // --- scrubbing ---
+
+  /** Composite-cache key: the 60 fps frame at `t`. */
+  const frameKey = (t: number) => Math.floor((t * 60) / FLICKS_PER_SECOND);
+
+  /** Each layer scrubs on its own decoder; layers past the pool size share. */
+  function scrubSlot(layerIndex: number): Slot | null {
+    const pool = [...slots, ...(reserved ? [reserved] : [])];
+    return pool[layerIndex % pool.length] ?? null;
+  }
+
+  function scrubJob(layerIndex: number) {
+    return async ({ t: requested, exact }: { t: number; exact: boolean }) => {
+      let t = requested;
+      if (!exact) {
+        // Space keyframe seeks: a 4K keyframe decode on every display frame keeps the GPU busy
+        // enough to delay the page's own frames. Then take the newest target.
+        const wait =
+          (lastKeyframeSeek[layerIndex] ?? -Infinity) +
+          MIN_KEYFRAME_SEEK_GAP_MS -
+          performance.now();
+        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+        lastKeyframeSeek[layerIndex] = performance.now();
+        if (settled) return; // an exact request is on its way
+        t = scrubTarget;
+      }
+      const state = layers[layerIndex];
+      const slot = scrubSlot(layerIndex);
+      if (!state || !slot) return;
+      const id = runIdAt(timeline, layerIndex, t);
+      state.currentRun = id;
+      if (id < 0) {
+        composite();
+        if (exact) markExact(layerIndex, t);
+        return;
+      }
+      const run = runOf(id);
+      if (slot.source !== run.source && !(await openOn(slot, run.source)).ok) return;
+      const decoded = await slot.client.seek(sourceTime(run, t), exact ? "exact" : "keyframe");
+      if (!decoded) return;
+      if (!scrubbing) {
+        decoded.release();
+        return;
+      }
+      if (!exact) {
+        if (showFast(layerIndex, decoded, id)) {
+          scrubStats.updates++;
+          scrubStats.keyframes++;
+        }
+        return;
+      }
+      if (show(layerIndex, decoded, id, timelineTime(run, decoded.time), decoded.duration)) {
+        composite();
+        scrubStats.updates++;
+        scrubStats.exact++;
+      }
+      markExact(layerIndex, t);
+    };
+  }
+
+  /** Uploads a keyframe into the reduced-size scrub compositor and shows its composite. */
+  function showFast(layerIndex: number, decoded: DecodedFrame, id: number): boolean {
+    try {
+      const run = runOf(id);
+      const info = sources[run.source]?.info;
+      const layer = timeline.layers[layerIndex]?.layer ?? 0;
+      const target = gpu?.scrubCompositor.layerTarget(layer);
+      if (!gpu || !info || !target || contextLost) return false;
+      gpu.fastUploader.upload(decoded.frame, info.rotation, target);
+      const draws = timeline.layers.flatMap(({ layer: l }, i) => {
+        const current = runIdAt(timeline, i, scrubTarget);
+        return current < 0 ? [] : [{ layer: l, transform: runOf(current).transform }];
+      });
+      gpu.scrubCompositor.composite(draws);
+      display = gpu.scrubCompositor.texture;
+      dirty = true;
+      return true;
+    } finally {
+      decoded.release();
+    }
+  }
+
+  function scrubTo(t: number): void {
+    if (playing) stopPlayback();
+    if (!scrubbing) {
+      scrubbing = true;
+      scrubStats = newScrubStats();
+      scrubJobs = timeline.layers.map((_, i) => new LatestWins(scrubJob(i)));
+      lastKeyframeSeek = timeline.layers.map(() => -Infinity);
+    }
+    scrubTarget = t;
+    lastMoveAt = performance.now();
+    settled = false;
+    scrubStats.requests++;
+    playhead = t;
+    // An exact frame already composited for this time goes straight on screen.
+    const cached = gpu?.cache.get(frameKey(t));
+    if (cached) {
+      display = cached;
+      dirty = true;
+      scrubStats.updates++;
+      scrubStats.cacheHits++;
+      for (const job of scrubJobs) job.cancel();
+      return;
+    }
+    for (const job of scrubJobs) job.request({ t, exact: false });
+  }
+
+  /** The playhead rested: replace keyframe pictures with exact frames for the target. */
+  function settle(): void {
+    settled = true;
+    layerExactAt = timeline.layers.map(() => null);
+    const cached = gpu?.cache.get(frameKey(scrubTarget));
+    if (cached) {
+      display = cached;
+      dirty = true;
+      // The cache is half size: still render the full exact frame for the resting picture.
+    }
+    for (const job of scrubJobs) job.request({ t: scrubTarget, exact: true });
+  }
+
+  function markExact(layerIndex: number, t: number): void {
+    if (t !== scrubTarget || !settled) return;
+    layerExactAt[layerIndex] = t;
+    if (layerExactAt.every((at) => at === scrubTarget)) {
+      const texture = gpu?.compositor.texture;
+      if (texture) gpu?.cache.store(frameKey(scrubTarget), texture);
+      for (const resolve of settleWaiters.splice(0)) resolve();
+    }
+  }
+
+  /**
+   * Starts each layer's scrub decoder and pushes one of its frames through the GPU import, off
+   * screen, so the first drag after loading does not pay for it (it delayed the page's frames by
+   * up to 50 ms in S0.7 measurements).
+   */
+  async function warmScrubDecoders(t: number): Promise<void> {
+    if (!gpu) return;
+    const scratch = makeTarget(2, 2);
+    try {
+      for (const [i] of timeline.layers.entries()) {
+        const id = runIdAt(timeline, i, t);
+        const slot = scrubSlot(i);
+        if (id < 0 || !slot) continue;
+        const run = runOf(id);
+        if (slot.source !== run.source && !(await openOn(slot, run.source)).ok) continue;
+        const decoded = await slot.client.seek(sourceTime(run, t), "keyframe");
+        if (!decoded) continue;
+        const info = sources[run.source]?.info;
+        if (info && !contextLost) gpu.uploader.upload(decoded.frame, info.rotation, scratch);
+        decoded.release();
+      }
+    } finally {
+      scratch.dispose();
+    }
+  }
+
+  /** Settles now and resolves once every layer shows its exact frame. */
+  async function finishScrub(): Promise<number> {
+    if (!scrubbing) return playhead;
+    const done = new Promise<void>((resolve) => settleWaiters.push(resolve));
+    settle();
+    await done;
+    scrubbing = false;
+    const shown = layers[0]?.shown;
+    const time = shown && layers[0]?.currentRun === shown.run ? shown.time : scrubTarget;
+    playhead = time;
+    return time;
+  }
+
+  function endScrub(): void {
+    scrubbing = false;
+    for (const job of scrubJobs) job.cancel();
+    for (const resolve of settleWaiters.splice(0)) resolve();
+  }
+
   // --- playback ---
 
   function stopPlayback(): void {
@@ -474,6 +697,7 @@ export function serveRenderer(scope: RendererScope): void {
 
   function play(from: number, session: number): void {
     if (timeline.runs.length === 0) return;
+    endScrub();
     stopPlayback();
     playing = true;
     audioSession = session;
@@ -543,6 +767,7 @@ export function serveRenderer(scope: RendererScope): void {
     const lateRefresh = refreshes.isLate(refresh);
     steadyRefreshes = refreshes.period !== null && !lateRefresh ? steadyRefreshes + 1 : 0;
 
+    if (scrubbing && !settled && now - lastMoveAt >= SETTLE_MS) settle();
     if (playing) {
       const isPrimed = clockStart === null && primed();
       const ready =
@@ -555,7 +780,7 @@ export function serveRenderer(scope: RendererScope): void {
     }
 
     if (dirty && gpu && !contextLost) {
-      const texture = gpu.compositor.texture;
+      const texture = display ?? gpu.compositor.texture;
       if (texture) gpu.presenter.present(texture, containRect(sequence, canvasSize));
       dirty = false;
     }
@@ -764,6 +989,7 @@ export function serveRenderer(scope: RendererScope): void {
         opens,
       },
       layers: perLayer,
+      scrub: { ...scrubStats, skipped: scrubJobs.reduce((n, job) => n + job.skipped, 0) },
       memory: {
         usedMB: mb(budget.used),
         peakMB: mb(budget.peak),
@@ -805,6 +1031,7 @@ export function serveRenderer(scope: RendererScope): void {
     rebuildTargets();
     playhead = bottom?.start ?? 0;
     await showExact(playhead);
+    await warmScrubDecoders(playhead);
     return { sources: results, cuts: resolved, duration: timeline.duration };
   }
 
@@ -843,6 +1070,12 @@ export function serveRenderer(scope: RendererScope): void {
         ]);
         return;
       }
+      case "scrub":
+        scrubTo(message.time);
+        return;
+      case "scrub-end":
+        post({ type: "scrubbed", id: message.id, time: await finishScrub() });
+        return;
       case "seek":
         stopPlayback();
         playhead = message.time;

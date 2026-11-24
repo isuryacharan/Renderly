@@ -8,14 +8,10 @@ Last updated: 2026-11-24
 ## Status
 
 - Phase: M0 engine spike. S0.1 to S0.6 are merged into `main` (pull requests #1 to #5).
-- S0.7 (scrubbing) is **not done**: every target is met with the GPU awake, but a 4K drag that
-  starts after the GPU has idled has UI frames up to ~55 ms for ~0.4 s. Draft pull request #6, not
-  merged; open question 8.
-- S0.8 (streaming export) is **not done**: parity and the external probe pass; the renderer
-  process's private memory peaked about 370–430 MB above its start during a 30-minute export
-  (target: growth under 100 MB). Draft pull request, not merged; open question 9.
-- S0.9 (benchmarks and decision) waits for the owner's answers to questions 8 and 9, and needs a
-  self-hosted GPU runner for the nightly benchmark.
+- S0.7 (scrubbing) and S0.8 (streaming export) are done, with the owner's acceptance of the
+  after-idle scrub hitch and of the export's process-level memory (decisions below).
+- Next slice: **S0.9 Benchmarks and decision**. It needs a self-hosted GPU runner from the owner
+  for the nightly benchmark; the go / no-go record is the owner's to accept.
 - The owner has authorised completing and merging M0 slices without asking (2026-11-25), as long as
   each slice's "done when" items pass. Stop and report if a target is missed. The go / no-go
   decision record (S0.9) is the owner's to accept; nightly GPU CI needs a self-hosted runner from
@@ -52,7 +48,10 @@ Last updated: 2026-11-24
 | 2026-11-25 | Layers: each cut has a layer and a static transform (position, scale, opacity). Each layer keeps its own render target; the compositor draws layers bottom to top with premultiplied alpha. Sound comes from layer 0 until the audio engine mixes layers (M2). |
 | 2026-11-25 | Decoder budget: a pool of six decoders, five for streams and one for keyframe-only updates and seeks. Current runs get decoders first, top layer first; layers left over show their nearest keyframe twice a second. |
 | 2026-11-25 | The renderer accounts for its GPU memory (render targets, upload texture, decoded frames on loan) against a 1.5 GB ceiling; targets past it are refused. The browser does not report GPU memory, so this is accounting, not measurement. |
+| 2026-11-25 | Scrubbing: one seek in flight per layer, newest request wins; keyframe pictures at reduced size (within 960×540, no mipmaps) while the playhead moves, spaced at least 25 ms apart (up to 40 updates a second); exact frames once it rests 120 ms or the drag ends; a 12-entry cache of exact composites at half size. |
+| 2026-11-25 | Accepted by the owner: a 4K drag that starts after the GPU has idled may show UI frames up to ~55 ms for its first ~0.4 s. S0.7 counts as done; proxies (M6) are the later fix. |
 | 2026-11-25 | Export runs in its own worker with its own four decoders, composites with the same uploader and compositor as the preview, encodes through mediabunny (VideoEncoder, AAC) and streams the MP4 to a FileSystemWritableFileStream with the index at the end. Audio comes from the bottom layer through the playback decode code, encoded in 1,024-sample chunks. Exact-frame requests in the renderer are serialised. |
+| 2026-11-25 | Accepted by the owner: during a 30-minute export the page's renderer process grows ~370–430 MB before levelling off and releases it afterwards, while the main heap and accounted GPU memory stay flat. S0.8 counts as done; S0.9's benchmark should track process memory over long exports. |
 | 2026-11-24 | Design system v1: dark-first with a full light theme, strictly neutral grey chrome, one amber accent (chosen over blue, violet and magenta; warning is yellow), Geist for the interface and Geist Mono for numbers (both OFL, shipped with the app), 4px grid, 22–28px controls, shadows only on floating surfaces and knobs. It lives in the repository: rules in `docs/design-system/`, tokens and styles in `packages/ui/`. `tokens.json` is the source of truth. |
 
 ## Open questions
@@ -65,8 +64,6 @@ Last updated: 2026-11-24
 | 5 | Scripted-pack sandbox mechanism | Decided by prototype in S3.9 |
 | 6 | How much launch content is required at 1.0? | R.5 |
 | 7 | Registry governance: who approves pull requests, and the content guidelines | S3.7 |
-| 8 | S0.7: accept a short hitch (UI frames up to ~55 ms for ~0.4 s) when a 4K drag starts after the GPU has idled, or require proxies (M6) or another fix first? Importing a 4K frame into a texture costs ~40 ms while the GPU wakes; decoding alone does not. | S0.7, S0.9 record |
-| 9 | S0.8: how is "total memory growth" measured? The main heap and accounted GPU memory stay flat and the file streams to disk, but the page's renderer process grew about 370–430 MB and levelled off (released after the export). This looks like worker heaps growing to their collection threshold, not a leak; the browser gives no per-worker figures to prove it. Accept, or require a lower process-level number? | S0.8, S0.9 record |
 
 ## Unproven assumptions
 
@@ -92,6 +89,7 @@ Ask the project owner for the locations.
 
 ## Log
 
+- 2026-11-25 — S0.7 scrubbing (Chrome 156, RTX 5060), 4-second drags, one request per display frame: with the GPU awake, 4K H.264, 4K HEVC, 1080p and three 1080p layers all gave 40 picture updates a second per layer, worst UI frame 6–12 ms, exact resting frame. After 10 s of GPU idle, the first ~0.4 s of a 4K drag had 6 UI frames over 20 ms (worst 42–55 ms); 1080p one at 24 ms. Measured: decoding keyframes alone does not stall after idle; importing the 4K frame into a texture does, at any target size. A start ramp and reduced-size uploads did not remove it.
 - 2026-11-25 — S0.8 export (Chrome 156, RTX 5060): a 30-minute 1080p30 export of six cuts ran in 132.8 s (13.6× real time), 1.85 GB; ffmpeg decodes exactly 54,000 frames, video and audio are both 1,800.000 s, and all 1,799 beeps sit within 0.21 ms of their whole seconds. Parity: 20 of 20 sampled frames of a three-layer timeline are byte-identical between preview and export. Cancel stops and removes the partial file. Memory: main heap 53.7–54.3 MB and accounted GPU 61 MB stayed flat, but the renderer process (OS private bytes) rose from 683 MB to about 1,050 MB, levelled off, and fell back after; not under the 100 MB target as measured at process level.
 - 2026-11-25 — S0.6 layers (Chrome 156, RTX 5060): three 1080p60 layers at 60 fps, 0 dropped, 127 MB accounted. Two 4K60 layers at full preview resolution (3840×2160) at 59.6–60.6 fps, 6 dropped per layer, all at the start; at 1/2 resolution 60 fps with 0 dropped, 232 MB. A 5-minute two-4K play at full resolution peaked at 374 MB of the 1,536 MB ceiling, 0 late, 0 of 49,477 refreshes out of sync. Seven 1080p layers with five stream decoders: the top five at 59.6 fps, the bottom two on keyframe updates (2 a second), no stall. Known issue: 4K playback still drops 2–6 frames at the very start on the audio clock (decoder warm-up); worth a look in S0.9.
 - 2026-11-25 — S0.5 cuts: a seeded 400-cut list (320 s) over two H.264 and one HEVC 4K60 file played with 308 decoder switches, 0 cuts held, 0 inexact, 0 frames dropped, 0 late, 19,221 frames presented, 0 of 52,778 refreshes out of sync, 0 audio underruns. Strings of 2, 3 and 4 three-frame clips between 1 s clips: 0 held, 0 inexact. Found and fixed on the way: start-of-run decoders started at the run start instead of the playhead; burst decoding stalling the GPU; a flush deadlock when the decoder's output surfaces were all held; one-at-a-time packet reads; the audio clock stopping one output latency short of the end. Known limit: hard cuts between different audio make a small step (no edit-point fades until M2).
