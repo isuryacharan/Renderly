@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Renderly preview</title>
+  </head>
+  <body>
+    <main class="spike spike--wide">
+      <h1 class="text-title">Render worker</h1>
+      <p class="spike__lead">
+        S0.3: one clip played from a worker-owned WebGL2 context, frames sent straight from the
+        decode worker.
+      </p>
+
+      <div class="bench-row">
+        <select id="media" class="bench-select" aria-label="Test media"></select>
+        <input id="file" type="file" accept="video/*" aria-label="Open a file from disk" />
+        <button id="open" class="r-button r-button--primary">Open</button>
+      </div>
+
+      <canvas id="view" class="preview-view"></canvas>
+
+      <div class="bench-row preview-controls">
+        <button id="play" class="r-button">Play</button>
+        <button id="pause" class="r-button">Pause</button>
+        <button id="start" class="r-button">Go to start</button>
+        <label class="bench-label">
+          Preview
+          <select id="scale" class="bench-select">
+            <option value="1">Full</option>
+            <option value="0.5">1/2</option>
+            <option value="0.25">1/4</option>
+          </select>
+        </label>
+        <button id="lose" class="r-button r-button--ghost">Lose GL context</button>
+      </div>
+
+      <pre id="stats" class="bench-log r-selectable"></pre>
+      <pre id="log" class="bench-log r-selectable"></pre>
+    </main>
+    <script type="module" src="/src/preview-page.ts"></script>
+  </body>
+</html>

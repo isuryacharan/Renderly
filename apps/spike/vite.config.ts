@@ -19,6 +19,7 @@ export default defineConfig({
       input: {
         index: resolve(import.meta.dirname, "index.html"),
         decode: resolve(import.meta.dirname, "decode.html"),
+        preview: resolve(import.meta.dirname, "preview.html"),
       },
     },
   },

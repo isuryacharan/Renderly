@@ -1,0 +1,22 @@
+{
+  "name": "@renderly/engine",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Render worker: WebGL2 compositor on an OffscreenCanvas, fed by decode workers.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@renderly/media": "workspace:*",
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.187.0",
+    "typescript": "~6.0.3"
+  }
+}
