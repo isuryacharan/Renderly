@@ -1,0 +1,54 @@
+.spike {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: var(--space-32) var(--space-16);
+  user-select: text;
+}
+
+.spike__lead {
+  color: var(--text-secondary);
+  margin: var(--space-4) 0 var(--space-24);
+}
+
+.capabilities {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.capability {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--space-2) var(--space-12);
+  padding: var(--space-8) var(--space-12);
+}
+
+.capability + .capability {
+  border-top: 1px solid var(--border);
+}
+
+.capability__name {
+  font-family: var(--font-mono);
+}
+
+/* The state is always a word, never colour alone. */
+.capability__state {
+  font-family: var(--font-mono);
+  color: var(--success);
+}
+
+.capability[data-available="false"] .capability__state {
+  color: var(--danger);
+}
+
+.capability__purpose {
+  grid-column: 1 / -1;
+  color: var(--text-tertiary);
+}
+
+.spike h1 {
+  margin: 0;
+}

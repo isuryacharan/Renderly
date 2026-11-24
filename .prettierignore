@@ -1,0 +1,10 @@
+pnpm-lock.yaml
+LICENSE
+# Generated files: regenerate them instead of formatting them
+packages/ui/src/tokens.ts
+packages/ui/src/styles/tokens.css
+docs/design-system/preview/index.html
+
+# Hand-written prose and preview templates keep their authored layout
+*.md
+docs/design-system/preview/

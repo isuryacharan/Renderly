@@ -17,6 +17,7 @@
     "./fonts.css": "./src/styles/fonts.css"
   },
   "scripts": {
+    "typecheck": "tsc -p .",
     "build:tokens": "node scripts/build-tokens.mjs",
     "check:tokens": "node scripts/build-tokens.mjs --check",
     "build:preview": "node scripts/build-preview.mjs"
@@ -24,5 +25,8 @@
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
   }
 }
