@@ -12,7 +12,7 @@ import {
   type MediaInput,
 } from "@renderly/media";
 import { beepOnsets } from "./beeps";
-import { shortClipList, stressList } from "./stress";
+import { layerList, shortClipList, stressList } from "./stress";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const mediaSelect = $<HTMLSelectElement>("media");
@@ -67,6 +67,11 @@ preview.onStats((stats) => {
     `${stats.cuts.inexact} inexact, ${stats.cuts.droppedAtCuts} frames dropped at cuts
 ` +
     `decoders: ${stats.decoders.busy} of ${stats.decoders.pool} busy, ${stats.decoders.opens} opens
+` +
+    `layers: ${stats.layers.map((l) => `${l.layer}: ${l.fps} fps${l.decoding ? "" : ` (keyframes ${l.keyframes})`}`).join(", ")}
+` +
+    `GPU memory: ${stats.memory.usedMB} MB, peak ${stats.memory.peakMB} of ${stats.memory.ceilingMB} MB` +
+    `${stats.memory.refused ? `, ${stats.memory.refused} targets refused` : ""}
 ` +
     `main thread: ${longTasks} long tasks, max timer lag ${Math.round(maxTimerLagMs)} ms`;
 });
@@ -149,6 +154,7 @@ const results = {
   decodedBeeps,
   stressList,
   shortClipList,
+  layerList,
   FLICKS_PER_SECOND,
 };
 Object.assign(window, { previewResults: results, preview });

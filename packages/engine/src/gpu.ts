@@ -25,7 +25,12 @@ export class Pass {
   readonly material: THREE.RawShaderMaterial;
   private readonly scene = new THREE.Scene();
 
-  constructor(fragment: string, uniforms: Record<string, THREE.IUniform>) {
+  /** `premultiplied`: blend over the target with premultiplied alpha instead of replacing it. */
+  constructor(
+    fragment: string,
+    uniforms: Record<string, THREE.IUniform>,
+    options: { premultiplied?: boolean } = {},
+  ) {
     this.material = new THREE.RawShaderMaterial({
       glslVersion: THREE.GLSL3,
       vertexShader: `precision highp float;\n${VERTEX}`,
@@ -33,7 +38,16 @@ export class Pass {
       uniforms,
       depthTest: false,
       depthWrite: false,
-      blending: THREE.NoBlending,
+      ...(options.premultiplied
+        ? {
+            blending: THREE.CustomBlending,
+            blendSrc: THREE.OneFactor,
+            blendDst: THREE.OneMinusSrcAlphaFactor,
+            blendSrcAlpha: THREE.OneFactor,
+            blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
+            transparent: true,
+          }
+        : { blending: THREE.NoBlending }),
     });
     const mesh = new THREE.Mesh(fullScreen, this.material);
     mesh.frustumCulled = false;

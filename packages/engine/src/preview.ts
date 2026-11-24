@@ -20,8 +20,11 @@ export interface LoadedTimeline extends LoadResult {
   audio: AudioOpenResult[];
 }
 
-/** Decode workers in the pool: the current run, two ahead, and one spare for short clips. */
-export const DECODER_POOL_SIZE = 4;
+/**
+ * Decode workers in the pool: five for streams (current runs on every layer and the runs coming
+ * up) and one kept for keyframe-only updates and seeks.
+ */
+export const DECODER_POOL_SIZE = 6;
 
 export interface Preview {
   /** Opens one file as a timeline of one cut. */
@@ -171,7 +174,13 @@ export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview>
     },
     play(from) {
       session++;
-      if (hasAudio) audio.play(session, from, cuts);
+      // Sound comes from the bottom layer for now; mixing layers is the audio engine (M2).
+      if (hasAudio)
+        audio.play(
+          session,
+          from,
+          cuts.filter((cut) => (cut.layer ?? 0) === 0),
+        );
       send({ type: "play", from, session: hasAudio ? session : 0 });
     },
     async pause() {
