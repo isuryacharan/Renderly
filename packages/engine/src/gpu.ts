@@ -68,9 +68,14 @@ export class Pass {
   }
 }
 
-export function makeTarget(width: number, height: number): THREE.WebGLRenderTarget {
+/** A half-float render target, or 8-bit with `eightBit` (for caches that only store pictures). */
+export function makeTarget(
+  width: number,
+  height: number,
+  eightBit = false,
+): THREE.WebGLRenderTarget {
   const target = new THREE.WebGLRenderTarget(width, height, {
-    type: THREE.HalfFloatType,
+    type: eightBit ? THREE.UnsignedByteType : THREE.HalfFloatType,
     minFilter: THREE.LinearFilter,
     magFilter: THREE.LinearFilter,
     depthBuffer: false,

@@ -10,7 +10,11 @@ import * as THREE from "three";
 import { makeTarget, Pass } from "./gpu";
 import type { Size } from "./layout";
 import { halfFloatTargetBytes, type MemoryBudget } from "./memory";
+import { LruKeys } from "./scrub";
 import type { Transform } from "./timeline";
+
+/** Composited frames kept for scrubbing. */
+export const FRAME_CACHE_ENTRIES = 12;
 
 const FRAGMENT = /* glsl */ `
 uniform sampler2D tLayer;
@@ -52,6 +56,8 @@ export class Compositor {
   constructor(
     private readonly renderer: THREE.WebGLRenderer,
     private readonly budget: MemoryBudget,
+    /** Prefix for this compositor's budget entries, when there is more than one. */
+    private readonly name = "",
   ) {}
 
   get texture(): THREE.Texture | null {
@@ -64,7 +70,9 @@ export class Compositor {
     for (const layer of [...this.layers.keys()]) this.releaseLayer(layer);
     this.output?.dispose();
     this.output = null;
-    if (this.budget.reserve("composite", halfFloatTargetBytes(size.width, size.height))) {
+    if (
+      this.budget.reserve(`${this.name}composite`, halfFloatTargetBytes(size.width, size.height))
+    ) {
       this.output = makeTarget(size.width, size.height);
     } else {
       this.refused++;
@@ -76,7 +84,7 @@ export class Compositor {
     const existing = this.layers.get(layer);
     if (existing) return existing;
     const { width, height } = this.size;
-    if (!this.budget.reserve(`layer ${layer}`, halfFloatTargetBytes(width, height))) {
+    if (!this.budget.reserve(`${this.name}layer ${layer}`, halfFloatTargetBytes(width, height))) {
       this.refused++;
       return null;
     }
@@ -88,7 +96,7 @@ export class Compositor {
   releaseLayer(layer: number): void {
     this.layers.get(layer)?.dispose();
     this.layers.delete(layer);
-    this.budget.release(`layer ${layer}`);
+    this.budget.release(`${this.name}layer ${layer}`);
   }
 
   /** Draws `draws` (bottom first) over opaque black into the composite target. */
@@ -113,7 +121,77 @@ export class Compositor {
   dispose(): void {
     for (const layer of [...this.layers.keys()]) this.releaseLayer(layer);
     this.output?.dispose();
-    this.budget.release("composite");
+    this.budget.release(`${this.name}composite`);
     this.pass.dispose();
+  }
+}
+
+const COPY = /* glsl */ `
+uniform sampler2D tImage;
+in vec2 vUv;
+out vec4 fragColor;
+void main() {
+  fragColor = texture(tImage, vUv);
+}`;
+
+/**
+ * A small cache of recently composited exact frames, for scrubbing back and forth. Entries are
+ * 8-bit at half the working size: they stand in while dragging, and a resting playhead always
+ * gets a full exact render.
+ */
+export class FrameCache {
+  private readonly entries = new Map<number, THREE.WebGLRenderTarget>();
+  private readonly order = new LruKeys<number>(FRAME_CACHE_ENTRIES);
+  private readonly copy = new Pass(COPY, { tImage: { value: null } });
+  private size: Size = { width: 2, height: 2 };
+  hits = 0;
+
+  constructor(
+    private readonly renderer: THREE.WebGLRenderer,
+    private readonly budget: MemoryBudget,
+  ) {}
+
+  /** Sets the working size; drops every entry. */
+  resize(working: Size): void {
+    this.clear();
+    this.size = {
+      width: Math.max(2, Math.round(working.width / 2)),
+      height: Math.max(2, Math.round(working.height / 2)),
+    };
+  }
+
+  get(key: number): THREE.Texture | null {
+    const entry = this.entries.get(key);
+    if (!entry) return null;
+    this.order.touch(key);
+    this.hits++;
+    return entry.texture;
+  }
+
+  /** Stores a copy of `image` under `key`. Does nothing past the memory ceiling. */
+  store(key: number, image: THREE.Texture): void {
+    let target = this.entries.get(key) ?? null;
+    if (!target) {
+      const bytes = this.size.width * this.size.height * 4;
+      if (!this.budget.reserve(`cache ${key}`, bytes)) return;
+      target = makeTarget(this.size.width, this.size.height, true);
+      this.entries.set(key, target);
+      const evicted = this.order.add(key);
+      if (evicted !== null) this.drop(evicted);
+    } else {
+      this.order.touch(key);
+    }
+    (this.copy.uniforms["tImage"] as THREE.IUniform).value = image;
+    this.copy.run(this.renderer, target);
+  }
+
+  clear(): void {
+    for (const key of this.order.clear()) this.drop(key);
+  }
+
+  private drop(key: number): void {
+    this.entries.get(key)?.dispose();
+    this.entries.delete(key);
+    this.budget.release(`cache ${key}`);
   }
 }
