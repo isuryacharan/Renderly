@@ -9,7 +9,9 @@ Last updated: 2026-11-24
 
 - Phase: M0 engine spike. S0.1 (repository scaffold) is built on branch `s0.1-repo-scaffold`; its
   last "done when" item, green CI on a pull request, waits for a GitHub remote.
-- Next slice: **S0.2 Decode worker**.
+- S0.2 (decode worker, `packages/media`) is built and its three "done when" items pass; not yet
+  committed.
+- Next slice: **S0.3 Render worker**.
 - Nothing after M0 should be built on the engine until the M0 go / no-go record exists.
 
 ## Decisions
@@ -28,6 +30,8 @@ Last updated: 2026-11-24
 | 2026-11-24 | No other video editors are named anywhere in the repository. |
 | 2026-11-24 | `SPEC.md` and `docs/plans/` are git-ignored and kept locally. |
 | 2026-11-24 | Toolchain: Node 22+, pnpm 10 workspaces, TypeScript 6.0 (7.0 waits for typescript-eslint support), Vite, Vitest, ESLint, Prettier. Prettier formats code only; Markdown and the preview templates keep their authored layout. |
+| 2026-11-24 | Exact seek drives `VideoDecoder` directly and skips H.264 frames with `nal_ref_idc = 0` before the target (about a third of the frames on NVENC test media). Median 4K long-GOP seek went from 145–154 ms (mediabunny `getSample`) to 86 ms with identical pixels. HEVC still uses the full decode. |
+| 2026-11-24 | Decode back-pressure is by credit: a worker sends at most N frames (default 6) until the receiver closes some, so a leak stalls decoding instead of filling GPU memory. |
 | 2026-11-24 | Design system v1: dark-first with a full light theme, strictly neutral grey chrome, one amber accent (chosen over blue, violet and magenta; warning is yellow), Geist for the interface and Geist Mono for numbers (both OFL, shipped with the app), 4px grid, 22–28px controls, shadows only on floating surfaces and knobs. It lives in the repository: rules in `docs/design-system/`, tokens and styles in `packages/ui/`. `tokens.json` is the source of truth. |
 
 ## Open questions
@@ -64,6 +68,7 @@ Ask the project owner for the locations.
 
 ## Log
 
+- 2026-11-24 — S0.2 decode worker measured in Chrome 156 (RTX 5060) on a 6.31 GB 4K60 H.264 file at 120 Mbps with a 2 s GOP and the index at the end: open 26 ms; main heap 11.9 → 12.0 MB; exact seek median 86 ms (p90 167 ms), 0 wrong frames, 0 pixel mismatches against a full decode; 5-minute soak (779 plays, 333 seeks, 88,066 frames) left the leak counter, worker in-flight and held frames all at 0. Measured through the dev server's HTTP range endpoint; the `File` path was checked for correctness only. Test media comes from `scripts/make-test-media.mjs`.
 - 2026-11-24 — S0.1 scaffold: pnpm workspace, strict tsconfig, Vite spike page with COOP/COEP (all probes true in Chrome 156), Vitest, ESLint, Prettier, CI workflow, LICENSE, NOTICE, CONTRIBUTING with DCO, decision-record template. Geist font packages are now installed.
 - 2026-11-24 — Design system written to the repository (`packages/ui`, `docs/design-system`). Font packages are declared but not installed; there is no workspace root yet (slice S0.1).
 - 2026-11-24 — Spec written. Implementation plans sliced into 74 slices across M0–M8 and the 1.0

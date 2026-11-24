@@ -12,10 +12,12 @@
     "typecheck": "tsc -p ."
   },
   "devDependencies": {
+    "@types/node": "^26.6.6",
     "typescript": "^6.0.3",
     "vite": "^8.3.8"
   },
   "dependencies": {
+    "@renderly/media": "workspace:*",
     "@renderly/ui": "workspace:*"
   }
 }

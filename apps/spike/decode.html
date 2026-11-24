@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Renderly decode bench</title>
+  </head>
+  <body>
+    <main class="spike">
+      <h1 class="text-title">Decode worker</h1>
+      <p class="spike__lead">
+        S0.2 measurements: open time and heap, exact seek latency, and a play-and-seek soak with the
+        frame leak counter.
+      </p>
+
+      <div class="bench-row">
+        <select id="media" class="bench-select" aria-label="Test media"></select>
+        <input id="file" type="file" accept="video/*" aria-label="Open a file from disk" />
+      </div>
+
+      <div class="bench-row">
+        <button id="open" class="r-button r-button--primary">Open</button>
+        <button id="seek" class="r-button">Seek bench</button>
+        <button id="soak" class="r-button">Soak</button>
+        <label class="bench-label">
+          Soak seconds
+          <span class="r-field r-field--number bench-number">
+            <input id="soak-seconds" type="text" inputmode="numeric" value="300" />
+          </span>
+        </label>
+      </div>
+
+      <canvas id="view" class="bench-view" width="640" height="360"></canvas>
+      <pre id="log" class="bench-log r-selectable"></pre>
+    </main>
+    <script type="module" src="/src/decode-bench.ts"></script>
+  </body>
+</html>
