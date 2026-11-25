@@ -18,8 +18,10 @@
   },
   "dependencies": {
     "@renderly/audio": "workspace:*",
+    "@renderly/core": "workspace:*",
     "@renderly/engine": "workspace:*",
     "@renderly/media": "workspace:*",
+    "@renderly/storage": "workspace:*",
     "@renderly/ui": "workspace:*"
   }
 }

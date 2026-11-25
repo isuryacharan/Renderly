@@ -18,7 +18,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check:tokens": "pnpm --filter @renderly/ui check:tokens",
-    "bench": "node scripts/bench.mjs"
+    "bench": "node scripts/bench.mjs",
+    "test:storage": "node scripts/storage-e2e.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

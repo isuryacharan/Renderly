@@ -37,7 +37,9 @@ export type FailureCode =
   /** `expectedRevision` did not match: the project moved on. */
   | "conflict"
   /** A gesture is in progress; commit or cancel it first. */
-  | "gesture-active";
+  | "gesture-active"
+  /** The project is open read-only here (another tab is editing it). */
+  | "read-only";
 
 export interface Failure {
   code: FailureCode;
@@ -56,6 +58,7 @@ const HINTS: Record<FailureCode, string> = {
   "invalid-result": "This is a bug in the command; report it with the payload.",
   conflict: "Read the project again, rebase your change on the new revision, and retry.",
   "gesture-active": "Wait for the gesture to commit or cancel, then retry.",
+  "read-only": "Another tab is editing this project. Take over editing first.",
 };
 
 export function failure(code: FailureCode, message: string, path?: string): Failure {

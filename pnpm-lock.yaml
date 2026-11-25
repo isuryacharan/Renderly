@@ -41,12 +41,18 @@ importers:
       '@renderly/audio':
         specifier: workspace:*
         version: link:../../packages/audio
+      '@renderly/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@renderly/engine':
         specifier: workspace:*
         version: link:../../packages/engine
       '@renderly/media':
         specifier: workspace:*
         version: link:../../packages/media
+      '@renderly/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
       '@renderly/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -120,6 +126,16 @@ importers:
       mediabunny:
         specifier: ^1.66.4
         version: 1.66.4
+    devDependencies:
+      typescript:
+        specifier: ~6.0.3
+        version: 6.0.3
+
+  packages/storage:
+    dependencies:
+      '@renderly/core':
+        specifier: workspace:*
+        version: link:../core
     devDependencies:
       typescript:
         specifier: ~6.0.3
