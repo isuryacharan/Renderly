@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createId } from "./ids";
 import { migrate, parseProject, serialiseProject, type MigrateResult } from "./migrate";
+import { newProject } from "./new-project";
 
 const fixture = readFileSync(
   join(import.meta.dirname, "..", "fixtures", "holiday-edit.project.json"),
@@ -140,5 +141,21 @@ describe("invalid documents fail with a path and a reason", () => {
     const match = found.find((p) => p.path === path);
     expect(match, JSON.stringify(found)).toBeDefined();
     expect(match?.message.length).toBeGreaterThan(0);
+  });
+});
+
+describe("newProject", () => {
+  it("makes a valid empty project that round-trips", () => {
+    const project = newProject("Fresh");
+    expect(project).toMatchObject({ name: "Fresh", revision: 0, media: [], packs: [] });
+    expect(project.sequences).toHaveLength(1);
+    expect(project.sequences[0]).toMatchObject({
+      width: 1920,
+      height: 1080,
+      fps: [30, 1],
+      tracks: [],
+    });
+    const again = parseProject(serialiseProject(project));
+    expect(again.ok && again.project).toEqual(project);
   });
 });

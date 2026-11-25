@@ -26,4 +26,5 @@ jobs:
       - run: pnpm test
       # Storage scenarios in a real browser (OPFS, Web Locks, BroadcastChannel); the runner has Chrome.
       - run: pnpm test:storage --browser chrome
+      - run: pnpm test:editor --browser chrome
       - run: pnpm build

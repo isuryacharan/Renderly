@@ -192,6 +192,54 @@
   </section>
 
   <section class="g-section">
+    <h2 class="text-heading">Dialog, tooltip and toast</h2>
+    <p>Shown in place here; in the app the dialog is a native <code>&lt;dialog&gt;</code> over a scrim, and the tooltip and menus are popovers.</p>
+    <div class="g-stage">
+      <div class="g-row" style="align-items:flex-start;gap:var(--space-24)">
+        <div class="r-dialog" style="position:static;display:block;margin:0" role="dialog" aria-label="Delete for good?">
+          <div class="r-dialog__body">
+            <h3 class="r-dialog__title text-title">Delete for good?</h3>
+            <p class="r-dialog__text">Holiday edit and every file in its folder will be deleted. This cannot be undone.</p>
+          </div>
+          <div class="r-dialog__actions"><button class="r-button">Cancel</button><button class="r-button r-button--primary">Delete</button></div>
+        </div>
+        <div style="display:grid;gap:var(--space-16);justify-items:start">
+          <div class="r-tooltip" style="position:static" role="tooltip">Split at playhead<span class="r-tooltip__shortcut">Ctrl B</span></div>
+          <div class="r-toast" style="animation:none">Moved Holiday edit to the recycle bin<button class="r-button r-button--ghost r-button--sm">Undo</button></div>
+          <div class="r-toast r-toast--danger" style="animation:none"><span class="r-toast__kind">Error</span>This project is open in another tab. Rename it there.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="g-section">
+    <h2 class="text-heading">Window, panels and banners</h2>
+    <div class="g-stage" style="padding:0;overflow:hidden">
+      <div style="display:flex;flex-direction:column;height:260px;background:var(--bg)">
+        <div class="r-toolbar"><button class="r-button r-button--ghost r-button--sm">Home</button><span class="r-toolbar__title text-body-strong">Holiday edit</span><span class="r-toolbar__spacer"></span><span class="r-status">Saved</span></div>
+        <div class="r-banner r-banner--warning"><span class="r-banner__kind">Read-only</span><span>This project is open in another tab.</span><button class="r-button r-button--sm">Take over editing</button></div>
+        <div style="display:flex;flex:1;min-height:0">
+          <div class="r-panel" style="width:180px"><div class="r-panel__header text-body-strong">Library</div><div class="r-panel__body"><p class="r-panel__empty">No media yet.</p></div></div>
+          <div class="r-splitter r-splitter--vertical" role="separator" aria-label="Resize the library"></div>
+          <div class="r-panel r-panel--viewer" style="flex:1"><div class="r-panel__header text-body-strong">Viewer</div><div class="r-panel__body"></div></div>
+          <div class="r-splitter r-splitter--vertical" role="separator" aria-label="Resize the inspector"></div>
+          <div class="r-panel" style="width:200px"><div class="r-panel__header text-body-strong">Inspector</div><div class="r-panel__body"><span class="r-status r-status--danger">Not saved. Retrying in 4 s</span></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="g-section">
+    <h2 class="text-heading">Project card</h2>
+    <div class="g-stage">
+      <ul class="r-card-grid" style="width:100%">
+        <li class="r-card"><div class="r-card__cover"></div><button class="r-card__open"><span class="r-card__name">Holiday edit</span><span class="r-card__meta"><span class="r-tabular">4:56</span> · Edited 25 Nov 2026, 14:03</span></button><div class="r-card__menu"><button class="r-button r-button--sm">More</button></div></li>
+        <li class="r-card"><div class="r-card__cover"></div><button class="r-card__open"><span class="r-card__name">Interview, second cut with a long name</span><span class="r-card__meta"><span class="r-tabular">1:02:03</span> · Edited 2 Nov 2026, 09:41</span></button><div class="r-card__menu"><button class="r-button r-button--sm">More</button></div></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="g-section">
     <h2 class="text-heading">Timeline clip</h2>
     <p>A styling reference. In the app the track area is drawn on a canvas using the resolved values in <code>packages/ui/src/tokens.ts</code>. Thumbnails and waveforms here are stand-in pictures.</p>
     <div class="g-stage g-stage--flush g-scroll"><!--TIMELINE--></div>

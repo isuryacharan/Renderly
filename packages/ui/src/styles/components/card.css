@@ -1,0 +1,75 @@
+/* Project card and grid, for the home screen only.
+   Guidelines: docs/design-system/components/card.md */
+
+.r-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--space-16);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.r-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border);
+  transition: background-color var(--motion-fast) var(--motion-ease);
+}
+.r-card:hover {
+  background: var(--surface-hover);
+}
+
+/* The cover: the project's picture area, on viewer. */
+.r-card__cover {
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background: var(--viewer);
+}
+
+/* The whole card opens the project; the button covers it, the menu button sits above it. */
+.r-card__open {
+  position: static;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-8) var(--space-12) var(--space-12);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+.r-card__open::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-lg);
+}
+.r-card__open:focus-visible {
+  outline: 0;
+}
+.r-card__open:focus-visible::before {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.r-card__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.r-card__meta {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+/* Sits in the cover's top-right corner, above the button that covers the card. */
+.r-card__menu {
+  position: absolute;
+  z-index: 1;
+  top: var(--space-8);
+  right: var(--space-8);
+}

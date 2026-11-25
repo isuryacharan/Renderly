@@ -1,0 +1,127 @@
+/* Application frame, panels, splitters and banners.
+   Guidelines: docs/design-system/components/panel.md
+   Panels sit on surface and are separated by a 1px gap that shows bg. No panel has a shadow. */
+
+.r-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+/* The bar at the top of a window or panel: 36px, title on the left, controls on the right. */
+.r-toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-8);
+  height: var(--toolbar);
+  padding: 0 var(--space-8) 0 var(--space-12);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.r-toolbar__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.r-toolbar__spacer {
+  flex: 1;
+}
+
+.r-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--surface);
+}
+.r-panel__header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-8);
+  height: var(--toolbar);
+  padding: 0 var(--space-12);
+  border-bottom: 1px solid var(--border);
+}
+.r-panel__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-12);
+}
+/* The viewer and the timeline track area sit on viewer, never tinted. */
+.r-panel--viewer .r-panel__body,
+.r-panel__body--viewer {
+  background: var(--viewer);
+}
+.r-panel__empty {
+  margin: 0;
+  color: var(--text-tertiary);
+}
+
+/* Splitter: a 1px bg gap that widens its hit area to 6px. Keyboard: arrows move it. */
+.r-splitter {
+  position: relative;
+  flex: none;
+  background: var(--bg);
+  touch-action: none;
+}
+.r-splitter--vertical {
+  width: 1px;
+  cursor: col-resize;
+}
+.r-splitter--horizontal {
+  height: 1px;
+  cursor: row-resize;
+}
+.r-splitter::after {
+  content: "";
+  position: absolute;
+  inset: -3px 0;
+  z-index: 1;
+}
+.r-splitter--vertical::after {
+  inset: 0 -3px;
+}
+.r-splitter:hover,
+.r-splitter[data-dragging] {
+  background: var(--border-strong);
+}
+
+/* Banner: a full-width notice under the toolbar. Status colour always comes with a word. */
+.r-banner {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-12);
+  min-height: var(--toolbar);
+  padding: var(--space-4) var(--space-12);
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border);
+}
+.r-banner__kind {
+  font-weight: 600;
+}
+.r-banner--warning .r-banner__kind {
+  color: var(--warning);
+}
+.r-banner--danger .r-banner__kind {
+  color: var(--danger);
+}
+
+/* Save status: a word, coloured only when it needs attention. */
+.r-status {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.r-status--warning {
+  color: var(--warning);
+}
+.r-status--danger {
+  color: var(--danger);
+}

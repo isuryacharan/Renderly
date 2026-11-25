@@ -95,7 +95,7 @@ function parseMeta(text: string | null): ProjectMeta | null {
 export async function listProjects(root: Dir): Promise<ProjectEntry[]> {
   const found: ProjectEntry[] = [];
   for (const entry of await list(root)) {
-    if (entry.kind !== "directory") continue;
+    if (entry.kind !== "directory" || entry.name.startsWith(".")) continue;
     const meta = parseMeta(await readText(await subdir(root, entry.name, false), META_FILE));
     if (meta) found.push({ folder: entry.name, meta });
   }
