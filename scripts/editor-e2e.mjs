@@ -4,6 +4,7 @@
 //
 //   pnpm test:editor                  installed Edge
 //   pnpm test:editor --browser chrome installed Chrome (CI)
+//   pnpm test:editor --cpu-slowdown 6 a slow machine, for races
 
 import { spawn } from "node:child_process";
 import { chromium } from "playwright-core";
@@ -14,6 +15,8 @@ const arg = (name, fallback) => {
 };
 const channel = arg("browser", "msedge");
 const only = arg("only", null);
+// Slows the page CPU this many times (DevTools throttling) to catch races a fast machine hides.
+const slowdown = Number(arg("cpu-slowdown", "1"));
 const PORT = 5181;
 const BASE = `http://localhost:${PORT}`;
 
@@ -50,6 +53,10 @@ function check(condition, message) {
 async function openApp(context, hash = "#/") {
   const page = await context.newPage();
   page.on("pageerror", (error) => log("page error:", error.message));
+  if (slowdown > 1)
+    await (
+      await context.newCDPSession(page)
+    ).send("Emulation.setCPUThrottlingRate", { rate: slowdown });
   await page.goto(`${BASE}/${hash}`);
   await page.waitForFunction(() => window.appReadyAt !== undefined);
   return page;
@@ -182,6 +189,8 @@ const scenarios = {
     await activate(page, "New project");
     await page.keyboard.press("Enter");
     await until(page, () => location.hash.startsWith("#/project/"));
+    // The route changes before the project has opened; the panels appear once it has.
+    await until(page, () => document.querySelector('section[aria-label="Library"]') !== null);
     const sizes = () =>
       page.evaluate(() => {
         const width = (label) =>
