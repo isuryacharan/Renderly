@@ -12,6 +12,27 @@
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["preview", "--", "--port", "4173", "--strictPort"],
       "port": 4173
+    },
+    {
+      "name": "editor",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@renderly/editor", "dev"],
+      "port": 5180
+    },
+    {
+      "name": "design-preview",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--filter",
+        "@renderly/editor",
+        "exec",
+        "vite",
+        "../..",
+        "--port",
+        "5190",
+        "--strictPort"
+      ],
+      "port": 5190
     }
   ]
 }

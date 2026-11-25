@@ -11,3 +11,6 @@
 @import "./components/segmented.css";
 @import "./components/menu.css";
 @import "./components/property-row.css";
+@import "./components/overlay.css";
+@import "./components/panel.css";
+@import "./components/card.css";

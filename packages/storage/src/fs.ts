@@ -67,3 +67,61 @@ export async function remove(dir: Dir, name: string): Promise<void> {
     if (!isNotFound(error)) throw error;
   }
 }
+
+/**
+ * Copies a folder's contents into another, file by file. Files are streamed, never read into
+ * memory, so a project with gigabytes of copied media duplicates safely.
+ */
+export async function copyDir(from: Dir, to: Dir, skip: readonly string[] = []): Promise<void> {
+  for await (const handle of from.values()) {
+    if (skip.includes(handle.name)) continue;
+    if (handle.kind === "directory") {
+      await copyDir(handle, await subdir(to, handle.name), skip);
+    } else {
+      const file = await handle.getFile();
+      const writable = await (
+        await to.getFileHandle(handle.name, { create: true })
+      ).createWritable();
+      await file.stream().pipeTo(writable); // closes the writable when done
+    }
+  }
+}
+
+export async function exists(dir: Dir, name: string): Promise<boolean> {
+  try {
+    await dir.getDirectoryHandle(name);
+    return true;
+  } catch (error) {
+    if (isNotFound(error)) return false;
+    throw error;
+  }
+}
+
+/** A name not yet used in `dir`: `name`, then `name-2`, `name-3` ... */
+export async function freeName(dir: Dir, name: string): Promise<string> {
+  let candidate = name;
+  for (let n = 2; await exists(dir, candidate); n++) candidate = `${name}-${n}`;
+  return candidate;
+}
+
+interface Movable {
+  move?(parent: Dir, name: string): Promise<void>;
+}
+
+/**
+ * Moves folder `name` from `from` into `to` under `newName`. Uses the browser's move where it has
+ * one, and copies then deletes where it does not.
+ */
+export async function moveDir(from: Dir, name: string, to: Dir, newName = name): Promise<void> {
+  const dir = (await subdir(from, name, false)) as Dir & Movable;
+  if (dir.move) {
+    try {
+      await dir.move(to, newName);
+      return;
+    } catch {
+      // not supported for this kind of folder: copy instead
+    }
+  }
+  await copyDir(dir, await subdir(to, newName));
+  await remove(from, name);
+}

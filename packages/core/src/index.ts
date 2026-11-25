@@ -83,3 +83,4 @@ export {
   SplitClips,
   TrimClips,
 } from "./timeline-commands";
+export { newProject, type NewProjectOptions } from "./new-project";

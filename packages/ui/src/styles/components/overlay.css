@@ -1,0 +1,117 @@
+/* Floating surfaces: dialog, popover, tooltip, toast.
+   Guidelines: docs/design-system/components/overlay.md
+   All sit on surface-raised with a shadow that carries its own 1px ring, so none has a border.
+   Only the dialog has a scrim. */
+
+/* Dialog: a native <dialog> opened with showModal(), which traps focus and closes on Escape. */
+.r-dialog {
+  width: min(440px, calc(100vw - var(--space-32)));
+  max-height: calc(100vh - var(--space-32));
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-dialog);
+  color: var(--text);
+}
+.r-dialog::backdrop {
+  background: var(--scrim);
+}
+.r-dialog[open] {
+  animation: r-overlay-in var(--motion-overlay) var(--motion-ease);
+}
+.r-dialog__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  padding: var(--space-16);
+}
+.r-dialog__title {
+  margin: 0;
+}
+.r-dialog__text {
+  margin: 0;
+  color: var(--text-secondary);
+}
+.r-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-8);
+  padding: 0 var(--space-16) var(--space-16);
+}
+
+/* Popover: anchored to a control, closed by Escape or a click outside. Menus use .r-menu. */
+.r-popover {
+  position: fixed;
+  margin: 0;
+  padding: var(--space-12);
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-popover);
+  color: var(--text);
+}
+.r-popover:popover-open {
+  animation: r-overlay-in var(--motion-overlay) var(--motion-ease);
+}
+.r-popover--menu {
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Tooltip: names an action and its shortcut. Small, quick, never interactive. */
+.r-tooltip {
+  position: fixed;
+  margin: 0;
+  padding: var(--space-4) var(--space-8);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-popover);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 16px;
+  pointer-events: none;
+}
+.r-tooltip__shortcut {
+  margin-left: var(--space-8);
+  color: var(--text-tertiary);
+}
+
+/* Toast: a short message about something that just happened, bottom centre. */
+.r-toasts {
+  position: fixed;
+  bottom: var(--space-16);
+  left: 50%;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-8);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.r-toast {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  min-height: var(--control-lg);
+  padding: var(--space-4) var(--space-4) var(--space-4) var(--space-12);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-popover);
+  color: var(--text);
+  pointer-events: auto;
+  animation: r-overlay-in var(--motion-overlay) var(--motion-ease);
+}
+.r-toast--danger .r-toast__kind {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+@keyframes r-overlay-in {
+  from {
+    opacity: 0;
+  }
+}

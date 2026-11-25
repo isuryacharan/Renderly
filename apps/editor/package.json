@@ -1,0 +1,28 @@
+{
+  "name": "@renderly/editor",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Renderly application: home screen and editor.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@renderly/core": "workspace:*",
+    "@renderly/storage": "workspace:*",
+    "@renderly/ui": "workspace:*",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.3",
+    "@types/react-dom": "^19.3.0",
+    "typescript": "~6.0.3",
+    "vite": "^8.3.8"
+  }
+}
