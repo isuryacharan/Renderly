@@ -239,11 +239,44 @@
   </section>
 
   <section class="g-section">
+    <h2 class="text-heading">Media bin and badges</h2>
+    <p>The library panel's items in the grid and the list. The pictures here are stand-ins; in the app they are the file's own thumbnail.</p>
+    <div class="g-stage" style="align-items:flex-start;gap:var(--space-24)">
+      <div class="r-panel" style="width:280px">
+        <div class="r-panel__body">
+          <div class="r-bin">
+            <div class="r-bin__toolbar">
+              <button class="r-button r-button--sm"><!--icon:import-->Import</button>
+              <button class="r-button r-button--icon r-button--sm" aria-label="Import a folder"><!--icon:folder--></button>
+              <span class="r-toolbar__spacer"></span>
+              <div class="r-segmented r-segmented--icons" role="group" aria-label="Show media as"><button aria-pressed="true" aria-label="Grid"><!--icon:grid--></button><button aria-pressed="false" aria-label="List"><!--icon:list--></button></div>
+            </div>
+            <div class="r-bin__notice"><span class="r-badge r-badge--warning"><!--icon:warning-->Offline</span><span>1 file is offline.</span><button class="r-button r-button--sm"><!--icon:relink-->Find in a folder…</button></div>
+            <ul class="r-bin__items r-bin__items--grid">
+              <li class="r-bin__item"><div class="r-bin__thumb" style="background:var(--clip-video)"><span class="r-bin__duration">4:56</span></div><div class="r-bin__text"><span class="r-bin__name">beach-wide.mp4</span><span class="r-bin__facts"><span class="r-bin__detail">3840×2160</span><span class="r-badge">HEVC</span><span class="r-badge"><!--icon:check-->In timeline</span></span></div></li>
+              <li class="r-bin__item"><div class="r-bin__thumb"><!--icon:video--><span class="r-bin__duration">0:12</span></div><div class="r-bin__text"><span class="r-bin__name">interview.mov</span><span class="r-bin__facts"><span class="r-bin__detail">1920×1080</span><span class="r-badge">H.264</span><span class="r-badge r-badge--warning"><!--icon:warning-->Offline</span></span></div></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div class="r-panel" style="width:280px">
+        <div class="r-panel__body">
+          <ul class="r-bin__items r-bin__items--list">
+            <li class="r-bin__item"><div class="r-bin__thumb" style="background:var(--clip-video)"></div><div class="r-bin__text"><span class="r-bin__name">beach-wide.mp4</span><span class="r-bin__facts"><span class="r-bin__detail">4:56</span><span class="r-bin__detail">3840×2160</span><span class="r-badge">HEVC</span></span></div></li>
+            <li class="r-bin__item"><div class="r-bin__thumb"><!--icon:audio--></div><div class="r-bin__text"><span class="r-bin__name">voice-over-01.wav</span><span class="r-bin__facts"><span class="r-bin__detail">1:20</span><span class="r-badge">PCM</span></span></div></li>
+            <li class="r-bin__item"><div class="r-bin__thumb"><!--icon:video--></div><div class="r-bin__text"><span class="r-bin__name">screen-recording.mkv</span><span class="r-bin__facts"><span class="r-bin__detail">2:03</span><span class="r-badge">AV1</span><span class="r-badge r-badge--danger"><!--icon:error-->Cannot play</span></span></div></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="g-section">
     <h2 class="text-heading">Project card</h2>
     <div class="g-stage">
       <ul class="r-card-grid" style="width:100%">
-        <li class="r-card"><div class="r-card__cover"></div><button class="r-card__open"><span class="r-card__name">Holiday edit</span><span class="r-card__meta"><span class="r-tabular">4:56</span> · Edited 25 Nov 2026, 14:03</span></button><div class="r-card__menu"><button class="r-button r-button--sm">More</button></div></li>
-        <li class="r-card"><div class="r-card__cover"></div><button class="r-card__open"><span class="r-card__name">Interview, second cut with a long name</span><span class="r-card__meta"><span class="r-tabular">1:02:03</span> · Edited 2 Nov 2026, 09:41</span></button><div class="r-card__menu"><button class="r-button r-button--sm">More</button></div></li>
+        <li class="r-card"><div class="r-card__cover"></div><button class="r-card__open"><span class="r-card__name">Holiday edit</span><span class="r-card__meta"><span class="r-tabular">4:56</span> · Edited 25 Nov 2026, 14:03</span></button><div class="r-card__menu"><button class="r-button r-button--icon r-button--sm" aria-label="More actions"><!--icon:more--></button></div></li>
+        <li class="r-card"><div class="r-card__cover"></div><button class="r-card__open"><span class="r-card__name">Interview, second cut with a long name</span><span class="r-card__meta"><span class="r-tabular">1:02:03</span> · Edited 2 Nov 2026, 09:41</span></button><div class="r-card__menu"><button class="r-button r-button--icon r-button--sm" aria-label="More actions"><!--icon:more--></button></div></li>
       </ul>
     </div>
   </section>

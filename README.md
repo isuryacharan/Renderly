@@ -57,20 +57,22 @@ node scripts/make-test-media.mjs
 
 Other commands: `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm build`, and `pnpm bench`, which
 runs the engine benchmark headless in Edge on this machine's GPU and writes JSON to
-`bench-results/` (needs the test media). `pnpm test:storage` and `pnpm test:editor` run the project-storage
-scenarios and the app-shell checks headless in Edge (`--browser chrome` for Chrome).
+`bench-results/` (needs the test media). `pnpm test:storage`, `pnpm test:editor` and `pnpm test:media` run the
+project-storage scenarios, the app-shell checks and the media-bin scenarios headless in Edge
+(`--browser chrome` for Chrome); `pnpm test:media --big` also times a 13 GB import of the test
+media.
 
 ## Repository layout
 
 ```
 apps/editor/         the application: home screen and editor
 apps/spike/          test pages for the engine spike
-packages/media/      decode worker: demux, decode, exact seek
+packages/media/      decode worker: demux, decode, exact seek; probing for import
 packages/engine/     render worker: WebGL2 upload, presentation, playback clock
 packages/audio/      audio decode worker, AudioWorklet playback, the audio clock
 packages/ui/         design system: tokens, component styles, React base components
 packages/core/       the project model: time, schema, commands, undo, timeline edits
-packages/storage/    projects as folders: autosave, backups, one writer per project
+packages/storage/    projects as folders: autosave, backups, one writer per project, media files
 docs/design-system/  interface rules and a live preview page
 docs/decisions/      decision records
 scripts/             test media generation, benchmark, storage scenarios

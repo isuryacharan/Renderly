@@ -41,12 +41,18 @@ importers:
       '@renderly/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@renderly/media':
+        specifier: workspace:*
+        version: link:../../packages/media
       '@renderly/storage':
         specifier: workspace:*
         version: link:../../packages/storage
       '@renderly/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      mediabunny:
+        specifier: ^1.66.4
+        version: 1.66.4
       react:
         specifier: ^19.3.1
         version: 19.3.1
@@ -170,6 +176,9 @@ importers:
       '@renderly/core':
         specifier: workspace:*
         version: link:../core
+      '@renderly/media':
+        specifier: workspace:*
+        version: link:../media
     devDependencies:
       typescript:
         specifier: ~6.0.3

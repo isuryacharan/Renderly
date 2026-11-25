@@ -15,8 +15,8 @@ export async function browserRoot(): Promise<Dir> {
 // Chromium-only parts of the File System Access API, not in TypeScript's DOM library.
 type Permission = "granted" | "denied" | "prompt";
 interface PermissionHandle {
-  queryPermission?(options: { mode: "readwrite" }): Promise<Permission>;
-  requestPermission?(options: { mode: "readwrite" }): Promise<Permission>;
+  queryPermission?(options: { mode: "read" | "readwrite" }): Promise<Permission>;
+  requestPermission?(options: { mode: "read" | "readwrite" }): Promise<Permission>;
 }
 interface PickerWindow {
   showDirectoryPicker?(options: { id?: string; mode?: "readwrite" }): Promise<Dir>;
@@ -37,11 +37,15 @@ export async function pickDiskRoot(): Promise<Dir> {
  * gesture: the "Reconnect" button after a restart). Browsers without the permission API (OPFS
  * everywhere) always have access.
  */
-export async function access(handle: Dir, request = false): Promise<Permission> {
-  const h = handle as Dir & PermissionHandle;
+export async function access(
+  handle: FileSystemHandle,
+  request = false,
+  mode: "read" | "readwrite" = "readwrite",
+): Promise<Permission> {
+  const h = handle as FileSystemHandle & PermissionHandle;
   const ask = request ? h.requestPermission : h.queryPermission;
   if (!ask) return "granted";
-  return ask.call(h, { mode: "readwrite" });
+  return ask.call(h, { mode });
 }
 
 // --- remembered handles (IndexedDB: the only storage that can hold a directory handle) ---
@@ -85,6 +89,27 @@ export async function recallRoot(key: string): Promise<Dir | null> {
 
 export async function forgetRoot(key: string): Promise<void> {
   await transact("readwrite", (store) => store.delete(key));
+}
+
+/** A linked media file's handle, kept per project and media id. */
+const mediaKey = (projectId: string, mediaId: string) => `media:${projectId}:${mediaId}`;
+
+export async function rememberMediaHandle(
+  projectId: string,
+  mediaId: string,
+  handle: FileSystemFileHandle,
+): Promise<void> {
+  await transact("readwrite", (store) => store.put(handle, mediaKey(projectId, mediaId)));
+}
+
+export async function recallMediaHandle(
+  projectId: string,
+  mediaId: string,
+): Promise<FileSystemFileHandle | null> {
+  const handle = await transact<unknown>("readonly", (store) =>
+    store.get(mediaKey(projectId, mediaId)),
+  );
+  return handle instanceof FileSystemFileHandle ? handle : null;
 }
 
 // --- persistence and quota ---

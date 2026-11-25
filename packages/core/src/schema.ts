@@ -7,7 +7,7 @@
 import { z } from "zod";
 import { componentSchema, registryVersion } from "./components";
 import { ID_PATTERN } from "./ids";
-import { isSupportedRate, SUPPORTED_SAMPLE_RATES } from "./time";
+import { isMediaRate, isSupportedRate, MEDIA_SAMPLE_RATES, SUPPORTED_SAMPLE_RATES } from "./time";
 
 export const CURRENT_VERSION = 1;
 
@@ -23,6 +23,17 @@ const SampleRate = z
   .int()
   .refine((rate) => (SUPPORTED_SAMPLE_RATES as readonly number[]).includes(rate), {
     message: `must be one of ${SUPPORTED_SAMPLE_RATES.join(", ")}`,
+  });
+
+/** A source file's own rates: wider than a sequence's (see MEDIA_RATES in time.ts). */
+const MediaRate = z
+  .tuple([z.int().positive(), z.int().positive()])
+  .refine((rate) => isMediaRate(rate), "is not a supported source frame rate");
+
+const MediaSampleRate = z
+  .int()
+  .refine((rate) => (MEDIA_SAMPLE_RATES as readonly number[]).includes(rate), {
+    message: `must be one of ${MEDIA_SAMPLE_RATES.join(", ")}`,
   });
 
 export const PackRef = z.strictObject({
@@ -48,14 +59,14 @@ export const Media = z.strictObject({
     .strictObject({
       width: z.int().positive(),
       height: z.int().positive(),
-      fps: Rate,
+      fps: MediaRate,
       codec: z.string().min(1),
       rotation: z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)]).default(0),
     })
     .optional(),
   audio: z
     .strictObject({
-      sampleRate: SampleRate,
+      sampleRate: MediaSampleRate,
       channels: z.int().min(1).max(32),
       codec: z.string().min(1),
     })

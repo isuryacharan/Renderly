@@ -99,6 +99,12 @@ export const ICONS = {
   "zoom-in": [["path",{"d":"M3 10a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"}],["path",{"d":"M7 10l6 0"}],["path",{"d":"M10 7l0 6"}],["path",{"d":"M21 21l-6 -6"}]],
   /** Zoom the timeline out. Tabler: zoom-out. */
   "zoom-out": [["path",{"d":"M3 10a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"}],["path",{"d":"M7 10l6 0"}],["path",{"d":"M21 21l-6 -6"}]],
+  /** Show items as a grid of pictures. Tabler: layout-grid. */
+  "grid": [["path",{"d":"M4 5a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -4"}],["path",{"d":"M14 5a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -4"}],["path",{"d":"M4 15a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -4"}],["path",{"d":"M14 15a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -4"}]],
+  /** Show items as a list with details. Tabler: list. */
+  "list": [["path",{"d":"M9 6l11 0"}],["path",{"d":"M9 12l11 0"}],["path",{"d":"M9 18l11 0"}],["path",{"d":"M5 6l0 .01"}],["path",{"d":"M5 12l0 .01"}],["path",{"d":"M5 18l0 .01"}]],
+  /** Point offline media at its file again. Tabler: link. */
+  "relink": [["path",{"d":"M9 15l6 -6"}],["path",{"d":"M11 6l.463 -.536a5 5 0 0 1 7.071 7.072l-.534 .464"}],["path",{"d":"M13 18l-.397 .534a5.068 5.068 0 0 1 -7.127 0a4.972 4.972 0 0 1 0 -7.071l.524 -.463"}]],
   /** Video clips and tracks. Tabler: movie. */
   "video": [["path",{"d":"M4 6a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2l0 -12"}],["path",{"d":"M8 4l0 16"}],["path",{"d":"M16 4l0 16"}],["path",{"d":"M4 8l4 0"}],["path",{"d":"M4 16l4 0"}],["path",{"d":"M4 12l16 0"}],["path",{"d":"M16 8l4 0"}],["path",{"d":"M16 16l4 0"}]],
   /** Audio clips and tracks. Tabler: music. */

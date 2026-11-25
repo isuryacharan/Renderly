@@ -477,15 +477,18 @@ export const SplitClips = defineCommand({
   },
 });
 
+/** Removes clips (refusing locked tracks); magnetic tracks close up. Used by other commands too. */
+export function deleteClips(project: DProject, ids: readonly string[]): void {
+  const found = locateClips(project, ids);
+  for (const { track, clip } of found) removeClip(track, clip);
+  for (const { track } of found) pack(track);
+}
+
 export const DeleteClips = defineCommand({
   type: "clip.delete",
   payload: z.strictObject({ clips: IdList }),
   label: ({ clips }) => `Delete ${plural(clips.length, "clip")}`,
-  apply: (project, { clips }) => {
-    const found = locateClips(project, clips);
-    for (const { track, clip } of found) removeClip(track, clip);
-    for (const { track } of found) pack(track);
-  },
+  apply: (project, { clips }) => deleteClips(project, clips),
 });
 
 /** Deletes clips and closes the space each one took on its own track. */

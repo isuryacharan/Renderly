@@ -4,7 +4,9 @@
 // - clips are sorted by start and never overlap;
 // - every start and duration is a whole number of sequence frames, and a clip is at least one
 //   frame long;
-// - a clip never reads outside its source;
+// - a clip never reads outside its media file. A compound clip may run past the end of its
+//   sequence when that sequence gets shorter (an edit inside it); the rest plays as empty, like a
+//   gap. Trims and new clips still stop at the sequence's end;
 // - a magnetic track has no gaps: its first clip starts at 0 and each clip starts where the
 //   previous one ends.
 
@@ -115,8 +117,9 @@ export function checkTimeline(project: Project): string[] {
         if (clip.start < previousEnd) problems.push(`${where} overlaps the clip before it`);
         if (track.magnetic && clip.start !== previousEnd)
           problems.push(`${where} leaves a gap on a magnetic track`);
-        if (clip.in < 0 || clip.in + sourceSpan(clip) > sourceDuration(project, clip))
-          problems.push(`${where} reads outside its source`);
+        const pastEnd =
+          clip.media !== undefined && clip.in + sourceSpan(clip) > sourceDuration(project, clip);
+        if (clip.in < 0 || pastEnd) problems.push(`${where} reads outside its source`);
         previousEnd = clipEnd(clip);
       }
     }

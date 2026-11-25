@@ -34,19 +34,25 @@ const tablerDir = dirname(
   createRequire(join(root, "package.json")).resolve("@tabler/icons/package.json"),
 );
 const tabler = JSON.parse(readFileSync(join(tablerDir, "tabler-nodes-outline.json"), "utf8"));
-const icons = JSON.parse(readFileSync(join(root, "icons/icons.json"), "utf8"))
-  .icons.map((icon) => {
-    const shapes = tabler[icon.tabler]
-      .map(
-        ([tag, attrs]) =>
-          `<${tag} ${Object.entries(attrs)
-            .filter(([k]) => k !== "key")
-            .map(([k, v]) => `${k}="${esc(v)}"`)
-            .join(" ")}/>`,
-      )
-      .join("");
-    return `<div class="g-icon" title="${esc(icon.usage)}"><svg class="r-icon" viewBox="0 0 24 24" aria-hidden="true">${shapes}</svg><code>${icon.name}</code></div>`;
-  })
+const iconList = JSON.parse(readFileSync(join(root, "icons/icons.json"), "utf8")).icons;
+/** An icon as inline SVG, the way the Icon component draws it. */
+const svg = (icon) => {
+  const shapes = tabler[icon.tabler]
+    .map(
+      ([tag, attrs]) =>
+        `<${tag} ${Object.entries(attrs)
+          .filter(([k]) => k !== "key")
+          .map(([k, v]) => `${k}="${esc(v)}"`)
+          .join(" ")}/>`,
+    )
+    .join("");
+  return `<svg class="r-icon" viewBox="0 0 24 24" aria-hidden="true">${shapes}</svg>`;
+};
+const icons = iconList
+  .map(
+    (icon) =>
+      `<div class="g-icon" title="${esc(icon.usage)}">${svg(icon)}<code>${icon.name}</code></div>`,
+  )
   .join("\n      ");
 
 // The timeline reference is kept as its own fragment so it can be edited alone.
@@ -62,5 +68,11 @@ for (const [slot, content] of [
   if (!html.includes(slot)) throw new Error(`Template is missing ${slot}`);
   html = html.replace(slot, () => content);
 }
+// <!--icon:warning--> anywhere in the template becomes that icon.
+html = html.replace(/<!--icon:([a-z-]+)-->/g, (_, name) => {
+  const icon = iconList.find((i) => i.name === name);
+  if (!icon) throw new Error(`The template uses an unknown icon "${name}"`);
+  return svg(icon);
+});
 writeFileSync(join(previewDir, "index.html"), html);
 console.log("Wrote docs/design-system/preview/index.html");
