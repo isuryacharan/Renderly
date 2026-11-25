@@ -11,8 +11,8 @@ import { isSupportedRate, SUPPORTED_SAMPLE_RATES } from "./time";
 
 export const CURRENT_VERSION = 1;
 
-const Id = z.string().regex(ID_PATTERN, "must be a 16-character id");
-const Flicks = z.int().min(0);
+export const Id = z.string().regex(ID_PATTERN, "must be a 16-character id");
+export const Flicks = z.int().min(0);
 const Duration = z.int().positive();
 
 const Rate = z

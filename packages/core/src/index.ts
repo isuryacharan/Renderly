@@ -1,7 +1,7 @@
 // @renderly/core: the project model. No DOM, React or GPU: it runs in workers and plain tests.
 
 export * from "./time";
-export { createId, ID_LENGTH, ID_PATTERN, type RandomBytes } from "./ids";
+export { createId, deriveId, ID_LENGTH, ID_PATTERN, type RandomBytes } from "./ids";
 export {
   componentSchema,
   componentTypes,
@@ -59,3 +59,27 @@ export {
   SetProjectName,
 } from "./basic-commands";
 export { INITIAL_VIEW, ViewStore, type ViewState } from "./view-state";
+export {
+  checkTimeline,
+  clipAt,
+  clipEnd,
+  clipsInRange,
+  sequenceDuration,
+  snapTargets,
+  snapTo,
+  sourceDuration,
+  sourceSpan,
+  type ClipRef,
+} from "./timeline";
+export {
+  AddClips,
+  AddTrack,
+  CloseGaps,
+  DeleteClips,
+  MoveClips,
+  RemoveTracks,
+  RippleDeleteClips,
+  SetTrackFlags,
+  SplitClips,
+  TrimClips,
+} from "./timeline-commands";

@@ -3,8 +3,8 @@
 The project model: time, ids, the schema and loading. No DOM, React or GPU dependency, so it runs
 in workers and in plain unit tests (its `tsconfig` has no DOM library at all).
 
-Status: M1. S1.1 (time, ids, schema) and S1.2 (commands, store, undo) are built. Timeline edits
-and queries come in S1.3.
+Status: M1. S1.1 (time, ids, schema), S1.2 (commands, store, undo) and S1.3 (timeline edits and
+queries) are built.
 
 ## Time
 
@@ -83,3 +83,34 @@ const result = store.dispatch(
 
 Built-in commands so far: `project.rename`, `marker.add`, `marker.move`, `marker.remove`,
 `component.set`.
+
+## Timeline edits
+
+| Command | Does |
+|---|---|
+| `track.add`, `track.remove`, `track.set` | Add, remove, rename, lock, hide, mute, make magnetic |
+| `clip.add` | Place new clips, overwriting or inserting |
+| `clip.move` | Move clips in time and across tracks of the same kind, overwriting or inserting |
+| `clip.trim` | Move the start or end edge of clips |
+| `clip.split` | Cut clips at a time |
+| `clip.delete`, `clip.rippleDelete` | Remove clips, leaving a gap or closing it |
+| `track.closeGap` | Close the empty space at a time |
+
+The rules after every edit (`checkTimeline(project)` lists any that are broken):
+
+- Clips on a track are sorted and never overlap. Starts and durations are whole frames of the
+  sequence (inputs are snapped to the nearest frame), and a clip is at least one frame long.
+- A clip never reads outside its source. Trims stop at the source's ends, at neighbouring clips
+  and at one frame instead of failing.
+- A magnetic track has no gaps. Removing or trimming a clip ripples the clips after it, and a clip
+  placed on it goes in at the nearest clip boundary.
+- Clips on a locked track cannot be edited. A sequence cannot contain itself, directly or through
+  other sequences.
+- Clips a command creates without being given an id (the far half of a split or an overwrite) get
+  one derived from the original clip's id and the cut time, so a replay gives the same ids.
+
+Queries: `clipsInRange`, `clipAt`, `snapTargets` (with `snapTo`), `sequenceDuration`.
+
+Known limit: splitting a clip drops the far half's keyframes that fall before the cut, so an
+animation across the cut changes shape. A key at the cut needs keyframe evaluation, which comes
+with the animation work.
