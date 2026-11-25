@@ -12,6 +12,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
+import { Icon } from "./icons";
 
 // --- button ---
 
@@ -295,7 +296,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             key={toast.id}
             className={`r-toast${toast.kind === "danger" ? " r-toast--danger" : ""}`}
           >
-            {toast.kind === "danger" && <span className="r-toast__kind">Error</span>}
+            {toast.kind === "danger" && (
+              <span className="r-toast__kind">
+                <Icon name="error" />
+                Error
+              </span>
+            )}
             <span>{toast.message}</span>
             {toast.action && (
               <button

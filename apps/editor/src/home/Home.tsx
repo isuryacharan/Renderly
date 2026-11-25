@@ -14,7 +14,7 @@ import {
   restoreProject,
   type ProjectEntry,
 } from "@renderly/storage";
-import { Button, Dialog, MenuButton, useToast } from "@renderly/ui/react";
+import { Button, Dialog, Icon, MenuButton, Tooltip, useToast } from "@renderly/ui/react";
 import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
 import { formatBytes, formatDate, formatDuration } from "../format";
 import {
@@ -110,6 +110,7 @@ export function Home() {
                 aria-pressed={place === "browser"}
                 onClick={() => changePlace("browser")}
               >
+                <Icon name="storage" />
                 Browser storage
               </button>
               <button
@@ -117,6 +118,7 @@ export function Home() {
                 aria-pressed={place === "disk"}
                 onClick={() => changePlace("disk")}
               >
+                <Icon name="folder" />
                 Disk folder
               </button>
             </div>
@@ -132,6 +134,7 @@ export function Home() {
                   )
                 }
               >
+                <Icon name="folder" />
                 {root?.status === "ready" ? "Change folder…" : "Choose folder…"}
               </Button>
             )}
@@ -140,6 +143,7 @@ export function Home() {
               <Button
                 onClick={() => navigate({ name: "editor", place: last.place, folder: last.folder })}
               >
+                <Icon name="folder-open" />
                 Continue {last.name}
               </Button>
             )}
@@ -148,6 +152,7 @@ export function Home() {
               disabled={root?.status !== "ready"}
               onClick={() => setAsk({ kind: "create" })}
             >
+              <Icon name="add" />
               New project
             </Button>
           </div>
@@ -167,6 +172,7 @@ export function Home() {
             <div className="home__note">
               <span>Renderly needs your permission again to open {root.label}.</span>{" "}
               <Button size="sm" onClick={() => void reconnectFolder().then(refresh)}>
+                <Icon name="reconnect" />
                 Reconnect
               </Button>
             </div>
@@ -189,9 +195,10 @@ export function Home() {
                 </button>
                 <div className="r-card__menu">
                   <MenuButton
-                    label="More"
+                    label={<Icon name="more" />}
                     aria-label={`More actions for ${entry.meta.name}`}
-                    className="r-button r-button--sm"
+                    className="r-button r-button--icon r-button--sm"
+                    tooltip="More actions"
                     items={[
                       { label: "Open", onSelect: () => open(entry.folder) },
                       { label: "Rename…", onSelect: () => setAsk({ kind: "rename", entry }) },
@@ -233,6 +240,7 @@ export function Home() {
               disabled={root?.status !== "ready"}
               onClick={() => setAsk({ kind: "bin" })}
             >
+              <Icon name="recycle-bin" />
               Recycle bin ({recycled.length})
             </Button>
             <span className="home__quota">{usage}</span>
@@ -296,9 +304,11 @@ export function Home() {
                     )
                   }
                 >
+                  <Icon name="restore" />
                   Restore
                 </Button>
                 <Button size="sm" variant="danger" onClick={() => setAsk({ kind: "purge", entry })}>
+                  <Icon name="delete" />
                   Delete for good…
                 </Button>
               </li>
@@ -396,17 +406,28 @@ function ThemeSwitch() {
     setTheme(next);
   };
   return (
-    <div className="r-segmented" role="group" aria-label="Theme">
-      {(["dark", "light", "system"] as const).map((option) => (
-        <button
-          key={option}
-          type="button"
-          aria-pressed={theme === option}
-          onClick={() => choose(option)}
-        >
-          {option === "dark" ? "Dark" : option === "light" ? "Light" : "System"}
-        </button>
-      ))}
+    // Moon, sun and screen read clearly as a theme switch: icons alone, named by their tooltips.
+    <div className="r-segmented r-segmented--icons" role="group" aria-label="Theme">
+      {(["dark", "light", "system"] as const).map((option) => {
+        const label =
+          option === "dark"
+            ? "Dark theme"
+            : option === "light"
+              ? "Light theme"
+              : "Match the system";
+        return (
+          <Tooltip key={option} label={label}>
+            <button
+              type="button"
+              aria-label={label}
+              aria-pressed={theme === option}
+              onClick={() => choose(option)}
+            >
+              <Icon name={`theme-${option}`} />
+            </button>
+          </Tooltip>
+        );
+      })}
     </div>
   );
 }

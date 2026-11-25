@@ -1,10 +1,11 @@
 // Generates docs/design-system/preview/index.html from index.template.html:
-// fills in the colour swatches and type samples from tokens/tokens.json and
-// inlines the timeline reference.
+// fills in the colour swatches and type samples from tokens/tokens.json, the icons from
+// icons/icons.json, and inlines the timeline reference.
 //
 //   node scripts/build-preview.mjs
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,6 +30,25 @@ const type = tokens.type.groups
   )
   .join("\n      ");
 
+const tablerDir = dirname(
+  createRequire(join(root, "package.json")).resolve("@tabler/icons/package.json"),
+);
+const tabler = JSON.parse(readFileSync(join(tablerDir, "tabler-nodes-outline.json"), "utf8"));
+const icons = JSON.parse(readFileSync(join(root, "icons/icons.json"), "utf8"))
+  .icons.map((icon) => {
+    const shapes = tabler[icon.tabler]
+      .map(
+        ([tag, attrs]) =>
+          `<${tag} ${Object.entries(attrs)
+            .filter(([k]) => k !== "key")
+            .map(([k, v]) => `${k}="${esc(v)}"`)
+            .join(" ")}/>`,
+      )
+      .join("");
+    return `<div class="g-icon" title="${esc(icon.usage)}"><svg class="r-icon" viewBox="0 0 24 24" aria-hidden="true">${shapes}</svg><code>${icon.name}</code></div>`;
+  })
+  .join("\n      ");
+
 // The timeline reference is kept as its own fragment so it can be edited alone.
 let timeline = readFileSync(join(previewDir, "timeline.fragment.html"), "utf8");
 
@@ -36,6 +56,7 @@ let html = readFileSync(join(previewDir, "index.template.html"), "utf8");
 for (const [slot, content] of [
   ["<!--SWATCHES-->", swatches],
   ["<!--TYPE-->", type],
+  ["<!--ICONS-->", icons],
   ["<!--TIMELINE-->", timeline],
 ]) {
   if (!html.includes(slot)) throw new Error(`Template is missing ${slot}`);

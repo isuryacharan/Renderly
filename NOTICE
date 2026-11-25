@@ -2,3 +2,8 @@ Renderly
 Copyright 2026 The Renderly Authors
 
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Third-party material bundled with Renderly:
+
+- Icon shapes in packages/ui/src/icons.ts come from Tabler Icons (https://tabler.io/icons),
+  Copyright (c) 2020-2026 Paweł Kuna, under the MIT License (packages/ui/icons/LICENSE-tabler.txt).

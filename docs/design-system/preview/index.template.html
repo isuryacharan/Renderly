@@ -27,6 +27,9 @@
   .g-swatch i { height: 40px; border-radius: var(--radius-md); box-shadow: inset 0 0 0 1px var(--border); }
   .g-swatch b { font-weight: 500; }
   .g-swatch span { color: var(--text-tertiary); font-size: 11px; line-height: 14px; }
+  .g-icons { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: var(--space-8); width: 100%; }
+  .g-icon { display: flex; align-items: center; gap: var(--space-8); color: var(--text-secondary); }
+  .g-icon code { color: var(--text-tertiary); font-size: 11px; }
   .g-type { display: grid; gap: var(--space-12); }
   .g-type > div { display: grid; grid-template-columns: 120px minmax(0, 1fr); align-items: baseline; gap: var(--space-16); }
   .g-type code { color: var(--text-tertiary); font: 500 11px/14px var(--font-mono); }
@@ -60,6 +63,12 @@
     <h2 class="text-heading">Type</h2>
     <p>Geist for the interface, Geist Mono for numbers that change or line up.</p>
     <div class="g-stage"><div class="g-type"><!--TYPE--></div></div>
+  </section>
+
+  <section class="g-section">
+    <h2 class="text-heading">Icons</h2>
+    <p>Tabler Icons (outline, MIT), drawn at 16px with a 1.5px line. Only these ship; each is named for its meaning. Hover an icon for its usage. The list is <code>packages/ui/icons/icons.json</code>.</p>
+    <div class="g-stage"><div class="g-icons"><!--ICONS--></div></div>
   </section>
 
   <section class="g-section">

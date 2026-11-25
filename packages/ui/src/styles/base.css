@@ -72,6 +72,10 @@ textarea,
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+/* The icon set is drawn on a 24-unit grid: at 16px, 2.25 units make the 1.5px line. */
+.r-icon[viewBox="0 0 24 24"] {
+  stroke-width: 2.25;
+}
 
 .r-visually-hidden {
   position: absolute;
