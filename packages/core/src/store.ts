@@ -279,6 +279,9 @@ export class ProjectStore {
     if (!attempt.ok) return fail(attempt.error);
     const changes = diffEntities(this.current, attempt.next);
     if (options.dryRun) return { ok: true, revision: this.revision, changes, dryRun: true };
+    // A command that changed nothing (a trim already at its limit) is not an undo step.
+    if (attempt.next === this.current)
+      return { ok: true, revision: this.revision, changes, dryRun: false };
 
     const entry: HistoryEntry = {
       label: attempt.label,

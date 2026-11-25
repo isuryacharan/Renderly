@@ -4,11 +4,7 @@
 import type { Draft } from "immer";
 import { z } from "zod";
 import { CommandError, defineCommand } from "./commands";
-import { ID_PATTERN } from "./ids";
-import type { Project } from "./schema";
-
-const Id = z.string().regex(ID_PATTERN, "must be a 16-character id");
-const Flicks = z.int().min(0);
+import { Flicks, Id, type Project } from "./schema";
 
 function findSequence(project: Draft<Project>, id: string) {
   const sequence = project.sequences.find((s) => s.id === id);
