@@ -3,7 +3,7 @@
 
 import type { Project } from "@renderly/core";
 import { ProjectSession, subdir, type Role, type SaveEvent } from "@renderly/storage";
-import { Button, useToast } from "@renderly/ui/react";
+import { Button, Icon, IconButton, useToast, type IconName } from "@renderly/ui/react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { openRoot, reconnectFolder, saveLastProject, type Place } from "../places";
 import { navigate } from "../route";
@@ -48,9 +48,7 @@ export function Editor({ place, folder }: { place: Place; folder: string }) {
   return (
     <div className="r-app">
       <header className="r-toolbar">
-        <Button variant="ghost" size="sm" onClick={() => navigate({ name: "home" })}>
-          Home
-        </Button>
+        <IconButton icon="home" label="Home" size="sm" onClick={() => navigate({ name: "home" })} />
       </header>
       <main className="editor-message">
         {state.status === "loading" && <p className="r-panel__empty">Opening the project…</p>}
@@ -145,16 +143,33 @@ function Frame({
   return (
     <div className="r-app">
       <header className="r-toolbar">
-        <Button variant="ghost" size="sm" onClick={() => navigate({ name: "home" })}>
-          Home
-        </Button>
+        <IconButton icon="home" label="Home" size="sm" onClick={() => navigate({ name: "home" })} />
         <h1 className="r-toolbar__title text-body-strong">{project.name}</h1>
+        <IconButton
+          icon="undo"
+          label="Undo"
+          shortcut={shortcut("Z")}
+          size="sm"
+          disabled={!session.store.canUndo || role !== "writer"}
+          onClick={() => session.store.undo()}
+        />
+        <IconButton
+          icon="redo"
+          label="Redo"
+          shortcut={shortcut("Z", true)}
+          size="sm"
+          disabled={!session.store.canRedo || role !== "writer"}
+          onClick={() => session.store.redo()}
+        />
         <span className="r-toolbar__spacer" />
         <SaveStatus role={role} save={save} />
       </header>
       {role === "follower" && (
         <div className="r-banner r-banner--warning" role="status">
-          <span className="r-banner__kind">Read-only</span>
+          <span className="r-banner__kind">
+            <Icon name="locked" />
+            Read-only
+          </span>
           <span>This project is open in another tab.</span>
           <Button size="sm" onClick={() => void session.takeOver()}>
             Take over editing
@@ -163,7 +178,10 @@ function Frame({
       )}
       {save?.status === "conflict" && (
         <div className="r-banner r-banner--warning" role="alert">
-          <span className="r-banner__kind">Changed outside</span>
+          <span className="r-banner__kind">
+            <Icon name="warning" />
+            Changed outside
+          </span>
           <span>
             Another program changed this project&apos;s file. Choose which version to keep.
           </span>
@@ -190,21 +208,35 @@ function Frame({
   );
 }
 
+/** A shortcut written the platform's way: "Ctrl Z" or "⌘Z", "Ctrl Shift Z" or "⇧⌘Z". */
+function shortcut(key: string, shift = false): string {
+  if (/Mac|iPhone|iPad/.test(navigator.platform)) return `${shift ? "⇧" : ""}⌘${key}`;
+  return `Ctrl ${shift ? "Shift " : ""}${key}`;
+}
+
 function SaveStatus({ role, save }: { role: Role; save: SaveEvent | null }) {
-  if (role !== "writer" || !save) return <span className="r-status">Read-only</span>;
-  const words: Record<SaveEvent["status"], [string, string]> = {
-    saved: ["Saved", ""],
-    unsaved: ["Unsaved", ""],
-    saving: ["Saving…", ""],
+  if (role !== "writer" || !save)
+    return (
+      <span className="r-status">
+        <Icon name="locked" />
+        Read-only
+      </span>
+    );
+  const words: Record<SaveEvent["status"], [string, string, IconName | null]> = {
+    saved: ["Saved", "", "check"],
+    unsaved: ["Unsaved", "", null],
+    saving: ["Saving…", "", null],
     error: [
       `Not saved. Retrying${save.retryIn ? ` in ${Math.round(save.retryIn / 1000)} s` : ""}`,
       "r-status--danger",
+      "error",
     ],
-    conflict: ["Changed outside", "r-status--warning"],
+    conflict: ["Changed outside", "r-status--warning", "warning"],
   };
-  const [text, tone] = words[save.status];
+  const [text, tone, icon] = words[save.status];
   return (
     <span className={`r-status ${tone}`} role="status" title={save.error}>
+      {icon && <Icon name={icon} />}
       {text}
     </span>
   );

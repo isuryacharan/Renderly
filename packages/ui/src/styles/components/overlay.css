@@ -105,6 +105,11 @@
   pointer-events: auto;
   animation: r-overlay-in var(--motion-overlay) var(--motion-ease);
 }
+.r-toast__kind {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+}
 .r-toast--danger .r-toast__kind {
   color: var(--danger);
   font-weight: 600;

@@ -104,6 +104,9 @@
   border-bottom: 1px solid var(--border);
 }
 .r-banner__kind {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
   font-weight: 600;
 }
 .r-banner--warning .r-banner__kind {
@@ -115,6 +118,9 @@
 
 /* Save status: a word, coloured only when it needs attention. */
 .r-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
   color: var(--text-tertiary);
   font-size: 12px;
   white-space: nowrap;

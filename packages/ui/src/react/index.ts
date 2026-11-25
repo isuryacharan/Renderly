@@ -2,4 +2,5 @@
 // entry (`@renderly/ui/styles.css`).
 
 export * from "./controls";
+export * from "./icons";
 export * from "./overlays";

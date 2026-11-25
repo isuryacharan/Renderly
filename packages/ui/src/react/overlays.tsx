@@ -88,9 +88,11 @@ export interface MenuButtonProps {
   "aria-label"?: string;
   items: MenuEntry[];
   className?: string;
+  /** For an icon-only button: the tooltip naming it. */
+  tooltip?: string;
 }
 
-export function MenuButton({ label, items, className, ...rest }: MenuButtonProps) {
+export function MenuButton({ label, items, className, tooltip, ...rest }: MenuButtonProps) {
   const button = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const id = useId();
@@ -120,26 +122,30 @@ export function MenuButton({ label, items, className, ...rest }: MenuButtonProps
     focusItem(focus);
   };
 
+  const trigger = (
+    <button
+      ref={button}
+      type="button"
+      className={className ?? "r-button"}
+      aria-haspopup="menu"
+      aria-expanded={open}
+      aria-controls={id}
+      aria-label={rest["aria-label"]}
+      onClick={() => (open ? menu.current?.hidePopover() : show("first"))}
+      onKeyDown={(event) => {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          show(event.key === "ArrowDown" ? "first" : "last");
+        }
+      }}
+    >
+      {label}
+    </button>
+  );
+
   return (
     <>
-      <button
-        ref={button}
-        type="button"
-        className={className ?? "r-button"}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-controls={id}
-        aria-label={rest["aria-label"]}
-        onClick={() => (open ? menu.current?.hidePopover() : show("first"))}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-            event.preventDefault();
-            show(event.key === "ArrowDown" ? "first" : "last");
-          }
-        }}
-      >
-        {label}
-      </button>
+      {tooltip ? <Tooltip label={tooltip}>{trigger}</Tooltip> : trigger}
       <div
         ref={menu}
         id={id}

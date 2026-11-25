@@ -21,7 +21,9 @@
     "typecheck": "tsc -p .",
     "build:tokens": "node scripts/build-tokens.mjs",
     "check:tokens": "node scripts/build-tokens.mjs --check",
-    "build:preview": "node scripts/build-preview.mjs"
+    "build:preview": "node scripts/build-preview.mjs",
+    "build:icons": "node scripts/build-icons.mjs",
+    "check:icons": "node scripts/build-icons.mjs --check"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
@@ -30,6 +32,7 @@
     "react-dom": "^19.3.1"
   },
   "devDependencies": {
+    "@tabler/icons": "^3.53.0",
     "@types/react": "^19.3.3",
     "@types/react-dom": "^19.3.0",
     "typescript": "^6.0.3"

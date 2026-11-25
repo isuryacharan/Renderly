@@ -1,0 +1,75 @@
+{
+  "source": "Tabler Icons (outline), MIT licence: https://tabler.io/icons",
+  "note": "Only the icons listed here ship. `name` is what the code uses; `tabler` is the source icon. Add an icon here with a usage note, then run node packages/ui/scripts/build-icons.mjs.",
+  "icons": [
+    { "name": "home", "tabler": "home", "usage": "Go to the home screen" },
+    { "name": "more", "tabler": "dots", "usage": "More actions for the thing it sits on" },
+    { "name": "add", "tabler": "plus", "usage": "Create or add something new" },
+    { "name": "close", "tabler": "x", "usage": "Close a dialog, panel or toast" },
+    { "name": "check", "tabler": "check", "usage": "Done, saved, chosen" },
+    { "name": "search", "tabler": "search", "usage": "Search fields" },
+    { "name": "settings", "tabler": "settings", "usage": "Settings" },
+    {
+      "name": "chevron-down",
+      "tabler": "chevron-down",
+      "usage": "Opens a list below; an expanded section"
+    },
+    { "name": "chevron-up", "tabler": "chevron-up", "usage": "Collapse upwards" },
+    { "name": "chevron-left", "tabler": "chevron-left", "usage": "Back, previous" },
+    {
+      "name": "chevron-right",
+      "tabler": "chevron-right",
+      "usage": "Forward, next; a collapsed section"
+    },
+
+    { "name": "folder", "tabler": "folder", "usage": "A folder on disk; choose a folder" },
+    { "name": "folder-open", "tabler": "folder-open", "usage": "Open a project or folder" },
+    { "name": "storage", "tabler": "database", "usage": "Browser storage" },
+    {
+      "name": "reconnect",
+      "tabler": "plug-connected",
+      "usage": "Allow access to a disk folder again"
+    },
+    { "name": "rename", "tabler": "pencil", "usage": "Rename" },
+    { "name": "duplicate", "tabler": "copy", "usage": "Duplicate" },
+    { "name": "delete", "tabler": "trash", "usage": "Delete, or move to the recycle bin" },
+    { "name": "recycle-bin", "tabler": "recycle", "usage": "The recycle bin of deleted projects" },
+    { "name": "restore", "tabler": "restore", "usage": "Restore from the recycle bin or a backup" },
+    { "name": "import", "tabler": "file-import", "usage": "Import media" },
+    { "name": "export", "tabler": "file-export", "usage": "Export video" },
+    { "name": "saved", "tabler": "device-floppy", "usage": "Save status" },
+    { "name": "refresh", "tabler": "refresh", "usage": "Reload from disk, retry" },
+
+    { "name": "undo", "tabler": "arrow-back-up", "usage": "Undo" },
+    { "name": "redo", "tabler": "arrow-forward-up", "usage": "Redo" },
+
+    { "name": "warning", "tabler": "alert-triangle", "usage": "Warning status, always with words" },
+    { "name": "error", "tabler": "alert-circle", "usage": "Error status, always with words" },
+    { "name": "info", "tabler": "info-circle", "usage": "Information" },
+    { "name": "locked", "tabler": "lock", "usage": "A read-only project, a locked track" },
+    { "name": "unlocked", "tabler": "lock-open", "usage": "Unlock a track" },
+
+    { "name": "theme-dark", "tabler": "moon", "usage": "Dark theme" },
+    { "name": "theme-light", "tabler": "sun", "usage": "Light theme" },
+    { "name": "theme-system", "tabler": "device-desktop", "usage": "Follow the system theme" },
+
+    { "name": "play", "tabler": "player-play", "usage": "Play" },
+    { "name": "pause", "tabler": "player-pause", "usage": "Pause" },
+    { "name": "to-start", "tabler": "player-skip-back", "usage": "Go to the start" },
+    { "name": "to-end", "tabler": "player-skip-forward", "usage": "Go to the end" },
+    { "name": "volume", "tabler": "volume", "usage": "Volume; an unmuted track" },
+    { "name": "muted", "tabler": "volume-off", "usage": "A muted track" },
+    { "name": "visible", "tabler": "eye", "usage": "A shown track" },
+    { "name": "hidden", "tabler": "eye-off", "usage": "A hidden track" },
+    { "name": "split", "tabler": "scissors", "usage": "Split clips at the playhead" },
+    { "name": "magnetic", "tabler": "magnet", "usage": "A magnetic track; snapping" },
+    { "name": "keyframe", "tabler": "keyframe", "usage": "Keyframes" },
+    { "name": "zoom-in", "tabler": "zoom-in", "usage": "Zoom the timeline in" },
+    { "name": "zoom-out", "tabler": "zoom-out", "usage": "Zoom the timeline out" },
+
+    { "name": "video", "tabler": "movie", "usage": "Video clips and tracks" },
+    { "name": "audio", "tabler": "music", "usage": "Audio clips and tracks" },
+    { "name": "text", "tabler": "typography", "usage": "Text clips and tracks" },
+    { "name": "effect", "tabler": "sparkles", "usage": "Effect clips and tracks" }
+  ]
+}
