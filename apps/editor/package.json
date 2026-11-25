@@ -13,8 +13,10 @@
   },
   "dependencies": {
     "@renderly/core": "workspace:*",
+    "@renderly/media": "workspace:*",
     "@renderly/storage": "workspace:*",
     "@renderly/ui": "workspace:*",
+    "mediabunny": "^1.66.4",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },

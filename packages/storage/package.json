@@ -12,7 +12,8 @@
     "typecheck": "tsc -p ."
   },
   "dependencies": {
-    "@renderly/core": "workspace:*"
+    "@renderly/core": "workspace:*",
+    "@renderly/media": "workspace:*"
   },
   "devDependencies": {
     "typescript": "~6.0.3"

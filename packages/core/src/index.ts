@@ -81,6 +81,8 @@ export {
   RippleDeleteClips,
   SetTrackFlags,
   SplitClips,
+  deleteClips,
   TrimClips,
 } from "./timeline-commands";
 export { newProject, type NewProjectOptions } from "./new-project";
+export { ImportMedia, RemoveMedia } from "./media-commands";

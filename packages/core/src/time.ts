@@ -18,8 +18,46 @@ export const SUPPORTED_RATES: readonly Rate[] = [
   ...WHOLE.map((fps): Rate => [fps * 1000, 1001]),
 ];
 
-/** Audio sample rates whose samples are a whole number of flicks. */
+/** Audio sample rates a sequence may have; each sample is a whole number of flicks. */
 export const SUPPORTED_SAMPLE_RATES = [32_000, 44_100, 48_000, 88_200, 96_000] as const;
+
+/**
+ * Frame rates a source file may have: every sequence rate, plus the slower and cinema rates that
+ * cameras, screen recorders and animation use. Each frame is still a whole number of flicks.
+ */
+export const MEDIA_RATES: readonly Rate[] = [
+  ...SUPPORTED_RATES,
+  ...[12, 15, 48].flatMap((fps): Rate[] => [
+    [fps, 1],
+    [fps * 1000, 1001],
+  ]),
+];
+
+/** Sample rates a source file may have: the sequence rates plus the common lower and higher ones. */
+export const MEDIA_SAMPLE_RATES = [
+  8_000, 11_025, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000,
+] as const;
+
+export function isMediaRate(rate: Rate): boolean {
+  return MEDIA_RATES.some(([num, den]) => num * rate[1] === rate[0] * den);
+}
+
+/**
+ * The media rate nearest a measured one (frames per second), e.g. 29.97003 → 30000/1001. Files
+ * with a variable frame rate report an average; this picks the rate they were meant to have.
+ */
+export function nearestMediaRate(fps: number): Rate {
+  let best: Rate = [30, 1];
+  let error = Infinity;
+  for (const rate of MEDIA_RATES) {
+    const e = Math.abs(rate[0] / rate[1] - fps) / fps;
+    if (e < error) {
+      best = rate;
+      error = e;
+    }
+  }
+  return best;
+}
 
 export function isSupportedRate(rate: Rate): boolean {
   return SUPPORTED_RATES.some(([num, den]) => num * rate[1] === rate[0] * den);

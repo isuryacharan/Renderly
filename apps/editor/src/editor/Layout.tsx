@@ -5,6 +5,7 @@ import type { Project } from "@renderly/core";
 import type { ProjectSession } from "@renderly/storage";
 import { Splitter } from "@renderly/ui/react";
 import { useEffect, useState } from "react";
+import { MediaBin } from "./MediaBin";
 
 interface Sizes {
   library: number;
@@ -55,7 +56,7 @@ export function Layout({
         <section className="r-panel" style={{ width: sizes.library }} aria-label="Library">
           <h2 className="r-panel__header text-body-strong">Library</h2>
           <div className="r-panel__body">
-            <p className="r-panel__empty">No media yet.</p>
+            <MediaBin session={session} project={project} readOnly={readOnly} />
           </div>
         </section>
         <Splitter

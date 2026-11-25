@@ -22,7 +22,8 @@
     "check:icons": "pnpm --filter @renderly/ui check:icons",
     "bench": "node scripts/bench.mjs",
     "test:storage": "node scripts/storage-e2e.mjs",
-    "test:editor": "node scripts/editor-e2e.mjs"
+    "test:editor": "node scripts/editor-e2e.mjs",
+    "test:media": "node scripts/media-e2e.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

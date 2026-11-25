@@ -100,8 +100,13 @@ The rules after every edit (`checkTimeline(project)` lists any that are broken):
 
 - Clips on a track are sorted and never overlap. Starts and durations are whole frames of the
   sequence (inputs are snapped to the nearest frame), and a clip is at least one frame long.
-- A clip never reads outside its source. Trims stop at the source's ends, at neighbouring clips
-  and at one frame instead of failing.
+- A clip never reads outside its media file. Trims stop at the source's ends, at neighbouring
+  clips and at one frame instead of failing. A compound clip keeps its length when the sequence
+  inside it gets shorter; the part past that sequence's end plays as empty, like a gap.
+- `media.import` adds probed files; `media.remove` refuses media that clips use unless
+  `withClips` is set, which removes those clips too. Source files may have rates a sequence
+  cannot (12, 15 and 48 fps; 8 to 192 kHz); the probe snaps a measured rate with
+  `nearestMediaRate`.
 - A magnetic track has no gaps. Removing or trimming a clip ripples the clips after it, and a clip
   placed on it goes in at the nearest clip boundary.
 - Clips on a locked track cannot be edited. A sequence cannot contain itself, directly or through

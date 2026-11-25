@@ -13,7 +13,12 @@ export default tseslint.config(
   },
   {
     // The benchmark and storage runners send functions into the page; they run with browser globals.
-    files: ["scripts/bench.mjs", "scripts/storage-e2e.mjs", "scripts/editor-e2e.mjs"],
+    files: [
+      "scripts/bench.mjs",
+      "scripts/storage-e2e.mjs",
+      "scripts/editor-e2e.mjs",
+      "scripts/media-e2e.mjs",
+    ],
     languageOptions: { globals: { ...globals.node, ...globals.browser } },
   },
   {

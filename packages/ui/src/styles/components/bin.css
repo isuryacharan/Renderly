@@ -1,0 +1,160 @@
+/* Media bin and badges. Guidelines: docs/design-system/components/bin.md */
+
+/* Badge: a short fact about an item, such as its codec. Status badges carry an icon and a word. */
+.r-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 16px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.r-badge .r-icon {
+  width: 12px;
+  height: 12px;
+}
+.r-badge--warning {
+  color: var(--warning);
+}
+.r-badge--danger {
+  color: var(--danger);
+}
+
+/* The bin: a toolbar, an optional banner, then items in a grid or a list. */
+.r-bin {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  min-height: 100%;
+}
+.r-bin__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+.r-bin__notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.r-bin__drop {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+
+.r-bin__items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.r-bin__items--grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: var(--space-8);
+}
+.r-bin__items--list {
+  display: flex;
+  flex-direction: column;
+}
+
+.r-bin__item {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  border-radius: var(--radius-md);
+}
+.r-bin__items--grid .r-bin__item {
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.r-bin__items--list .r-bin__item {
+  align-items: center;
+  gap: var(--space-8);
+  min-height: var(--control-md);
+  padding: 0 var(--space-4);
+}
+.r-bin__item:hover {
+  background: var(--surface-hover);
+}
+
+/* The thumbnail shows the user's picture: never stretched, tinted or dimmed. */
+.r-bin__thumb {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--viewer);
+  color: var(--text-tertiary);
+}
+.r-bin__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.r-bin__items--list .r-bin__thumb {
+  flex: none;
+  width: 40px;
+}
+.r-bin__duration {
+  position: absolute;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--scrim);
+  color: var(--on-clip);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+/* Name above facts: in the grid under the picture, in the list beside it. */
+.r-bin__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.r-bin__items--list .r-bin__item {
+  padding-block: var(--space-4);
+}
+.r-bin__name {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.r-bin__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+.r-bin__detail {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.r-bin__menu {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+}
+.r-bin__items--list .r-bin__menu {
+  position: static;
+}

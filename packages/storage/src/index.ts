@@ -8,3 +8,5 @@ export * from "./backups";
 export * from "./autosave";
 export * from "./session";
 export * from "./library";
+export * from "./media";
+export * from "./import";
