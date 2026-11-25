@@ -93,7 +93,8 @@ Renderly is a video editor that runs in the browser and should feel like softwar
 - Icons come from **Tabler Icons** (outline, MIT licence). Only the icons listed in `packages/ui/icons/icons.json` ship; each has a name of our own and a usage note. To add one, list it there and run `node packages/ui/scripts/build-icons.mjs`. Never paste an SVG into a component.
 - Icons are drawn at `icon` (16px) with a 1.5px line, round caps and joins, in `currentColor`. Tabler draws on a 24-unit grid, so `.r-icon` sets the stroke to 2.25 units to give 1.5px at 16px. No filled or two-tone icons, and no emoji in the interface.
 - Use one icon for one meaning everywhere. The name in the list is the meaning ("delete", "restore"), not the picture ("trash").
-- An icon without a visible label has a tooltip that names the action and its shortcut (`IconButton` does this). An icon next to a word is decoration and is hidden from screen readers.
+- **Skip the word when the icon says it all.** If the label beside an icon would only repeat what everyone reads from the icon in that place (home, undo, redo, play, pause, close, more, zoom, a sun and moon for the theme), show the icon alone. Keep the word when the action is destructive, the screen's main action, a status, or anything the icon could be mistaken for. When unsure, keep the word. The full rule is in `components/icon.md`.
+- An icon without a visible label has a tooltip that names the action and its shortcut, and that name is its accessible name (`IconButton` does both). An icon next to a word is decoration and is hidden from screen readers.
 - Status colours come with a word, and usually an icon too: `warning`, `error` and `info`.
 - The guidelines are in `components/icon.md`.
 

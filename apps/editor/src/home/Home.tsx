@@ -14,7 +14,7 @@ import {
   restoreProject,
   type ProjectEntry,
 } from "@renderly/storage";
-import { Button, Dialog, Icon, MenuButton, useToast } from "@renderly/ui/react";
+import { Button, Dialog, Icon, MenuButton, Tooltip, useToast } from "@renderly/ui/react";
 import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
 import { formatBytes, formatDate, formatDuration } from "../format";
 import {
@@ -406,18 +406,28 @@ function ThemeSwitch() {
     setTheme(next);
   };
   return (
-    <div className="r-segmented" role="group" aria-label="Theme">
-      {(["dark", "light", "system"] as const).map((option) => (
-        <button
-          key={option}
-          type="button"
-          aria-pressed={theme === option}
-          onClick={() => choose(option)}
-        >
-          <Icon name={`theme-${option}`} />
-          {option === "dark" ? "Dark" : option === "light" ? "Light" : "System"}
-        </button>
-      ))}
+    // Moon, sun and screen read clearly as a theme switch: icons alone, named by their tooltips.
+    <div className="r-segmented r-segmented--icons" role="group" aria-label="Theme">
+      {(["dark", "light", "system"] as const).map((option) => {
+        const label =
+          option === "dark"
+            ? "Dark theme"
+            : option === "light"
+              ? "Light theme"
+              : "Match the system";
+        return (
+          <Tooltip key={option} label={label}>
+            <button
+              type="button"
+              aria-label={label}
+              aria-pressed={theme === option}
+              onClick={() => choose(option)}
+            >
+              <Icon name={`theme-${option}`} />
+            </button>
+          </Tooltip>
+        );
+      })}
     </div>
   );
 }

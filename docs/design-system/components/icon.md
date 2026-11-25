@@ -26,13 +26,40 @@ set.
 - Icon colour follows the text it sits with: `text-secondary` in icon buttons, `text` on hover,
   `accent-text` when pressed, and the status colour inside a status word.
 
+## Icon alone, or icon and word
+
+Show the icon alone when the word beside it would be too obvious to be worth the space: anyone
+would read the same action from the icon in that place. Otherwise keep the word.
+
+Icon alone:
+
+- Universal actions: home, undo, redo, play, pause, go to start or end, close, more actions, zoom
+  in and out, search.
+- Choices where the pictures explain each other: the theme switch (moon, sun, screen), mute,
+  hide and lock toggles in a track header.
+- Repeated controls in a dense place, where the first one teaches the rest: track headers, the
+  timeline toolbar.
+
+Keep the word:
+
+- Destructive or irreversible actions: "Delete", "Delete for good".
+- The screen's main action: "New project", "Export".
+- Status: "Saved", "Read-only", "Changed outside", "Error". A status colour or icon never stands
+  alone.
+- Choices whose icons look alike or mean nothing on their own: "Browser storage" and "Disk folder",
+  "Reconnect", "Recycle bin".
+- Actions people use rarely, and anything in a dialog.
+
+When unsure, keep the word. Removing a label later is easy; recovering from a misread action is
+not.
+
 ## Use
 
 - **Icon and word** (buttons, segmented controls, banners, status): the icon comes first, with a
   `space-4` gap. The icon is hidden from screen readers.
-- **Icon only** (toolbars, track headers, card menus): use `IconButton`, which takes a `label`. The
-  label is the button's accessible name and its tooltip, with the shortcut when there is one.
-  Icon-only buttons are square at the control height.
+- **Icon only**: use `IconButton`, which takes a `label`, or give a segmented control
+  `.r-segmented--icons` with a `label` on each option. The label is the accessible name and the
+  tooltip, with the shortcut when there is one. Icon-only buttons are square at the control height.
 - One meaning, one icon. If two controls need the same icon, they do the same thing.
 - Status: `warning`, `error` and `info` always come with a word ("Changed outside", "Error").
 

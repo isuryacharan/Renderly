@@ -12,5 +12,5 @@ The consumer provides the options (label and value), the current value and the c
 ## In code
 
 - **Styles**: `packages/ui/src/styles/components/segmented.css`
-- **Classes**: `.r-segmented` with `aria-pressed` buttons; `.r-tabs` with `role="tab"` and `aria-selected`
+- **Classes**: `.r-segmented` with `aria-pressed` buttons (`.r-segmented--icons` when the options are icons alone, each with a tooltip and an accessible name); `.r-tabs` with `role="tab"` and `aria-selected`
 - **Preview**: `docs/design-system/preview/index.html`
