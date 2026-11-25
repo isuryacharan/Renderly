@@ -38,6 +38,7 @@ Then open:
 - http://localhost:5173/ for a check of the browser features the engine needs
 - http://localhost:5173/preview.html to play a clip through the render worker
 - http://localhost:5173/decode.html for the decoder measurements
+- http://localhost:5173/storage.html to create and edit projects in browser storage or a disk folder
 
 Choose a video file with the file picker, or generate synthetic test media with timecode
 burned in (needs ffmpeg) and pick it from the list:
@@ -48,7 +49,8 @@ node scripts/make-test-media.mjs
 
 Other commands: `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm build`, and `pnpm bench`, which
 runs the engine benchmark headless in Edge on this machine's GPU and writes JSON to
-`bench-results/` (needs the test media).
+`bench-results/` (needs the test media). `pnpm test:storage` runs the project-storage scenarios
+headless in Edge (`--browser chrome` for Chrome).
 
 ## Repository layout
 
@@ -58,9 +60,11 @@ packages/media/      decode worker: demux, decode, exact seek
 packages/engine/     render worker: WebGL2 upload, presentation, playback clock
 packages/audio/      audio decode worker, AudioWorklet playback, the audio clock
 packages/ui/         design system: tokens and component styles
+packages/core/       the project model: time, schema, commands, undo, timeline edits
+packages/storage/    projects as folders: autosave, backups, one writer per project
 docs/design-system/  interface rules and a live preview page
 docs/decisions/      decision records
-scripts/             test media generation
+scripts/             test media generation, benchmark, storage scenarios
 ```
 
 ## Built with

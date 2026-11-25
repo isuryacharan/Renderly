@@ -12,8 +12,8 @@ export default tseslint.config(
     languageOptions: { globals: globals.node },
   },
   {
-    // The benchmark runner sends functions into the page; they run with browser globals.
-    files: ["scripts/bench.mjs"],
+    // The benchmark and storage runners send functions into the page; they run with browser globals.
+    files: ["scripts/bench.mjs", "scripts/storage-e2e.mjs"],
     languageOptions: { globals: { ...globals.node, ...globals.browser } },
   },
   {

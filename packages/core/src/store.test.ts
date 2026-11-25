@@ -337,3 +337,37 @@ describe("ViewStore", () => {
     expect(view.get()).toMatchObject({ sequence: MAIN, playhead: 705_600_000, selection: [CLIP] });
   });
 });
+
+describe("read-only and replace", () => {
+  it("refuses edits, undo and gestures while read-only", () => {
+    const store = new ProjectStore(load());
+    store.dispatch({ type: "project.rename", payload: { name: "Before" } });
+    store.readOnly = true;
+    const before = store.project;
+    expect(store.dispatch({ type: "project.rename", payload: { name: "No" } })).toMatchObject({
+      ok: false,
+      error: { code: "read-only" },
+    });
+    expect(store.undo()).toMatchObject({ ok: false, reason: "read-only" });
+    expect(() => store.beginGesture("g", "component.set")).toThrow(/read-only/);
+    expect(store.project).toBe(before);
+    store.readOnly = false;
+    expect(store.undo().ok).toBe(true);
+  });
+
+  it("replaces the whole project and drops the history", () => {
+    const store = new ProjectStore(load());
+    store.dispatch({ type: "project.rename", payload: { name: "Edited" } }, { requestId: "r" });
+    let calls = 0;
+    store.subscribe(() => calls++);
+    const fresh = { ...load(), name: "From disk", revision: 999 };
+    store.replace(fresh);
+    expect(store.project).toBe(fresh);
+    expect([store.canUndo, store.canRedo, calls]).toEqual([false, false, 1]);
+    // The request id was forgotten with the old document, so it applies again.
+    expect(
+      store.dispatch({ type: "project.rename", payload: { name: "Again" } }, { requestId: "r" }).ok,
+    ).toBe(true);
+    expect(store.project.name).toBe("Again");
+  });
+});

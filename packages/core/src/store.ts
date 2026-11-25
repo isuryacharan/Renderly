@@ -39,7 +39,7 @@ export type UndoResult =
   | {
       ok: false;
       revision: number;
-      reason: "nothing-to-undo" | "nothing-to-redo" | "gesture-active";
+      reason: "nothing-to-undo" | "nothing-to-redo" | "gesture-active" | "read-only";
     };
 
 export interface StoreOptions {
@@ -84,6 +84,9 @@ export class ProjectStore {
     this.historyLimit = options.historyLimit ?? 500;
   }
 
+  /** Refuses every edit while true: set when another tab is the project's writer. */
+  readOnly = false;
+
   get project(): Project {
     return this.current;
   }
@@ -103,6 +106,19 @@ export class ProjectStore {
   /** Undo labels, most recent first. */
   get undoLabels(): string[] {
     return this.undoStack.map((entry) => entry.label).reverse();
+  }
+
+  /**
+   * Swaps in a whole project (a newer version from disk, a restored backup). Undo history and
+   * remembered request ids are dropped: they describe a document that is gone.
+   */
+  replace(project: Project): void {
+    if (this.gesture) throw new Error(`Gesture "${this.gesture.key}" is still active`);
+    this.current = project;
+    this.undoStack.length = 0;
+    this.redoStack.length = 0;
+    this.results.clear();
+    this.notify();
   }
 
   /** Calls `listener` after every change. Returns an unsubscribe function. */
@@ -166,6 +182,7 @@ export class ProjectStore {
   }
 
   undo(): UndoResult {
+    if (this.readOnly) return { ok: false, revision: this.revision, reason: "read-only" };
     if (this.gesture) return { ok: false, revision: this.revision, reason: "gesture-active" };
     const entry = this.undoStack.pop();
     if (!entry) return { ok: false, revision: this.revision, reason: "nothing-to-undo" };
@@ -182,6 +199,7 @@ export class ProjectStore {
   }
 
   redo(): UndoResult {
+    if (this.readOnly) return { ok: false, revision: this.revision, reason: "read-only" };
     if (this.gesture) return { ok: false, revision: this.revision, reason: "gesture-active" };
     const entry = this.redoStack.pop();
     if (!entry) return { ok: false, revision: this.revision, reason: "nothing-to-redo" };
@@ -202,6 +220,7 @@ export class ProjectStore {
    * a time, and ordinary dispatches wait until it ends. The caller throttles previews (~30 ms).
    */
   beginGesture(key: string, type: string): Gesture {
+    if (this.readOnly) throw new Error("The project is open read-only");
     if (this.gesture) throw new Error(`Gesture "${this.gesture.key}" is still active`);
     const base = this.current;
     this.gesture = { key, base };
@@ -265,6 +284,7 @@ export class ProjectStore {
       revision: this.revision,
       error,
     });
+    if (this.readOnly) return fail(failure("read-only", "The project is open read-only"));
     if (this.gesture)
       return fail(failure("gesture-active", `Gesture "${this.gesture.key}" is in progress`));
     if (options.expectedRevision !== undefined && options.expectedRevision !== this.revision) {

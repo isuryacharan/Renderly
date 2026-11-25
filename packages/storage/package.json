@@ -1,0 +1,20 @@
+{
+  "name": "@renderly/storage",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Projects as folders: disk or browser storage, autosave, backups, one writer per project across tabs.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@renderly/core": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.3"
+  }
+}

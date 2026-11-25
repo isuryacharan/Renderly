@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Renderly storage</title>
+  </head>
+  <body>
+    <main class="spike">
+      <h1 class="text-title">Project storage</h1>
+      <p class="spike__lead">
+        S1.4: projects as folders in browser storage or a disk folder, with autosave, backups and
+        one writer per project across tabs. The automated scenarios drive <code>window.lab</code>;
+        the buttons are for the manual disk-folder check.
+      </p>
+
+      <div class="bench-row">
+        <select id="location" class="bench-select" aria-label="Location">
+          <option value="browser">Browser storage</option>
+          <option value="disk">Disk folder</option>
+        </select>
+        <button id="pick" class="r-button">Choose folder…</button>
+        <button id="reconnect" class="r-button">Reconnect</button>
+        <button id="create" class="r-button r-button--primary">New project</button>
+      </div>
+
+      <ul id="projects" class="bench-log r-selectable"></ul>
+
+      <div class="bench-row">
+        <input
+          id="name"
+          class="bench-select"
+          aria-label="Project name"
+          placeholder="Project name"
+        />
+        <button id="rename" class="r-button">Rename</button>
+        <button id="takeover" class="r-button">Take over editing</button>
+        <button id="mine" class="r-button">Keep mine</button>
+        <button id="disk" class="r-button">Load disk version</button>
+        <button id="close" class="r-button r-button--ghost">Close project</button>
+      </div>
+
+      <pre id="status" class="bench-log r-selectable" aria-live="polite"></pre>
+      <pre id="log" class="bench-log r-selectable"></pre>
+    </main>
+    <script type="module" src="/src/storage-lab.ts"></script>
+  </body>
+</html>
