@@ -1,13 +1,17 @@
 // The editor route: opens the project in a session (writer or read-only follower), shows its save
 // status, and lays out the four panels. The panels are empty frames until M2 fills them.
 
-import type { Project } from "@renderly/core";
+import { ViewStore, type Project } from "@renderly/core";
 import { ProjectSession, subdir, type Role, type SaveEvent } from "@renderly/storage";
 import { Button, Icon, IconButton, useToast, type IconName } from "@renderly/ui/react";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { EDITOR_ACTIONS } from "../actions/editor-actions";
+import { ActionButton, ActionsProvider, ShortcutsDialog } from "../actions/react";
+import { Actions } from "../actions/registry";
 import { openRoot, reconnectFolder, saveLastProject, type Place } from "../places";
 import { navigate } from "../route";
 import { Layout } from "./Layout";
+import { MediaStatus } from "./media-status";
 
 type State =
   | { status: "loading" }
@@ -116,22 +120,51 @@ function Frame({
     [place, folder, project.name],
   );
 
-  // Undo and redo. Text fields keep their own undo.
+  // Shared by the panels and never saved: where the user is looking, which files are reachable,
+  // and everything the editor can do.
+  const view = useMemo(
+    () => new ViewStore({ sequence: session.store.project.sequences[0]?.id ?? null }),
+    [session],
+  );
+  const status = useMemo(() => new MediaStatus(), [session]);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const actions = useMemo(() => {
+    const created = new Actions({
+      store: session.store,
+      view,
+      readOnly: session.role !== "writer",
+      timeline: null,
+      link: null,
+      bin: null,
+      viewer: null,
+      showShortcuts: () => setShortcutsOpen(true),
+      navigateHome: () => navigate({ name: "home" }),
+    });
+    created.register(EDITOR_ACTIONS);
+    if (import.meta.env.DEV) window.renderlyActions = created;
+    return created;
+  }, [session, view]);
+
+  useEffect(() => actions.attach({ readOnly: role !== "writer" }), [actions, role]);
+
+  // Buttons re-read enabled states after edits and selection, tool or transport changes.
   useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement;
-      if (target.closest("input, textarea, [contenteditable='true']")) return;
-      const mod = event.ctrlKey || event.metaKey;
-      if (!mod) return;
-      const key = event.key.toLowerCase();
-      if (key === "z" && !event.shiftKey) session.store.undo();
-      else if ((key === "z" && event.shiftKey) || key === "y") session.store.redo();
-      else return;
-      event.preventDefault();
-    };
+    const refresh = () => actions.changed();
+    const stops = [
+      session.store.subscribe(refresh),
+      view.select((s) => s.selection, refresh),
+      view.select((s) => s.playing, refresh),
+      view.select((s) => s.loop, refresh),
+    ];
+    return () => stops.forEach((stop) => stop());
+  }, [actions, session, view]);
+
+  // Shortcuts. Elements that handle a key themselves (a splitter's arrows) prevent the default.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => void actions.handleKey(event);
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
-  }, [session]);
+  }, [actions]);
 
   useEffect(() => {
     document.title = `${project.name} · Renderly`;
@@ -141,77 +174,67 @@ function Frame({
   }, [project.name]);
 
   return (
-    <div className="r-app">
-      <header className="r-toolbar">
-        <IconButton icon="home" label="Home" size="sm" onClick={() => navigate({ name: "home" })} />
-        <h1 className="r-toolbar__title text-body-strong">{project.name}</h1>
-        <IconButton
-          icon="undo"
-          label="Undo"
-          shortcut={shortcut("Z")}
-          size="sm"
-          disabled={!session.store.canUndo || role !== "writer"}
-          onClick={() => session.store.undo()}
+    <ActionsProvider actions={actions}>
+      <div className="r-app">
+        <header className="r-toolbar">
+          <ActionButton id="app.home" />
+          <h1 className="r-toolbar__title text-body-strong">{project.name}</h1>
+          <ActionButton id="edit.undo" />
+          <ActionButton id="edit.redo" />
+          <span className="r-toolbar__spacer" />
+          <SaveStatus role={role} save={save} />
+          <ActionButton id="help.shortcuts" />
+        </header>
+        {role === "follower" && (
+          <div className="r-banner r-banner--warning" role="status">
+            <span className="r-banner__kind">
+              <Icon name="locked" />
+              Read-only
+            </span>
+            <span>This project is open in another tab.</span>
+            <Button size="sm" onClick={() => void session.takeOver()}>
+              Take over editing
+            </Button>
+          </div>
+        )}
+        {save?.status === "conflict" && (
+          <div className="r-banner r-banner--warning" role="alert">
+            <span className="r-banner__kind">
+              <Icon name="warning" />
+              Changed outside
+            </span>
+            <span>
+              Another program changed this project&apos;s file. Choose which version to keep.
+            </span>
+            <Button size="sm" onClick={() => void session.autosave?.resolve("mine")}>
+              Keep mine
+            </Button>
+            <Button
+              size="sm"
+              onClick={() =>
+                void session.autosave?.resolve("disk").then((result) => {
+                  if (!result.ok)
+                    toast("The version on disk is not a valid project. Keep yours.", {
+                      kind: "danger",
+                    });
+                })
+              }
+            >
+              Load the version on disk
+            </Button>
+          </div>
+        )}
+        <Layout
+          session={session}
+          project={project}
+          readOnly={role !== "writer"}
+          view={view}
+          status={status}
         />
-        <IconButton
-          icon="redo"
-          label="Redo"
-          shortcut={shortcut("Z", true)}
-          size="sm"
-          disabled={!session.store.canRedo || role !== "writer"}
-          onClick={() => session.store.redo()}
-        />
-        <span className="r-toolbar__spacer" />
-        <SaveStatus role={role} save={save} />
-      </header>
-      {role === "follower" && (
-        <div className="r-banner r-banner--warning" role="status">
-          <span className="r-banner__kind">
-            <Icon name="locked" />
-            Read-only
-          </span>
-          <span>This project is open in another tab.</span>
-          <Button size="sm" onClick={() => void session.takeOver()}>
-            Take over editing
-          </Button>
-        </div>
-      )}
-      {save?.status === "conflict" && (
-        <div className="r-banner r-banner--warning" role="alert">
-          <span className="r-banner__kind">
-            <Icon name="warning" />
-            Changed outside
-          </span>
-          <span>
-            Another program changed this project&apos;s file. Choose which version to keep.
-          </span>
-          <Button size="sm" onClick={() => void session.autosave?.resolve("mine")}>
-            Keep mine
-          </Button>
-          <Button
-            size="sm"
-            onClick={() =>
-              void session.autosave?.resolve("disk").then((result) => {
-                if (!result.ok)
-                  toast("The version on disk is not a valid project. Keep yours.", {
-                    kind: "danger",
-                  });
-              })
-            }
-          >
-            Load the version on disk
-          </Button>
-        </div>
-      )}
-      <Layout session={session} project={project} readOnly={role !== "writer"} />
-    </div>
+        <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+      </div>
+    </ActionsProvider>
   );
-}
-
-/** A shortcut written the platform's way: "Ctrl Z" or "⌘Z", "Ctrl Shift Z" or "⇧⌘Z". */
-function shortcut(key: string, shift = false): string {
-  if (/Mac|iPhone|iPad/.test(navigator.platform)) return `${shift ? "⇧" : ""}⌘${key}`;
-  return `Ctrl ${shift ? "Shift " : ""}${key}`;
 }
 
 function SaveStatus({ role, save }: { role: Role; save: SaveEvent | null }) {

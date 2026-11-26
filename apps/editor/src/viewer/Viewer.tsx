@@ -10,7 +10,8 @@ import {
 } from "@renderly/core";
 import { createPreview } from "@renderly/engine";
 import { colors } from "@renderly/ui/tokens";
-import { Icon, IconButton, MenuButton, useToast } from "@renderly/ui/react";
+import { Icon, MenuButton, useToast } from "@renderly/ui/react";
+import { ActionButton, actionItem, useActions } from "../actions/react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { MediaStatus } from "../editor/media-status";
 import { onThemeChange, resolvedTheme } from "../theme";
@@ -23,12 +24,13 @@ declare global {
   }
 }
 
-const ZOOMS: { label: string; zoom: number | null }[] = [
-  { label: "Fit", zoom: null },
-  { label: "25%", zoom: 0.25 },
-  { label: "50%", zoom: 0.5 },
-  { label: "100%", zoom: 1 },
-  { label: "200%", zoom: 2 },
+/** The zoom menu: each entry is an action (see editor-actions.ts). */
+const ZOOMS: { label: string; zoom: number | null; action: string }[] = [
+  { label: "Fit", zoom: null, action: "viewer.fit" },
+  { label: "25%", zoom: 0.25, action: "viewer.zoom25" },
+  { label: "50%", zoom: 0.5, action: "viewer.zoom50" },
+  { label: "100%", zoom: 1, action: "viewer.zoom100" },
+  { label: "200%", zoom: 2, action: "viewer.zoom200" },
 ];
 
 const hex = (color: string) => Number.parseInt(color.replace("#", ""), 16);
@@ -53,15 +55,26 @@ export function Viewer({
   const toast = useToast();
   const latestToast = useRef(toast);
   latestToast.current = toast;
+  const actions = useActions();
 
   const playing = useSyncExternalStore(
     (listener) => view.select((s) => s.playing, listener),
     () => view.get().playing,
   );
-  const loop = useSyncExternalStore(
-    (listener) => view.select((s) => s.loop, listener),
-    () => view.get().loop,
-  );
+
+  // The zoom actions reach the viewer through the registry.
+  useEffect(() => {
+    actions.attach({
+      viewer: {
+        zoom,
+        setZoom: (next) => {
+          pan.current = { x: 0, y: 0 };
+          setZoom(next);
+        },
+      },
+    });
+  }, [actions, zoom]);
+  useEffect(() => () => actions.attach({ viewer: null }), [actions]);
 
   // The engine: created once per project session. The canvas is handed to its worker for good.
   useEffect(() => {
@@ -79,14 +92,16 @@ export function Viewer({
         if (import.meta.env.DEV) window.renderlyViewer = created;
         await created.start();
         setLink(created);
+        actions.attach({ link: created });
       })
       .catch((error: unknown) => setFailed(error instanceof Error ? error.message : String(error)));
     return () => {
       cancelled = true;
+      actions.attach({ link: null });
       created?.dispose();
       if (window.renderlyViewer === created) delete window.renderlyViewer;
     };
-  }, [store, view, status]);
+  }, [store, view, status, actions]);
 
   // How the picture sits: fitted or zoomed, panned, on the viewer colour of the theme.
   useEffect(() => {
@@ -110,7 +125,6 @@ export function Viewer({
     return view.select((s) => s.playhead, write);
   }, [view, fps]);
 
-  const ready = link !== null;
   const zoomLabel = ZOOMS.find((z) => z.zoom === zoom)?.label ?? "Fit";
 
   return (
@@ -128,13 +142,7 @@ export function Viewer({
           aria-label={`Zoom: ${zoomLabel}`}
           tooltip="Zoom"
           className="r-button r-button--ghost r-button--sm"
-          items={ZOOMS.map((option) => ({
-            label: option.label,
-            onSelect: () => {
-              pan.current = { x: 0, y: 0 };
-              setZoom(option.zoom);
-            },
-          }))}
+          items={ZOOMS.map((option) => actionItem(actions, option.action))}
         />
       </div>
       <div
@@ -170,57 +178,13 @@ export function Viewer({
       <div className="viewer__transport" role="group" aria-label="Transport">
         <span className="viewer__timecode r-tabular" ref={timecode} aria-label="Playhead" />
         <span className="r-toolbar__spacer" />
-        <IconButton
-          icon="to-start"
-          label="Go to the start"
-          size="sm"
-          disabled={!ready}
-          onClick={() => {
-            void link?.pause().then(() => view.set({ playhead: 0 }));
-          }}
-        />
-        <IconButton
-          icon="previous-cut"
-          label="Go to the previous cut"
-          size="sm"
-          disabled={!ready}
-          onClick={() => void link?.jump(-1)}
-        />
-        <IconButton
-          icon="frame-back"
-          label="Step back one frame"
-          size="sm"
-          disabled={!ready}
-          onClick={() => void link?.step(-1)}
-        />
-        <IconButton
-          icon={playing ? "pause" : "play"}
-          label={playing ? "Pause" : "Play"}
-          disabled={!ready}
-          onClick={() => link?.toggle()}
-        />
-        <IconButton
-          icon="frame-forward"
-          label="Step forward one frame"
-          size="sm"
-          disabled={!ready}
-          onClick={() => void link?.step(1)}
-        />
-        <IconButton
-          icon="next-cut"
-          label="Go to the next cut"
-          size="sm"
-          disabled={!ready}
-          onClick={() => void link?.jump(1)}
-        />
-        <IconButton
-          icon="loop"
-          label={loop ? "Stop looping" : "Loop the selection, or the whole sequence"}
-          size="sm"
-          aria-pressed={loop}
-          disabled={!ready}
-          onClick={() => view.set({ loop: !loop })}
-        />
+        <ActionButton id="playback.start" />
+        <ActionButton id="playback.previousCut" />
+        <ActionButton id="playback.frameBack" />
+        <ActionButton id={playing ? "playback.pause" : "playback.play"} size="md" />
+        <ActionButton id="playback.frameForward" />
+        <ActionButton id="playback.nextCut" />
+        <ActionButton id="playback.loop" />
         <span className="r-toolbar__spacer" />
         <span className="viewer__duration r-tabular" aria-label="Duration">
           {sequence && fps ? formatTimecode(sequenceDuration(sequence), fps) : ""}

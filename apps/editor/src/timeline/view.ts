@@ -214,7 +214,6 @@ export class TimelineView {
       }
     });
     on("wheel", (e) => this.onWheel(e), { passive: false });
-    on("keydown", (e) => this.onKey(e));
     on("dragover", (e) => this.onDragOver(e));
     on("dragleave", () => {
       this.ghost = null;
@@ -794,37 +793,107 @@ export class TimelineView {
 
   // --------------------------------------------------------------- keyboard
 
-  private onKey(e: KeyboardEvent): void {
-    const mod = e.ctrlKey || e.metaKey;
-    const key = e.key;
-    const readOnly = this.options.readOnly();
-    let handled = true;
-    if ((key === "Delete" || key === "Backspace") && !mod) {
-      if (!readOnly) this.deleteSelected(e.shiftKey);
-    } else if (key.toLowerCase() === "s" && !mod) {
-      if (!readOnly) this.splitAtPlayhead();
-    } else if (key.toLowerCase() === "v" && !mod) this.setTool("select");
-    else if (key.toLowerCase() === "b" && !mod) this.setTool("blade");
-    else if (key.toLowerCase() === "a" && mod) this.selectAll();
-    else if (key === "Escape") this.select([]);
-    else if (key === "=" || key === "+") this.zoomBy(1 / 1.5);
-    else if (key === "-" || key === "_") this.zoomBy(1.5);
-    else if (key === "\\" || (key.toLowerCase() === "z" && e.shiftKey && !mod)) this.fit();
-    else if (key === "ArrowLeft" || key === "ArrowRight") {
-      const step = this.frame() * (e.shiftKey ? 10 : 1) * (key === "ArrowLeft" ? -1 : 1);
-      this.follow = true;
-      this.options.view.set({
-        playhead: Math.max(0, this.snapFrame(this.options.view.get().playhead + step)),
-      });
-    } else if (key === "Home") {
-      this.follow = true;
-      this.options.view.set({ playhead: 0 });
-    } else if (key === "End") {
-      const sequence = this.sequence;
-      this.follow = true;
-      if (sequence) this.options.view.set({ playhead: sequenceDuration(sequence) });
-    } else handled = false;
-    if (handled) e.preventDefault();
+  /** True when any clip is selected. */
+  get hasSelection(): boolean {
+    return this.selection.length > 0;
+  }
+
+  /** True when a selected clip can be edited (its track is not locked). */
+  get canEditSelection(): boolean {
+    return this.editable(this.selection).length > 0;
+  }
+
+  deselect(): void {
+    this.select([]);
+  }
+
+  /** Moves the selected clips by `frames` (negative is earlier). */
+  nudge(frames: number): void {
+    const clips = this.editable(this.selection);
+    if (clips.length === 0) return;
+    this.dispatch({ type: "clip.move", payload: { clips, delta: frames * this.frame() } });
+  }
+
+  /** Moves the selected clips to the track above (1) or below (-1) on screen. */
+  moveToTrack(direction: 1 | -1): void {
+    const clips = this.editable(this.selection);
+    const rows = this.rows;
+    const first = rows.find((row) => row.track.clips.some((c) => clips.includes(c.id)));
+    if (!first || clips.length === 0) return;
+    const at = rows.indexOf(first);
+    const target = rows
+      .slice(direction > 0 ? 0 : at + 1, direction > 0 ? at : undefined)
+      .filter((row) => row.track.kind === first.track.kind);
+    const row = direction > 0 ? target[target.length - 1] : target[0];
+    if (!row) return;
+    this.dispatch({
+      type: "clip.move",
+      payload: { clips, delta: 0, tracks: row.index - first.index },
+    });
+  }
+
+  /** Trims the selected clips' start or end edge to the playhead. */
+  trimToPlayhead(edge: "start" | "end"): void {
+    const sequence = this.sequence;
+    const t = this.snapFrame(this.options.view.get().playhead);
+    const ids = new Set(this.editable(this.selection));
+    const clips = sequence?.tracks.flatMap((track) => track.clips).filter((c) => ids.has(c.id));
+    if (!clips?.length) return;
+    // One command per clip: each edge moves by its own distance to the playhead.
+    this.options.store.transaction(
+      `Trim ${clips.length === 1 ? "1 clip" : `${clips.length} clips`}`,
+      () => {
+        for (const clip of clips) {
+          const delta = t - (edge === "start" ? clip.start : clipEnd(clip));
+          if (delta === 0) continue;
+          const result = this.options.store.dispatch({
+            type: "clip.trim",
+            payload: { clips: [clip.id], edge, delta },
+          });
+          if (!result.ok) {
+            this.options.onError(result.error.message);
+            return false;
+          }
+        }
+        return true;
+      },
+    );
+  }
+
+  /** Selects the clips under the playhead on unlocked, visible tracks. */
+  selectAtPlayhead(): void {
+    const t = this.options.view.get().playhead;
+    const ids =
+      this.sequence?.tracks
+        .flatMap((track) => track.clips)
+        .filter((c) => c.start <= t && t < clipEnd(c))
+        .map((c) => c.id) ?? [];
+    this.select(ids);
+  }
+
+  /** Puts a media item on the timeline at the playhead, on the first track that takes it. */
+  appendMedia(mediaId: string): boolean {
+    const media = this.project.media.find((m) => m.id === mediaId);
+    if (!media) return false;
+    const kind = media.video ? "video" : "audio";
+    const track = this.rows.find((row) => row.track.kind === kind && !row.track.locked);
+    return this.addMedia(
+      media,
+      this.snapFrame(this.options.view.get().playhead),
+      track?.track.id ?? null,
+    );
+  }
+
+  addTrack(kind: Track["kind"]): void {
+    const sequence = this.sequence;
+    if (!sequence) return;
+    this.dispatch({ type: "track.add", payload: { sequence: sequence.id, id: createId(), kind } });
+  }
+
+  /** Moves the playhead and lets the view follow it. */
+  movePlayhead(t: number): void {
+    this.follow = true;
+    this.options.view.set({ playhead: Math.max(0, this.snapFrame(t)) });
   }
 
   deleteSelected(ripple: boolean): void {

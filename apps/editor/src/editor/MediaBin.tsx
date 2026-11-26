@@ -18,16 +18,15 @@ import {
   type OfflineReason,
   type ProjectSession,
 } from "@renderly/storage";
-import {
-  Button,
-  Dialog,
-  Icon,
-  IconButton,
-  MenuButton,
-  Tooltip,
-  useToast,
-} from "@renderly/ui/react";
+import { Button, Dialog, Icon, MenuButton, useToast } from "@renderly/ui/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import {
+  ActionButton,
+  actionItem,
+  ActionSegment,
+  ActionTextButton,
+  useActions,
+} from "../actions/react";
 import { formatDuration } from "../format";
 import { startMediaDrag } from "../timeline/drag";
 import { useMediaStates, type MediaState, type MediaStatus } from "./media-status";
@@ -233,6 +232,45 @@ export function MediaBin({
     await run(sources);
   };
 
+  const actions = useActions();
+  /** The bin's operations as of the last render, for actions that run between renders. */
+  const latest = useRef<{
+    importFiles(): void;
+    importFolder(): void;
+    relinkOne(item: MediaItem): void;
+    reconnect(): void;
+    removeAsk(item: MediaItem): void;
+  } | null>(null);
+  useEffect(() => {
+    const find = (id: string) => project.media.find((m) => m.id === id);
+    actions.attach({
+      bin: {
+        importFiles: () => latest.current?.importFiles(),
+        importFolder: () => latest.current?.importFolder(),
+        canImportFolder: picker.showDirectoryPicker !== undefined,
+        focused: () =>
+          (document.activeElement?.closest("[data-media-id]") as HTMLElement | null)?.dataset[
+            "mediaId"
+          ] ?? null,
+        relink: (id) => {
+          const item = find(id);
+          if (item) latest.current?.relinkOne(item);
+        },
+        reconnect: () => latest.current?.reconnect(),
+        remove: (id) => {
+          const item = find(id);
+          if (item) latest.current?.removeAsk(item);
+        },
+        view,
+        setView: (next) => {
+          setView(next);
+          remember("renderly:bin-view", next);
+        },
+      },
+    });
+  }, [actions, project.media, view]);
+  useEffect(() => () => actions.attach({ bin: null }), [actions]);
+
   const offline = project.media.filter((m) => states.get(m.id)?.status === "offline");
   const needPermission = offline.filter((m) => {
     const s = states.get(m.id);
@@ -281,6 +319,18 @@ export function MediaBin({
     }
   };
 
+  latest.current = {
+    importFiles: () => void importFiles(),
+    importFolder: () => void importFolder(),
+    relinkOne: (item) => void relinkOne(item),
+    reconnect: () => void reconnect(),
+    removeAsk: (item) => {
+      const used = usage.get(item.id) ?? 0;
+      if (used > 0) setRemoving({ item, clips: used });
+      else remove(item, false);
+    },
+  };
+
   const remove = (item: MediaItem, withClips: boolean) => {
     const result = session.store.dispatch({
       type: "media.remove",
@@ -305,23 +355,8 @@ export function MediaBin({
       onDrop={(event) => void onDrop(event)}
     >
       <div className="r-bin__toolbar">
-        <Button
-          size="sm"
-          disabled={readOnly || progress !== null}
-          onClick={() => void importFiles()}
-        >
-          <Icon name="import" />
-          Import
-        </Button>
-        {picker.showDirectoryPicker && (
-          <IconButton
-            icon="folder"
-            label="Import a folder"
-            size="sm"
-            disabled={readOnly || progress !== null}
-            onClick={() => void importFolder()}
-          />
-        )}
+        <ActionTextButton id="media.import" />
+        {picker.showDirectoryPicker && <ActionButton id="media.importFolder" />}
         <label className="r-choice">
           <input
             type="checkbox"
@@ -335,23 +370,7 @@ export function MediaBin({
           Copy into project
         </label>
         <span className="r-toolbar__spacer" />
-        <div className="r-segmented r-segmented--icons" role="group" aria-label="Show media as">
-          {(["grid", "list"] as const).map((option) => (
-            <Tooltip key={option} label={option === "grid" ? "Grid" : "List"}>
-              <button
-                type="button"
-                aria-label={option === "grid" ? "Grid" : "List"}
-                aria-pressed={view === option}
-                onClick={() => {
-                  setView(option);
-                  remember("renderly:bin-view", option);
-                }}
-              >
-                <Icon name={option} />
-              </button>
-            </Tooltip>
-          ))}
-        </div>
+        <ActionSegment ids={["media.showGrid", "media.showList"]} label="Show media as" />
         <input
           ref={fileInput}
           type="file"
@@ -420,6 +439,9 @@ export function MediaBin({
               <li
                 key={item.id}
                 className="r-bin__item"
+                data-media-id={item.id}
+                tabIndex={0}
+                aria-label={`${item.name}${readOnly ? "" : ". Enter adds it to the timeline at the playhead"}`}
                 draggable={!readOnly}
                 onDragStart={(event) => startMediaDrag(event.nativeEvent, item.id)}
               >
@@ -483,17 +505,13 @@ export function MediaBin({
                       tooltip="More actions"
                       className="r-button r-button--icon r-button--sm"
                       items={[
+                        actionItem(actions, "media.append", { media: item.id }),
                         ...(state.status === "offline" && state.reason === "permission"
-                          ? [{ label: "Reconnect", onSelect: () => void reconnect() }]
+                          ? [actionItem(actions, "media.reconnect")]
                           : state.status === "offline" && picker.showOpenFilePicker
-                            ? [{ label: "Relink…", onSelect: () => void relinkOne(item) }]
+                            ? [actionItem(actions, "media.relink", { media: item.id })]
                             : []),
-                        {
-                          label: "Remove from project",
-                          danger: true,
-                          onSelect: () =>
-                            used > 0 ? setRemoving({ item, clips: used }) : remove(item, false),
-                        },
+                        actionItem(actions, "media.remove", { media: item.id }, true),
                       ]}
                     />
                   </div>
