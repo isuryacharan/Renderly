@@ -21,3 +21,22 @@ export function applyTheme(theme: Theme): void {
     // private mode: the choice lasts for this page only
   }
 }
+
+/** The theme on screen now: the chosen one, or the operating system's for "system". */
+export function resolvedTheme(): "dark" | "light" {
+  const set = document.documentElement.dataset["theme"];
+  if (set === "light" || set === "dark") return set;
+  return matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+
+/** Calls `listener` whenever the theme on screen changes. Returns a function that stops it. */
+export function onThemeChange(listener: () => void): () => void {
+  const watch = new MutationObserver(listener);
+  watch.observe(document.documentElement, { attributeFilter: ["data-theme"] });
+  const scheme = matchMedia("(prefers-color-scheme: light)");
+  scheme.addEventListener("change", listener);
+  return () => {
+    watch.disconnect();
+    scheme.removeEventListener("change", listener);
+  };
+}

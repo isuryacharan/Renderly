@@ -1,7 +1,10 @@
-// S1.7 timeline checks in a real browser, driven with the mouse and keyboard: drag from the bin,
-// move, trim, split, delete, ripple delete, the blade tool, box select with edge auto-scroll,
-// snapping, one undo step per drag and Escape cancelling one; and the redraw benchmark (500 clips
-// in under 2 ms). The media lab makes the test files (see media-e2e.mjs).
+// Timeline and viewer checks in a real browser, driven with the mouse and keyboard.
+// S1.7: drag from the bin, move, trim, split, delete, ripple delete, the blade tool, box select
+// with edge auto-scroll, snapping, one undo step per drag and Escape cancelling one; the redraw
+// benchmark (500 clips in under 2 ms).
+// S1.8: the viewer plays what the timeline says (transport, frame step, cuts, loop), edits during
+// playback reach the engine within a frame and never break it, and trimming shows the edge frame.
+// The media lab makes the test files (see media-e2e.mjs).
 //
 //   pnpm test:timeline                    installed Edge
 //   pnpm test:timeline --browser chrome   installed Chrome (CI)
@@ -140,6 +143,52 @@ async function drag(page, x0, y0, x1, y1, { steps = 20, before } = {}) {
   }
   if (before) await before();
   await page.mouse.up();
+}
+
+/**
+ * A project for playback: an 8 s clip on V1 at 0 (two 4 s files back to back) and a 1 s clip on
+ * V2 at 2 s. Returns the editor page once the viewer's engine is up.
+ */
+async function playbackProject(context, name) {
+  const lab = await openLab(context);
+  const folder = await lab.evaluate(async (name) => {
+    await mediaLab.makeClip("p1.webm", 4, "p1");
+    await mediaLab.makeClip("p2.webm", 4, "p2");
+    const folder = await mediaLab.createProject(name);
+    await mediaLab.open(folder);
+    await mediaLab.importOutside(["p1.webm", "p2.webm"]);
+    await mediaLab.close();
+    return folder;
+  }, name);
+  await lab.close();
+  const page = await openEditor(context, folder);
+  await page.waitForFunction(() => window.renderlyViewer !== undefined, null, { timeout: 20_000 });
+  await page.waitForFunction(() => document.querySelectorAll(".r-bin__item").length === 2);
+  await page.evaluate((S) => {
+    const t = window.renderlyTimeline;
+    const [a, b] = t["project"].media;
+    t.addMedia(a, 0, null);
+    t.addMedia(b, 4 * S, t.sequence.tracks[0].id);
+    t.addMedia(a, 2 * S, null);
+    const top = t.sequence.tracks[1];
+    const clip = top.clips[0];
+    t["options"].store.dispatch({
+      type: "clip.trim",
+      payload: { clips: [clip.id], edge: "end", delta: -3 * S },
+    });
+    t.fit();
+    t["options"].view.set({ selection: [] });
+  }, SECOND);
+  // The engine has the edit list and every file opened.
+  await page.waitForFunction(
+    () => window.renderlyViewer.updates > 0 && window.renderlyViewer.duration > 0,
+    null,
+    {
+      timeout: 20_000,
+    },
+  );
+  await page.waitForTimeout(500);
+  return page;
 }
 
 const scenarios = {
@@ -324,6 +373,202 @@ const scenarios = {
     check(guide === c1.start + c1.duration, `the guide marks clip 1's end: ${guide}`);
     check(landed.start === c1.start + c1.duration, `clip 2 snapped: ${landed.start / SECOND}`);
     return `${selected} clips box-selected with auto-scroll; snap guide shown`;
+  },
+
+  async "the viewer plays the timeline: play, pause, frame step, cuts and loop"({ context }) {
+    const page = await playbackProject(context, "Transport");
+    const t = (seconds) => Math.round(seconds * SECOND);
+    const view = () =>
+      page.evaluate(() => {
+        const v = window.renderlyTimeline["options"].view.get();
+        return { playhead: v.playhead, playing: v.playing };
+      });
+
+    // Play from 0 for a second; the playhead moves and the engine reports playing.
+    await page.getByRole("button", { name: "Play", exact: true }).click();
+    await page.waitForFunction(() => window.renderlyViewer.preview.readPlayhead().playing);
+    await page.waitForTimeout(1000);
+    let v = await view();
+    check(v.playing && v.playhead > t(0.3), `playing, playhead ${v.playhead / SECOND} s`);
+    // Pause rests on a frame start.
+    await page.getByRole("button", { name: "Pause", exact: true }).click();
+    await page.waitForFunction(() => !window.renderlyViewer.preview.readPlayhead().playing);
+    v = await view();
+    check(!v.playing && v.playhead % FRAME === 0, `paused on a frame: ${v.playhead / FRAME}`);
+    const timecode = await page.locator(".viewer__timecode").textContent();
+    check(/^\d\d:\d\d:\d\d:\d\d$/.test(timecode ?? ""), `timecode shown: ${timecode}`);
+
+    // Frame step, then the next cut (the second clip starts at 4 s on the bottom track).
+    const before = v.playhead;
+    await page.getByRole("button", { name: "Step forward one frame" }).click();
+    v = await view();
+    check(v.playhead === before + FRAME, "one frame forward");
+    await page.getByRole("button", { name: "Go to the next cut" }).click();
+    v = await view();
+    check(v.playhead === t(2), `next cut at 2 s (top clip starts): ${v.playhead / SECOND}`);
+    await page.getByRole("button", { name: "Go to the next cut" }).click();
+    v = await view();
+    check(v.playhead === t(3), `next cut at 3 s (top clip ends): ${v.playhead / SECOND}`);
+    await page.getByRole("button", { name: "Go to the next cut" }).click();
+    v = await view();
+    check(v.playhead === t(4), `next cut at 4 s (second file): ${v.playhead / SECOND}`);
+    await page.getByRole("button", { name: "Go to the previous cut" }).click();
+    v = await view();
+    check(v.playhead === t(3), `previous cut at 3 s: ${v.playhead / SECOND}`);
+
+    // Loop the selected 1-second clip on the top track: the playhead wraps back into it.
+    await page.evaluate(() => {
+      const tl = window.renderlyTimeline;
+      const top = tl.sequence.tracks[1].clips[0];
+      tl["options"].view.set({ selection: [top.id], loop: true });
+    });
+    await page.getByRole("button", { name: "Play", exact: true }).click();
+    const seen = await page.evaluate(async () => {
+      const times = [];
+      const end = performance.now() + 2500;
+      while (performance.now() < end) {
+        times.push(window.renderlyTimeline["options"].view.get().playhead);
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+      return times;
+    });
+    await page.getByRole("button", { name: "Pause", exact: true }).click();
+    const wraps = seen.filter((time, i) => i > 0 && time < seen[i - 1]).length;
+    check(wraps >= 1, `looped back ${wraps} times`);
+    check(
+      seen.every((time) => time >= t(2) - FRAME && time <= t(3) + FRAME),
+      `stayed in the 2-3 s loop: ${Math.min(...seen) / SECOND}-${Math.max(...seen) / SECOND}`,
+    );
+
+    // Playing to the end stops there.
+    await page.evaluate(() => window.renderlyTimeline["options"].view.set({ loop: false }));
+    await page.evaluate((t) => window.renderlyTimeline["options"].view.set({ playhead: t }), t(7));
+    await page.getByRole("button", { name: "Play", exact: true }).click();
+    await page.waitForFunction(() => !window.renderlyTimeline["options"].view.get().playing, null, {
+      timeout: 10_000,
+    });
+    v = await view();
+    check(Math.abs(v.playhead - t(8)) <= 2 * FRAME, `stopped at the end: ${v.playhead / SECOND}`);
+    const errors = await page.evaluate(() => window.renderlyViewer.errors);
+    check(errors.length === 0, `no engine errors: ${errors.join("; ")}`);
+    return `${wraps} loop wraps; stopped at ${(v.playhead / SECOND).toFixed(2)} s`;
+  },
+
+  async "edits during playback reach the engine within a frame and never break it"({ context }) {
+    const page = await playbackProject(context, "Live edits");
+    await page.getByRole("button", { name: "Play", exact: true }).click();
+    await page.waitForFunction(() => window.renderlyViewer.preview.readPlayhead().playing);
+    // 40 edits, one every 100 ms: moves, trims, splits, hiding a track, deletes, undos and redos.
+    const done = await page.evaluate(async () => {
+      const tl = window.renderlyTimeline;
+      const { store, view } = tl["options"];
+      const S = 705_600_000;
+      const F = S / 30;
+      const ran = [];
+      for (let i = 0; i < 40; i++) {
+        if (!view.get().playing) {
+          view.set({ playhead: 0 });
+          window.renderlyViewer.play();
+          await new Promise((r) => setTimeout(r, 150));
+        }
+        const clips = tl.sequence.tracks.flatMap((t) => t.clips);
+        const clip = clips[i % Math.max(1, clips.length)];
+        const kind = i % 8;
+        let result;
+        if (kind === 6) result = store.undo();
+        else if (kind === 7) result = store.redo();
+        else if (!clip) result = store.undo();
+        else if (kind === 0)
+          result = store.dispatch({
+            type: "clip.move",
+            payload: { clips: [clip.id], delta: (i % 2 ? 1 : -1) * 6 * F },
+          });
+        else if (kind === 1)
+          result = store.dispatch({
+            type: "clip.trim",
+            payload: { clips: [clip.id], edge: "end", delta: -3 * F },
+          });
+        else if (kind === 2)
+          result = store.dispatch({
+            type: "clip.split",
+            payload: { clips: [clip.id], t: clip.start + 10 * F },
+          });
+        else if (kind === 3) {
+          const track = tl.sequence.tracks[1];
+          result = store.dispatch({
+            type: "track.set",
+            payload: { tracks: [track.id], hidden: !track.hidden },
+          });
+        } else if (kind === 4)
+          result = store.dispatch({
+            type: "clip.trim",
+            payload: { clips: [clip.id], edge: "start", delta: 2 * F },
+          });
+        else result = store.dispatch({ type: "clip.delete", payload: { clips: [clip.id] } });
+        ran.push(result.ok);
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return ran;
+    });
+    await page.waitForTimeout(500);
+    await page.evaluate(() => window.renderlyViewer.pause());
+    await page.waitForTimeout(1500); // a stats report after stopping
+    const result = await page.evaluate(() => {
+      const v = window.renderlyViewer;
+      return {
+        refreshes: v.updateRefreshes,
+        errors: v.errors,
+        stats: v.stats && { framesOutstanding: v.stats.framesOutstanding, queued: v.stats.queued },
+      };
+    });
+    const applied = done.filter(Boolean).length;
+    const r = [...result.refreshes].sort((a, b) => a - b);
+    const median = r[Math.floor(r.length / 2)];
+    const worst = r[r.length - 1];
+    check(applied >= 30, `most edits applied: ${applied} of 40`);
+    check(r.length >= 20, `edits reached the engine while it played: ${r.length}`);
+    check(result.errors.length === 0, `no engine errors: ${result.errors.join("; ")}`);
+    check(median <= 1, `median edit shown on the next frame: ${median} refreshes`);
+    check(
+      result.stats?.framesOutstanding === 0 && result.stats.queued === 0,
+      `no frames left on loan after stopping: ${JSON.stringify(result.stats)}`,
+    );
+    return `${applied} edits during playback; ${r.length} reached the engine while playing, median ${median} refresh, worst ${worst}`;
+  },
+
+  async "trimming shows the edge frame in the viewer"({ context }) {
+    const page = await playbackProject(context, "Trim peek");
+    const bottom = await page.evaluate(
+      () => window.renderlyTimeline.sequence.tracks[0].clips[0].id,
+    );
+    const r = await box(page, bottom);
+    const y = r.y + r.height / 2;
+    const oneSecond = (await pageX(page, SECOND)) - (await pageX(page, 0));
+    let during = null;
+    await drag(page, r.x + r.width - 2, y, r.x + r.width - 2 - oneSecond, y, {
+      before: async () => {
+        await page.waitForTimeout(400);
+        during = await page.evaluate(() => ({
+          peek: window.renderlyTimeline["options"].view.get().peek,
+          engine: window.renderlyViewer.preview.readPlayhead().time,
+          end: window.renderlyTimeline.sequence.tracks[0].clips[0],
+        }));
+      },
+    });
+    const expected = during.end.start + during.end.duration - FRAME;
+    check(
+      during.peek === expected,
+      `peek is the last frame of the trimmed clip: ${during.peek / FRAME}`,
+    );
+    check(during.engine === expected, `the engine shows it: ${during.engine / FRAME} (frames)`);
+    await page.waitForFunction(() => window.renderlyTimeline["options"].view.get().peek === null);
+    await page.waitForTimeout(500);
+    const after = await page.evaluate(() => ({
+      playhead: window.renderlyTimeline["options"].view.get().playhead,
+      engine: window.renderlyViewer.preview.readPlayhead().time,
+    }));
+    check(after.engine === after.playhead, `back to the playhead after the trim: ${after.engine}`);
+    return `edge frame ${(expected / FRAME).toFixed(0)} shown while trimming`;
   },
 
   async "500 clips redraw in under 2 ms"({ context }) {

@@ -12,5 +12,6 @@ export default defineConfig({
   worker: { format: "es" },
   // Scan the dev-only media lab too, so its dependencies are bundled at start-up instead of on its
   // first visit (which reloads the page in the middle of a test).
-  optimizeDeps: { entries: ["index.html", "media-lab.html"] },
+  // three.js is imported only by the render worker, which the scan does not follow: list it.
+  optimizeDeps: { entries: ["index.html", "media-lab.html"], include: ["three"] },
 });

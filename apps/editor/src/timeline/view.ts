@@ -23,6 +23,7 @@ import {
 import { ICONS } from "@renderly/ui";
 import { colors, fonts, radius, spacing, textStyles, type ThemeId } from "@renderly/ui/tokens";
 import type { MediaStatus } from "../editor/media-status";
+import { onThemeChange, resolvedTheme } from "../theme";
 import { draggedMedia } from "./drag";
 import {
   CLIP_INSET,
@@ -153,7 +154,7 @@ export class TimelineView {
     this.canvas.setAttribute("aria-label", "Timeline tracks");
     this.canvas.setAttribute("aria-roledescription", "timeline");
     host.appendChild(this.canvas);
-    this.theme = currentTheme();
+    this.theme = resolvedTheme();
     this.scrollY = options.view.get().scroll.y;
 
     this.thumbs = new Thumbnails(
@@ -185,15 +186,7 @@ export class TimelineView {
       ),
     );
 
-    const themeWatch = new MutationObserver(() => this.retheme());
-    themeWatch.observe(document.documentElement, { attributeFilter: ["data-theme"] });
-    const scheme = matchMedia("(prefers-color-scheme: light)");
-    const onScheme = () => this.retheme();
-    scheme.addEventListener("change", onScheme);
-    this.cleanup.push(() => {
-      themeWatch.disconnect();
-      scheme.removeEventListener("change", onScheme);
-    });
+    this.cleanup.push(onThemeChange(() => this.retheme()));
 
     const on = <K extends keyof HTMLElementEventMap>(
       type: K,
@@ -386,7 +379,7 @@ export class TimelineView {
   }
 
   private retheme(): void {
-    this.theme = currentTheme();
+    this.theme = resolvedTheme();
     this.invalidate();
   }
 
@@ -466,6 +459,7 @@ export class TimelineView {
       this.capture(e);
       this.follow = true;
       this.drag = { kind: "scrub" };
+      this.options.view.set({ scrubbing: true });
       this.scrubTo(x);
       return;
     }
@@ -649,6 +643,14 @@ export class TimelineView {
         const delta = this.snapFrame(snapped.t) - original;
         const payload = { clips: drag.clips, edge: drag.edge, delta };
         if (drag.gesture.preview(payload).ok) drag.payload = payload;
+        // The viewer shows the frame at the edge being trimmed.
+        const trimmed = this.sequence?.tracks
+          .flatMap((track) => track.clips)
+          .find((clip) => clip.id === drag.primary.id);
+        if (trimmed) {
+          const edge = drag.edge === "start" ? trimmed.start : clipEnd(trimmed) - this.frame();
+          this.options.view.set({ peek: Math.max(0, edge) });
+        }
         this.invalidate();
         return;
       }
@@ -664,6 +666,7 @@ export class TimelineView {
       this.canvas.releasePointerCapture(e.pointerId);
     this.canvas.style.cursor = this.tool === "blade" ? "crosshair" : "default";
     if (!drag) return;
+    this.endViewerDrag(drag);
     if (drag.kind === "box" && !drag.moved) {
       // A click on empty space: clear the selection and move the playhead there.
       this.select(drag.add);
@@ -680,6 +683,12 @@ export class TimelineView {
     this.invalidate();
   }
 
+  /** The viewer goes back to the playhead once a scrub or trim ends. */
+  private endViewerDrag(drag: Drag): void {
+    if (drag.kind === "scrub") this.options.view.set({ scrubbing: false });
+    if (drag.kind === "trim") this.options.view.set({ peek: null });
+  }
+
   /** Puts everything back as it was before the drag. */
   cancelDrag(): void {
     const drag = this.drag;
@@ -687,6 +696,7 @@ export class TimelineView {
     this.snapLine = null;
     this.box = null;
     if (!drag) return;
+    this.endViewerDrag(drag);
     if ((drag.kind === "move" || drag.kind === "trim") && drag.gesture) drag.gesture.cancel();
     if (drag.kind === "box") this.select(drag.add);
     this.canvas.style.cursor = this.tool === "blade" ? "crosshair" : "default";
@@ -1282,12 +1292,6 @@ export class TimelineView {
     }
     return lo === 0 ? "" : `${text.slice(0, lo)}…`;
   }
-}
-
-function currentTheme(): ThemeId {
-  const set = document.documentElement.dataset["theme"];
-  if (set === "light" || set === "dark") return set;
-  return matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
 }
 
 const iconPaths = new Map<string, Path2D[]>();

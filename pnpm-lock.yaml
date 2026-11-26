@@ -41,6 +41,9 @@ importers:
       '@renderly/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@renderly/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
       '@renderly/media':
         specifier: workspace:*
         version: link:../../packages/media
@@ -144,6 +147,9 @@ importers:
       '@renderly/audio':
         specifier: workspace:*
         version: link:../audio
+      '@renderly/core':
+        specifier: workspace:*
+        version: link:../core
       '@renderly/media':
         specifier: workspace:*
         version: link:../media

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { containRect, containUvScale, rotatedSize, workingSize } from "./layout";
+import { containRect, containUvScale, rotatedSize, viewRect, workingSize } from "./layout";
 
 describe("workingSize", () => {
   it("scales the sequence and keeps sizes even", () => {
@@ -49,5 +49,29 @@ describe("containUvScale", () => {
     const [sx, sy] = containUvScale({ width: 1080, height: 1920 }, { width: 1920, height: 1080 });
     expect(sy).toBe(1);
     expect(sx).toBeCloseTo(1920 / 1080 / (1080 / 1920));
+  });
+});
+
+describe("viewRect", () => {
+  const content = { width: 1920, height: 1080 };
+  const viewport = { width: 1000, height: 800 };
+  it("fits when there is no zoom", () => {
+    expect(viewRect(content, viewport, { zoom: null, pan: { x: 0, y: 0 } })).toEqual(
+      containRect(content, viewport),
+    );
+  });
+  it("centres the zoomed picture and pans it (GL y is up)", () => {
+    expect(viewRect(content, viewport, { zoom: 1, pan: { x: 0, y: 0 } })).toEqual({
+      x: -460,
+      y: -140,
+      width: 1920,
+      height: 1080,
+    });
+    expect(viewRect(content, viewport, { zoom: 0.5, pan: { x: 100, y: 50 } })).toEqual({
+      x: 120,
+      y: 80,
+      width: 960,
+      height: 540,
+    });
   });
 });

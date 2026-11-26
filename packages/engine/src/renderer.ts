@@ -26,7 +26,7 @@ import { Compositor, FrameCache } from "./compositor";
 import { FrameQueue } from "./frame-queue";
 import { FrameUploader } from "./frame-upload";
 import { makeTarget } from "./gpu";
-import { containRect, workingSize, type PreviewScale, type Size } from "./layout";
+import { viewRect, workingSize, type PreviewScale, type Size, type ViewerView } from "./layout";
 import { decodedFrameBytes, MemoryBudget, mipmappedTextureBytes } from "./memory";
 import { Presenter } from "./present";
 import type { FromRenderer, LayerStats, LoadResult, RenderStats, ToRenderer } from "./protocol";
@@ -186,6 +186,12 @@ export function serveRenderer(scope: RendererScope): void {
   let contextLost = false;
   let contextRestores = 0;
   let clock: ClockBuffer | null = null;
+  /** How the picture sits in the canvas, and the colour around it. */
+  let view: ViewerView = { zoom: null, pan: { x: 0, y: 0 } };
+  let background = 0x000000;
+  /** Written every refresh: [playhead, playing (1 or 0), refresh count]. Read by the main thread. */
+  let playheadOut: Float64Array | null = null;
+  let refreshCount = 0;
 
   const streams = new Map<number, Stream>();
   let layers: LayerState[] = [];
@@ -248,8 +254,10 @@ export function serveRenderer(scope: RendererScope): void {
     ports: MessagePort[],
     audioClock: SharedArrayBuffer,
     size: Size,
+    playheadBuffer?: SharedArrayBuffer,
   ): void {
     clock = new ClockBuffer(audioClock);
+    if (playheadBuffer) playheadOut = new Float64Array(playheadBuffer);
     const renderer = new THREE.WebGLRenderer({
       canvas,
       antialias: false,
@@ -781,8 +789,14 @@ export function serveRenderer(scope: RendererScope): void {
 
     if (dirty && gpu && !contextLost) {
       const texture = display ?? gpu.compositor.texture;
-      if (texture) gpu.presenter.present(texture, containRect(sequence, canvasSize));
+      if (texture) gpu.presenter.present(texture, viewRect(sequence, canvasSize, view), background);
       dirty = false;
+    }
+    refreshCount++;
+    if (playheadOut) {
+      playheadOut[0] = playhead;
+      playheadOut[1] = playing ? 1 : 0;
+      playheadOut[2] = refreshCount;
     }
 
     measureMemory();
@@ -1004,9 +1018,10 @@ export function serveRenderer(scope: RendererScope): void {
 
   // --- loading ---
 
-  async function load(inputs: MediaInput[], cuts: Cut[] | null): Promise<LoadResult> {
+  async function load(inputs: MediaInput[], cuts: Cut[] | null, size?: Size): Promise<LoadResult> {
     if (!reserved) throw new Error("Renderer is not initialised");
     stopPlayback();
+    endScrub();
     timeline = { runs: [], layers: [], duration: 0 };
     layers = [];
     sources = inputs.map((input) => ({ input, info: null }));
@@ -1019,32 +1034,129 @@ export function serveRenderer(scope: RendererScope): void {
       if (result.ok) entry.info = result;
     }
     const first = results[0];
-    if (!first?.ok || results.some((result) => !result.ok)) {
+    if (results.some((result) => !result.ok) || (!first?.ok && cuts === null)) {
       return { sources: results, cuts: [], duration: 0 };
     }
-    const resolved = cuts ?? [{ source: 0, in: 0, out: first.duration, start: 0 }];
+    const resolved =
+      cuts ?? (first?.ok ? [{ source: 0, in: 0, out: first.duration, start: 0 }] : []);
     timeline = toTimeline(resolved);
     layers = timeline.layers.map(() => newLayerState());
     const bottom = timeline.runs[timeline.layers[0]?.ids[0] ?? 0];
-    const opening = sources[bottom?.source ?? 0]?.info ?? first;
-    sequence = { width: opening.width, height: opening.height };
+    const opening = sources[bottom?.source ?? 0]?.info ?? (first?.ok ? first : null);
+    sequence = size ?? (opening ? { width: opening.width, height: opening.height } : sequence);
     rebuildTargets();
-    playhead = bottom?.start ?? 0;
+    playhead = size ? 0 : (bottom?.start ?? 0);
     await showExact(playhead);
     await warmScrubDecoders(playhead);
     return { sources: results, cuts: resolved, duration: timeline.duration };
   }
 
+  /**
+   * Changes the edit list without starting over: sources are only added (`added` are appended),
+   * decoders keep their open files, and streams and queued frames of runs that did not change
+   * carry over. Playback keeps going; a layer whose run changed shows its last frame until the
+   * new run's first frame is decoded. When paused, the exact frame at the playhead is redrawn.
+   */
+  async function update(added: MediaInput[], cuts: Cut[], size: Size): Promise<LoadResult> {
+    if (!reserved) throw new Error("Renderer is not initialised");
+    const results: OpenResult[] = [];
+    for (const input of added) {
+      sources.push({ input, info: null });
+      const index = sources.length - 1;
+      const result = await openOn(reserved, index);
+      results.push(result);
+      const entry = sources[index];
+      if (result.ok && entry) entry.info = result;
+    }
+    const usable = cuts.filter((cut) => sources[cut.source]?.info);
+    const next = toTimeline(usable);
+    const key = (run: Run) => {
+      const t = run.transform;
+      return [run.source, run.in, run.out, run.start, run.layer, t.x, t.y, t.scale, t.opacity].join(
+        "|",
+      );
+    };
+    const newIds = new Map(next.runs.map((run, id) => [key(run), id]));
+    const remap = (id: number) => {
+      const run = timeline.runs[id];
+      return run ? (newIds.get(key(run)) ?? -1) : -1;
+    };
+
+    // Streams of unchanged runs move to their new ids; the rest stop.
+    const moved: Stream[] = [];
+    for (const stream of [...streams.values()]) {
+      const id = remap(stream.run);
+      if (id < 0) {
+        retire(stream);
+        continue;
+      }
+      streams.delete(stream.run);
+      stream.run = id;
+      for (const frame of stream.queue.clear()) stream.queue.push({ ...frame, run: id });
+      moved.push(stream);
+    }
+    for (const stream of moved) streams.set(stream.run, stream);
+
+    // Layer states follow their layer number; what a layer shows keeps showing.
+    const oldLayers = new Map(timeline.layers.map(({ layer }, i) => [layer, layers[i]]));
+    const nextLayers = next.layers.map(({ layer }, i) => {
+      const state = oldLayers.get(layer) ?? newLayerState();
+      state.currentRun = runIdAt(next, i, playhead);
+      if (state.shown) {
+        const id = remap(state.shown.run);
+        const run = id >= 0 ? id : state.currentRun;
+        state.shown = run >= 0 ? { ...state.shown, run } : null;
+      }
+      return state;
+    });
+    timeline = next;
+    layers = nextLayers;
+    const appliedAt = refreshCount;
+    if (size.width !== sequence.width || size.height !== sequence.height) {
+      sequence = size;
+      rebuildTargets();
+    }
+    // Composites cached for scrubbing show the old edit.
+    gpu?.cache.clear();
+    if (playing) {
+      schedule(playhead);
+      composite();
+    } else if (scrubbing) {
+      scrubJobs = timeline.layers.map((_, i) => new LatestWins(scrubJob(i)));
+      lastKeyframeSeek = timeline.layers.map(() => -Infinity);
+      for (const job of scrubJobs) job.request({ t: scrubTarget, exact: settled });
+    } else {
+      await showExact(playhead);
+    }
+    return { sources: results, cuts: usable, duration: timeline.duration, refresh: appliedAt };
+  }
+
   async function handle(message: ToRenderer): Promise<void> {
     switch (message.type) {
       case "init":
-        init(message.canvas, message.decoders, message.audioClock, message.size);
+        init(message.canvas, message.decoders, message.audioClock, message.size, message.playhead);
         return;
       case "resize":
         resize(message.size);
         return;
       case "load":
-        post({ type: "loaded", id: message.id, result: await load(message.sources, message.cuts) });
+        post({
+          type: "loaded",
+          id: message.id,
+          result: await load(message.sources, message.cuts, message.size),
+        });
+        return;
+      case "update":
+        post({
+          type: "loaded",
+          id: message.id,
+          result: await update(message.added, message.cuts, message.size),
+        });
+        return;
+      case "view":
+        view = message.view;
+        background = message.background;
+        dirty = true;
         return;
       case "play":
         play(message.from, message.session);

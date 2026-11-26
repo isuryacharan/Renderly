@@ -6,6 +6,7 @@ import type { ProjectSession } from "@renderly/storage";
 import { Splitter } from "@renderly/ui/react";
 import { useEffect, useMemo, useState } from "react";
 import { Timeline } from "../timeline/Timeline";
+import { Viewer } from "../viewer/Viewer";
 import { MediaBin } from "./MediaBin";
 import { MediaStatus } from "./media-status";
 
@@ -76,10 +77,7 @@ export function Layout({
           max={LIMITS.library[1]}
           onChange={set("library")}
         />
-        <section className="r-panel r-panel--viewer editor__viewer" aria-label="Viewer">
-          <h2 className="r-panel__header text-body-strong">Viewer</h2>
-          <div className="r-panel__body" />
-        </section>
+        <Viewer store={session.store} project={project} view={view} status={status} />
         <Splitter
           orientation="vertical"
           label="Resize the inspector"

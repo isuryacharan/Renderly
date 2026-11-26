@@ -21,6 +21,7 @@ import {
   type MediaInput,
 } from "@renderly/media";
 import { beepOnsets } from "./beeps";
+import { routeThroughProject, type ProjectCheck } from "./project-load";
 import { layerList, shortClipList, stressList } from "./stress";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -30,6 +31,13 @@ const statsEl = $<HTMLPreElement>("stats");
 const logEl = $<HTMLPreElement>("log");
 
 const preview = await createPreview($<HTMLCanvasElement>("view"));
+// With ?project, every edit list goes through a real project first (S1.8; see project-load.ts).
+const projectChecks: ProjectCheck[] = [];
+if (new URLSearchParams(location.search).has("project"))
+  routeThroughProject(preview, (check) => {
+    projectChecks.push(check);
+    console.info(`project-check: ${JSON.stringify(check)}`);
+  });
 const history: RenderStats[] = [];
 const errors: string[] = [];
 
@@ -289,6 +297,7 @@ async function scrubTest(from: number, span: number, seconds = 4) {
 const results = {
   history,
   errors,
+  projectChecks,
   main: () => ({ longTasks, maxTimerLagMs: Math.round(maxTimerLagMs) }),
   resetMain: () => {
     longTasks = 0;
