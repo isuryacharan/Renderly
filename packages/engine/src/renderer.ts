@@ -1068,14 +1068,21 @@ export function serveRenderer(scope: RendererScope): void {
   async function update(added: MediaInput[], cuts: Cut[], size: Size): Promise<LoadResult> {
     if (!reserved) throw new Error("Renderer is not initialised");
     const results: OpenResult[] = [];
-    for (const input of added) {
-      sources.push({ input, info: null });
-      const index = sources.length - 1;
-      const result = await openOn(reserved, index);
-      results.push(result);
-      const entry = sources[index];
-      if (result.ok && entry) entry.info = result;
-    }
+    // New files open on the reserved decoder, which exact seeks also use: take turns with them
+    // (an open in the middle of a seek replaces the seek's file: "No file is open").
+    const slot = reserved;
+    const opening = exactChain.then(async () => {
+      for (const input of added) {
+        sources.push({ input, info: null });
+        const index = sources.length - 1;
+        const result = await openOn(slot, index);
+        results.push(result);
+        const entry = sources[index];
+        if (result.ok && entry) entry.info = result;
+      }
+    });
+    exactChain = opening.catch(() => null);
+    await opening;
     const usable = cuts.filter((cut) => sources[cut.source]?.info);
     const next = toTimeline(usable);
     const key = (run: Run) => {

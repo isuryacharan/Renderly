@@ -100,13 +100,18 @@ async function stop(server) {
 }
 
 class Failure extends Error {}
+/** Uncaught errors in any page during the current scenario: each one fails it. */
+const pageErrors = [];
 function check(condition, message) {
   if (!condition) throw new Failure(message);
 }
 
 async function openLab(context) {
   const page = await context.newPage();
-  page.on("pageerror", (error) => log("page error:", error.message));
+  page.on("pageerror", (error) => {
+    log("page error:", error.message);
+    pageErrors.push(error.message);
+  });
   await page.goto(`${BASE}/media-lab.html`);
   await page.waitForFunction(() => window.labReadyAt !== undefined, null, { timeout: 60_000 });
   return page;
@@ -119,7 +124,10 @@ async function openEditor(context, folder) {
     await (
       await context.newCDPSession(page)
     ).send("Emulation.setCPUThrottlingRate", { rate: slowdown });
-  page.on("pageerror", (error) => log("page error:", error.message));
+  page.on("pageerror", (error) => {
+    log("page error:", error.message);
+    pageErrors.push(error.message);
+  });
   await page.goto(
     `${BASE}/${slowSeek > 0 ? `?slow-seek=${slowSeek}` : ""}#/project/browser/${folder}`,
   );
@@ -281,7 +289,10 @@ const scenarios = {
       };
     });
     const page = await context.newPage();
-    page.on("pageerror", (error) => log("page error:", error.message));
+    page.on("pageerror", (error) => {
+      log("page error:", error.message);
+      pageErrors.push(error.message);
+    });
     await page.goto(`${BASE}/`);
     await page.waitForFunction(() => window.appReadyAt !== undefined);
     const keys = async (...list) => {
@@ -440,6 +451,8 @@ const scenarios = {
     await again.waitForFunction(() => window.renderlyTimeline?.sequence, null, { timeout: 20_000 });
     const after = await again.evaluate(() => JSON.stringify(window.renderlyTimeline["project"]));
     check(after === before, "the reopened project is byte for byte the one that was closed");
+    const errors = await again.evaluate(() => window.renderlyViewer?.errors ?? []);
+    check(errors.length === 0, `no preview errors after reopening: ${errors.join("; ")}`);
     return `${JSON.parse(after).sequences[0].tracks[0].clips.length} clips cut by keyboard; reopened identical`;
   },
 
@@ -865,7 +878,16 @@ const scenarios = {
     );
     check(during.engine === expected, `the engine shows it: ${during.engine / FRAME} (frames)`);
     await page.waitForFunction(() => window.renderlyTimeline["options"].view.get().peek === null);
-    await page.waitForTimeout(500);
+    // Back to the playhead takes one exact seek: wait for it, however slow seeks are.
+    await page
+      .waitForFunction(
+        () =>
+          window.renderlyViewer.preview.readPlayhead().time ===
+          window.renderlyTimeline["options"].view.get().playhead,
+        null,
+        { timeout: 10_000 },
+      )
+      .catch(() => {});
     const after = await page.evaluate(() => ({
       playhead: window.renderlyTimeline["options"].view.get().playhead,
       engine: window.renderlyViewer.preview.readPlayhead().time,
@@ -954,8 +976,10 @@ async function main() {
       await reset.evaluate(() => mediaLab.reset());
       await reset.close();
       const started = Date.now();
+      pageErrors.length = 0;
       try {
         const detail = await run({ context });
+        check(pageErrors.length === 0, `uncaught page errors: ${pageErrors.join("; ")}`);
         log(`PASS ${name} (${Date.now() - started} ms)${detail ? ` — ${detail}` : ""}`);
       } catch (error) {
         failed++;
