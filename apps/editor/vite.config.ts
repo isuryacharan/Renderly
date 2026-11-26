@@ -12,6 +12,10 @@ export default defineConfig({
   worker: { format: "es" },
   // Scan the dev-only media lab too, so its dependencies are bundled at start-up instead of on its
   // first visit (which reloads the page in the middle of a test).
-  // three.js is imported only by the render worker, which the scan does not follow: list it.
-  optimizeDeps: { entries: ["index.html", "media-lab.html"], include: ["three"] },
+  // three.js is imported only by the engine's render worker, which the scan does not follow, and it
+  // is the engine's dependency, not the app's: name it through the engine (Vite's "linked > dep").
+  optimizeDeps: {
+    entries: ["index.html", "media-lab.html"],
+    include: ["@renderly/engine > three"],
+  },
 });

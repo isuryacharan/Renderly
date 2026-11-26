@@ -54,6 +54,8 @@ import { thumbKey, Thumbnails, type ThumbRequest } from "./thumbnails";
 export type Tool = "select" | "blade";
 
 const SCROLLBAR = 10;
+/** Clips narrower than this are drawn as plain rectangles, batched per track. */
+const NARROW_PX = 8;
 const NAME_ROW = 18;
 const AUDIO_STRIP = 14;
 const DRAG_THRESHOLD = 3;
@@ -139,6 +141,8 @@ export class TimelineView {
   private follow = true;
   private readonly thumbs: Thumbnails;
   private readonly textWidths = new Map<string, number>();
+  /** The project's media by id, rebuilt each draw. */
+  private mediaById = new Map<string, MediaItem>();
   private readonly cleanup: (() => void)[] = [];
 
   constructor(
@@ -960,16 +964,37 @@ export class TimelineView {
     ctx.rect(0, top, width, areaBottom - top);
     ctx.clip();
 
+    this.mediaById = new Map(this.project.media.map((m) => [m.id, m]));
+    const gap = spacing.space2 / 2;
     for (const row of rows) {
       const y = top + row.y - this.scrollY;
       if (y > areaBottom || y + row.height < top) continue;
       ctx.fillStyle = c.border;
       ctx.fillRect(0, y + row.height, width, 1);
       const clips = row.track.clips;
+      // Clips too narrow for a name or pictures are plain rectangles, filled in one go per row
+      // (zoomed out, hundreds of them would otherwise each cost a clip region and a path).
+      const narrow: Path2D[] = [new Path2D(), new Path2D()]; // [enabled, dimmed]
+      let anyNarrow = false;
+      const insetY = y + CLIP_INSET;
+      const h = row.height - CLIP_INSET * 2;
       for (let k = firstVisible(clips, from); k < clips.length; k++) {
         const clip = clips[k];
         if (!clip || clip.start > to) break;
-        this.drawClip(row, clip, y, view, selected.has(clip.id), wants);
+        const x0 = timeToX(view, clip.start) + gap;
+        const w = Math.max(1, timeToX(view, clipEnd(clip)) - gap - x0);
+        if (w < NARROW_PX && !selected.has(clip.id)) {
+          const dim = !clip.enabled || row.track.hidden;
+          narrow[dim ? 1 : 0]?.rect(x0, insetY, w, h);
+          anyNarrow = true;
+        } else this.drawClip(row, clip, y, view, selected.has(clip.id), wants);
+      }
+      if (anyNarrow) {
+        ctx.fillStyle = clipColor(c, row.track.kind);
+        ctx.fill(narrow[0] as Path2D);
+        ctx.globalAlpha = 0.5;
+        ctx.fill(narrow[1] as Path2D);
+        ctx.globalAlpha = 1;
       }
     }
 
@@ -1117,8 +1142,7 @@ export class TimelineView {
     const h = row.height - CLIP_INSET * 2;
     const w = Math.max(1, x1 - x0);
     const kind = row.track.kind;
-    const media =
-      clip.media !== undefined ? this.project.media.find((m) => m.id === clip.media) : undefined;
+    const media = clip.media !== undefined ? this.mediaById.get(clip.media) : undefined;
     const state = media ? this.options.status.get(media.id) : undefined;
     const offline = state?.status === "offline";
     const dim = !clip.enabled || row.track.hidden;
@@ -1127,14 +1151,7 @@ export class TimelineView {
     if (dim) ctx.globalAlpha = 0.5;
     ctx.beginPath();
     ctx.roundRect(x0, y, w, h, Math.min(radius.radiusSm, w / 2));
-    ctx.fillStyle =
-      kind === "video"
-        ? c.clipVideo
-        : kind === "audio"
-          ? c.clipAudio
-          : kind === "text"
-            ? c.clipText
-            : c.clipEffect;
+    ctx.fillStyle = clipColor(c, kind);
     ctx.fill();
     if (w < 3) {
       ctx.restore();
@@ -1292,6 +1309,16 @@ export class TimelineView {
     }
     return lo === 0 ? "" : `${text.slice(0, lo)}…`;
   }
+}
+
+function clipColor(c: (typeof colors)[ThemeId], kind: Track["kind"]): string {
+  return kind === "video"
+    ? c.clipVideo
+    : kind === "audio"
+      ? c.clipAudio
+      : kind === "text"
+        ? c.clipText
+        : c.clipEffect;
 }
 
 const iconPaths = new Map<string, Path2D[]>();

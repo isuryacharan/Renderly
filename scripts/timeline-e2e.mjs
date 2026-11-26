@@ -21,7 +21,7 @@ const arg = (name, fallback) => {
 };
 const channel = arg("browser", "msedge");
 const only = arg("only", null);
-const PORT = 5183;
+const PORT = Number(process.env.PORT ?? 5183);
 const BASE = `http://localhost:${PORT}`;
 const SECOND = 705_600_000;
 const FRAME = SECOND / 30;
@@ -423,11 +423,15 @@ const scenarios = {
       tl["options"].view.set({ selection: [top.id], loop: true });
     });
     await page.getByRole("button", { name: "Play", exact: true }).click();
+    // Watch until it has wrapped twice (a slow machine takes longer to start each pass), at most 8 s.
     const seen = await page.evaluate(async () => {
       const times = [];
-      const end = performance.now() + 2500;
-      while (performance.now() < end) {
-        times.push(window.renderlyTimeline["options"].view.get().playhead);
+      let wraps = 0;
+      const end = performance.now() + 8000;
+      while (performance.now() < end && wraps < 2) {
+        const t = window.renderlyTimeline["options"].view.get().playhead;
+        if (times.length && t < times[times.length - 1]) wraps++;
+        times.push(t);
         await new Promise((r) => requestAnimationFrame(r));
       }
       return times;
