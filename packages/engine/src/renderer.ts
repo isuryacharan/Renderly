@@ -34,6 +34,7 @@ import { RefreshMeter } from "./refresh-meter";
 import { LatestWins, SETTLE_MS } from "./scrub";
 import {
   runIdAt,
+  runTransformAt,
   sourceTime,
   timelineTime,
   toTimeline,
@@ -458,7 +459,7 @@ export function serveRenderer(scope: RendererScope): void {
     const draws = timeline.layers.flatMap(({ layer }, i) => {
       const state = layers[i];
       if (!state || state.currentRun < 0 || !state.shown) return [];
-      return [{ layer, transform: runOf(state.currentRun).transform }];
+      return [{ layer, transform: runTransformAt(runOf(state.currentRun), playhead) }];
     });
     gpu.compositor.composite(draws);
     display = null;
@@ -599,7 +600,9 @@ export function serveRenderer(scope: RendererScope): void {
       gpu.fastUploader.upload(decoded.frame, info.rotation, target);
       const draws = timeline.layers.flatMap(({ layer: l }, i) => {
         const current = runIdAt(timeline, i, scrubTarget);
-        return current < 0 ? [] : [{ layer: l, transform: runOf(current).transform }];
+        return current < 0
+          ? []
+          : [{ layer: l, transform: runTransformAt(runOf(current), scrubTarget) }];
       });
       gpu.scrubCompositor.composite(draws);
       display = gpu.scrubCompositor.texture;
@@ -868,7 +871,9 @@ export function serveRenderer(scope: RendererScope): void {
         if (!stream.ended || stream.queue.length > 0) state.late++;
       }
     }
-    if (changed) composite();
+    // An animated layer changes every refresh, even on the same frame.
+    const animated = layers.some((state) => runOf(state.currentRun)?.keys !== undefined);
+    if (changed || animated) composite();
     if (audioSession) checkSync();
   }
 
@@ -1086,7 +1091,15 @@ export function serveRenderer(scope: RendererScope): void {
     const usable = cuts.filter((cut) => sources[cut.source]?.info);
     const next = toTimeline(usable);
     const key = (run: Run) =>
-      [run.source, run.in, run.out, run.start, run.layer, JSON.stringify(run.transform)].join("|");
+      [
+        run.source,
+        run.in,
+        run.out,
+        run.start,
+        run.layer,
+        JSON.stringify(run.transform),
+        JSON.stringify(run.keys ?? null),
+      ].join("|");
     const newIds = new Map(next.runs.map((run, id) => [key(run), id]));
     const remap = (id: number) => {
       const run = timeline.runs[id];

@@ -28,7 +28,7 @@
 
 .r-property-row {
   display: grid;
-  grid-template-columns: 68px minmax(0, 1fr) 60px var(--control-sm) var(--control-sm);
+  grid-template-columns: 68px minmax(0, 1fr) 60px auto var(--control-sm);
   align-items: center;
   gap: var(--space-8);
   height: var(--control-sm);
@@ -42,6 +42,39 @@
   text-overflow: ellipsis;
   /* Dragging on the label scrubs the value. */
   cursor: ew-resize;
+}
+
+/* Keyframe control: previous key, the diamond (add or remove; right-click: easing), next key. */
+.r-keyframe-control {
+  display: flex;
+  align-items: center;
+}
+.r-keyframe-control__step {
+  display: grid;
+  place-items: center;
+  width: 12px;
+  height: var(--control-sm);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+.r-keyframe-control__step .r-icon {
+  width: 12px;
+  height: 12px;
+}
+.r-keyframe-control__step:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+.r-keyframe-control__step:disabled {
+  visibility: hidden;
+}
+.r-keyframe-control__step:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
 }
 
 /* Keyframe diamond: three states. */

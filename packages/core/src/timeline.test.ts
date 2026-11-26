@@ -2,6 +2,7 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import "./timeline-commands";
 import type { Command } from "./commands";
+import { valueAt, type Key } from "./keyframes";
 import { serialiseProject } from "./migrate";
 import { projectSchema, type Clip, type Project, type Track } from "./schema";
 import { ProjectStore } from "./store";
@@ -443,9 +444,16 @@ describe("clip.split", () => {
     const right = store.project.sequences[0]?.tracks[1]?.clips.at(-1);
     expect(right?.start).toBe(s(12));
     expect(right?.in).toBe(s(2));
-    expect((right?.components[0] as { keys: unknown }).keys).toEqual({
-      opacity: [{ t: s(1), v: 1, ease: "auto" }],
-    });
+    // The right half gets a key at its new start, and its fade is the same as before the split.
+    const keys = (right?.components[0] as { keys: { opacity: Key[] } }).keys.opacity;
+    expect(keys[0]?.t).toBe(0);
+    expect(keys.at(-1)).toMatchObject({ t: s(1), v: 1 });
+    const original: Key[] = [
+      { t: 0, v: 0, ease: "auto" },
+      { t: s(3), v: 1, ease: "auto" },
+    ];
+    for (const at of [0, 0.25, 0.5, 0.75, 1, 1.5])
+      expect(valueAt(keys, s(at))).toBeCloseTo(valueAt(original, s(at + 2)) as number, 9);
 
     // The same split on a fresh store gives the same ids.
     const again = setup();

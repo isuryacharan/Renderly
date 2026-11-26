@@ -88,6 +88,7 @@ export {
   TrimClips,
 } from "./timeline-commands";
 export { newProject, type NewProjectOptions } from "./new-project";
+export { AddKeyframes, EaseKeyframe, MoveKeyframe, RemoveKeyframes } from "./keyframe-commands";
 export { ImportMedia, RemoveMedia } from "./media-commands";
 export {
   cutPoints,
@@ -96,6 +97,7 @@ export {
   graphHash,
   IDENTITY_TRANSFORM,
   stableHash,
+  transformAt,
   type EvaluateOptions,
   type FrameGraph,
   type FrameLayer,
@@ -103,4 +105,14 @@ export {
   type GraphLayer,
   type LayerTransform,
   type SequenceGraph,
+  type TransformKeys,
 } from "./evaluate";
+export {
+  applyEase,
+  insertKey,
+  shiftKeys as shiftKeyframes,
+  valueAt,
+  type EasePreset,
+  type Key,
+  type KeyValue,
+} from "./keyframes";

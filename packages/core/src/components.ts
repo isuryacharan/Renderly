@@ -9,7 +9,10 @@ import { z } from "zod";
 
 export const Ease = z.enum(["linear", "auto", "bezier", "hold"]);
 
-/** A value at a time. Bézier handles are relative to the key, in flicks and value units. */
+/**
+ * A value at a time (keyframes.ts). Handles are [time offset in flicks, progress offset] from the
+ * key: progress is the share of the span's change, so numbers and pairs ease alike.
+ */
 export const Keyframe = z.strictObject({
   t: z.int().min(0),
   v: z.union([z.number(), z.array(z.number()).min(1).max(4)]),

@@ -10,6 +10,7 @@
 // disabled clips draw nothing. Layer 0 is the bottom video track; its sound is what plays until
 // the audio engine mixes tracks (M2), unless the track is muted.
 
+import { valueAt, type Key } from "./keyframes";
 import { sequenceDuration } from "./timeline";
 import type { Clip, Project, Sequence } from "./schema";
 import type { Rate } from "./time";
@@ -45,6 +46,11 @@ export const IDENTITY_TRANSFORM: LayerTransform = {
   opacity: 1,
 };
 
+/** The transform's animated fields: keyframes per field, in clip time. */
+export type TransformKeys = Partial<
+  Record<"position" | "scale" | "rotation" | "anchor" | "opacity", Key[]>
+>;
+
 export interface GraphClip {
   clip: string;
   media: string;
@@ -52,7 +58,41 @@ export interface GraphClip {
   in: number;
   out: number;
   start: number;
+  /** The transform without animation (and where nothing is keyed). */
   transform: LayerTransform;
+  /** Keyframes of the transform's fields, when it is animated. */
+  keys?: TransformKeys;
+}
+
+/** A transform at clip time `t`: each keyed field from its keys, the rest as set. */
+export function transformAt(
+  transform: LayerTransform,
+  keys: TransformKeys | undefined,
+  t: number,
+): LayerTransform {
+  if (!keys) return transform;
+  const at = (field: keyof TransformKeys): number | number[] | undefined => {
+    const list = keys[field];
+    return list && list.length > 0 ? valueAt(list, t) : undefined;
+  };
+  const pair = (value: number | number[] | undefined, fallback: [number, number]) =>
+    Array.isArray(value) ? [value[0] ?? fallback[0], value[1] ?? fallback[1]] : fallback;
+  const position = pair(at("position"), [transform.x, transform.y]);
+  const scale = pair(at("scale"), [transform.scaleX, transform.scaleY]);
+  const anchor = pair(at("anchor"), [transform.anchorX, transform.anchorY]);
+  const rotation = at("rotation");
+  const opacity = at("opacity");
+  return {
+    ...transform,
+    x: position[0] ?? transform.x,
+    y: position[1] ?? transform.y,
+    scaleX: Math.max(1e-6, scale[0] ?? transform.scaleX),
+    scaleY: Math.max(1e-6, scale[1] ?? transform.scaleY),
+    anchorX: anchor[0] ?? transform.anchorX,
+    anchorY: anchor[1] ?? transform.anchorY,
+    rotation: typeof rotation === "number" ? rotation : transform.rotation,
+    opacity: typeof opacity === "number" ? Math.min(1, Math.max(0, opacity)) : transform.opacity,
+  };
 }
 
 export interface GraphLayer {
@@ -81,6 +121,7 @@ export interface EvaluateOptions {
 }
 
 interface TransformComponent {
+  keys?: Record<string, Key[]>;
   position?: [number, number];
   scale?: [number, number];
   rotation?: number;
@@ -106,6 +147,21 @@ function transformOf(clip: Clip): LayerTransform {
     flipY: c.flipY ?? false,
     opacity: c.opacity ?? 1,
   };
+}
+
+const ANIMATABLE = ["position", "scale", "rotation", "anchor", "opacity"] as const;
+
+/** The transform's keyframes, when any field is animated. */
+function keysOf(clip: Clip): TransformKeys | undefined {
+  const c = (clip.components as { type: string }[]).find((x) => x.type === "transform") as
+    TransformComponent | undefined;
+  if (!c?.keys) return undefined;
+  const keys: TransformKeys = {};
+  for (const field of ANIMATABLE) {
+    const list = c.keys[field];
+    if (list && list.length > 0) keys[field] = list;
+  }
+  return Object.keys(keys).length > 0 ? keys : undefined;
 }
 
 export function evaluateSequence(
@@ -135,6 +191,7 @@ export function evaluateSequence(
         skipped.push({ clip: clip.id, reason: "unavailable" });
         continue;
       }
+      const keys = keysOf(clip);
       clips.push({
         clip: clip.id,
         media: clip.media,
@@ -142,6 +199,7 @@ export function evaluateSequence(
         out: clip.in + clip.duration,
         start: clip.start,
         transform: transformOf(clip),
+        ...(keys ? { keys } : {}),
       });
     }
     layers.push({ track: track.id, muted: track.muted, clips });
@@ -204,7 +262,7 @@ export function frameAt(graph: SequenceGraph, t: number): FrameGraph {
       clip: clip.clip,
       media: clip.media,
       sourceTime: clip.in + (t - clip.start),
-      transform: clip.transform,
+      transform: transformAt(clip.transform, clip.keys, t - clip.start),
     });
   });
   const sources = [...new Set(layers.map((l) => l.media))];
@@ -225,7 +283,7 @@ export function graphHash(graph: SequenceGraph): string {
     graph.duration,
     graph.layers.map((l) => [
       l.muted,
-      l.clips.map((c) => [c.media, c.in, c.out, c.start, c.transform]),
+      l.clips.map((c) => [c.media, c.in, c.out, c.start, c.transform, c.keys ?? null]),
     ]),
   ]);
 }

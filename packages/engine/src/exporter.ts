@@ -40,6 +40,7 @@ import {
   type Cut,
   type Run,
   type Timeline,
+  runTransformAt,
 } from "./timeline";
 
 export interface ExportSettings {
@@ -318,7 +319,7 @@ export function serveExporter(endpoint: Endpoint): void {
         const shown = this.shown[i];
         const id = runIdAt(this.timeline, i, t);
         if (!shown || id < 0) return [];
-        return [{ layer, transform: (this.timeline.runs[id] as Run).transform }];
+        return [{ layer, transform: runTransformAt(this.timeline.runs[id] as Run, t) }];
       });
       this.compositor.composite(draws);
       const texture = this.compositor.texture;

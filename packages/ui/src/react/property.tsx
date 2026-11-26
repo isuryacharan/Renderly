@@ -4,7 +4,102 @@
 
 import { useRef, type CSSProperties, type ReactNode } from "react";
 import { NumericField } from "./controls";
-import { IconButton } from "./icons";
+import { Icon, IconButton } from "./icons";
+import { MenuButton } from "./overlays";
+
+/** The ease presets offered on a keyframe (keyframes.ts in @renderly/core). */
+export type EasePreset = "linear" | "ease-in" | "ease-out" | "ease-in-out" | "auto" | "hold";
+
+const EASES: [EasePreset, string][] = [
+  ["linear", "Linear"],
+  ["ease-in", "Ease in"],
+  ["ease-out", "Ease out"],
+  ["ease-in-out", "Ease in and out"],
+  ["auto", "Auto (smooth)"],
+  ["hold", "Hold"],
+];
+
+export interface KeyframeState {
+  /** "on": the playhead is on a key; "animated": keyed elsewhere; "none": not animated. */
+  state: "none" | "animated" | "on";
+  /** Adds a key at the playhead, or removes the one there. */
+  onToggle: () => void;
+  /** Jump to the previous or next key; undefined when there is none. */
+  onPrevious?: (() => void) | undefined;
+  onNext?: (() => void) | undefined;
+  /** Sets the easing of the key at the playhead (only offered when on one). */
+  onEase: (preset: EasePreset) => void;
+}
+
+/** Previous key, add/remove (right-click: easing), next key. */
+export function KeyframeControl({
+  label,
+  keyframe,
+  disabled = false,
+}: {
+  label: string;
+  keyframe?: KeyframeState | undefined;
+  disabled?: boolean;
+}) {
+  const state = keyframe?.state ?? "none";
+  const diamond = `r-keyframe${state === "on" ? " r-keyframe--on" : state === "animated" ? " r-keyframe--animated" : ""}`;
+  if (!keyframe)
+    return (
+      <span className="r-keyframe-control">
+        <button
+          type="button"
+          className="r-button r-button--icon r-button--sm"
+          aria-label={`Keyframes for ${label} (not available here)`}
+          disabled
+        >
+          <span className="r-keyframe" />
+        </button>
+      </span>
+    );
+  return (
+    <span className="r-keyframe-control">
+      <button
+        type="button"
+        className="r-keyframe-control__step"
+        aria-label={`Previous ${label} keyframe`}
+        disabled={disabled || !keyframe.onPrevious}
+        onClick={keyframe.onPrevious}
+      >
+        <Icon name="chevron-left" />
+      </button>
+      <MenuButton
+        label={<span className={diamond} />}
+        aria-label={
+          state === "on"
+            ? `Remove the ${label} keyframe (right-click for easing)`
+            : `Add a ${label} keyframe`
+        }
+        tooltip={state === "on" ? "Remove keyframe · right-click: easing" : "Add keyframe"}
+        className="r-button r-button--icon r-button--sm"
+        opensOn="contextmenu"
+        onPress={keyframe.onToggle}
+        disabled={disabled}
+        items={
+          state === "on"
+            ? EASES.map(([preset, name]) => ({
+                label: name,
+                onSelect: () => keyframe.onEase(preset),
+              }))
+            : [{ label: "Add a keyframe first", onSelect: () => {}, disabled: true }]
+        }
+      />
+      <button
+        type="button"
+        className="r-keyframe-control__step"
+        aria-label={`Next ${label} keyframe`}
+        disabled={disabled || !keyframe.onNext}
+        onClick={keyframe.onNext}
+      >
+        <Icon name="chevron-right" />
+      </button>
+    </span>
+  );
+}
 
 export interface PropertyRowProps {
   label: string;
@@ -27,6 +122,8 @@ export interface PropertyRowProps {
   /** The drag was cancelled (Escape): put back what was there. */
   onCancel?: () => void;
   disabled?: boolean;
+  /** The property's keyframes; left out, the keyframe slot is inactive. */
+  keyframe?: KeyframeState | undefined;
 }
 
 /** Label (drag to scrub), slider, numeric field, keyframe slot, reset — on one line. */
@@ -45,6 +142,7 @@ export function PropertyRow({
   onCommit,
   onCancel,
   disabled = false,
+  keyframe,
 }: PropertyRowProps) {
   const drag = useRef<{ last: number } | null>(null);
   const clamp = (n: number) => Math.min(max, Math.max(min, n));
@@ -151,14 +249,7 @@ export function PropertyRow({
         {...(unit ? { unit } : {})}
         onChange={(typed) => onCommit(clamp(typed / display))}
       />
-      <button
-        type="button"
-        className="r-button r-button--icon r-button--sm"
-        aria-label={`Keyframes for ${label} (available in a later version)`}
-        disabled
-      >
-        <span className="r-keyframe" />
-      </button>
+      <KeyframeControl label={label} keyframe={keyframe} disabled={disabled} />
       <IconButton
         icon="reset"
         label={`Reset ${label}`}
@@ -175,17 +266,22 @@ export function PropertySection({
   title,
   onReset,
   resetDisabled = false,
+  keyframe,
   children,
 }: {
   title: string;
   onReset?: () => void;
   resetDisabled?: boolean;
+  /** A group key: keys every animatable property of the section at once. */
+  keyframe?: KeyframeState | undefined;
   children: ReactNode;
 }) {
   return (
     <section className="r-property-section" aria-label={title}>
       <div className="r-property-section__header">
         <h3 className="r-property-section__title">{title}</h3>
+        <span className="r-toolbar__spacer" />
+        {keyframe && <KeyframeControl label={title.toLowerCase()} keyframe={keyframe} />}
         {onReset && (
           <IconButton
             icon="reset"

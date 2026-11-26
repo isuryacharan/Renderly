@@ -14,6 +14,7 @@ import { z } from "zod";
 import { CommandError, defineCommand } from "./commands";
 import { deriveId } from "./ids";
 import { Flicks, Id, type Clip, type Project, type Sequence, type Track } from "./schema";
+import { shiftKeys as shiftKeyList, type Key } from "./keyframes";
 import { clipEnd, sourceDuration, sourceSpan } from "./timeline";
 import { flicksPerFrame } from "./time";
 
@@ -86,20 +87,18 @@ const snap = (t: number, frame: number, mode: "round" | "floor" | "ceil" = "roun
 
 const clone = (clip: Clip | DClip): Clip => JSON.parse(JSON.stringify(clip)) as Clip;
 
-type Keyframes = Record<string, { t: number }[]>;
+type Keyframes = Record<string, Key[]>;
 
-/** Moves a clip's keyframes `by` flicks earlier; keys that fall before the clip start go. */
+/**
+ * Moves a clip's keyframes `by` flicks earlier (its start moved later over its source). A key is
+ * added at the new start first, so the visible motion is unchanged (keyframes.ts `shiftKeys`).
+ */
 function shiftKeys(clip: Clip | DClip, by: number): void {
   for (const component of clip.components as Record<string, unknown>[]) {
     const keys = component["keys"] as Keyframes | undefined;
     if (!keys) continue;
-    for (const name of Object.keys(keys)) {
-      const list = keys[name] ?? [];
-      for (const key of list) key.t -= by;
-      for (let i = list.length - 1; i >= 0; i--) if ((list[i]?.t ?? 0) < 0) list.splice(i, 1);
-      if (list.length === 0) Reflect.deleteProperty(keys, name);
-    }
-    if (Object.keys(keys).length === 0) delete component["keys"];
+    for (const name of Object.keys(keys))
+      keys[name] = shiftKeyList(JSON.parse(JSON.stringify(keys[name] ?? [])) as Key[], by);
   }
 }
 

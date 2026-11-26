@@ -6,6 +6,7 @@
 // run, so the decoder plays straight through split points instead of seeking. Each run needs
 // its own decoder stream.
 
+import { transformAt, type TransformKeys } from "@renderly/core";
 import type { Flicks } from "@renderly/media";
 
 /**
@@ -64,6 +65,8 @@ export interface Cut {
   transform?: TransformInput;
   /** Layer 0's cuts give the sound (until the audio engine mixes layers); muted ones do not. */
   muted?: boolean;
+  /** Keyframes of the transform, in time from this cut's start (a cut is one whole clip). */
+  keys?: TransformKeys;
 }
 
 export interface Run {
@@ -74,6 +77,13 @@ export interface Run {
   end: Flicks;
   layer: number;
   transform: Transform;
+  /** Animated transform fields, in time from `start` (see `runTransformAt`). */
+  keys?: TransformKeys;
+}
+
+/** A run's transform at timeline time `t`: animated fields evaluated, the rest as set. */
+export function runTransformAt(run: Run, t: Flicks): Transform {
+  return run.keys ? transformAt(run.transform, run.keys, t - run.start) : run.transform;
 }
 
 const sameTransform = (a: Transform, b: Transform) =>
@@ -95,6 +105,8 @@ export function toRuns(cuts: readonly Cut[]): Run[] {
     const transform = toTransform(cut.transform);
     if (
       last &&
+      !last.keys &&
+      !cut.keys &&
       last.source === cut.source &&
       last.out === cut.in &&
       last.end === cut.start &&
@@ -104,7 +116,16 @@ export function toRuns(cuts: readonly Cut[]): Run[] {
       last.end = end;
     } else {
       const { source, in: inTime, out } = cut;
-      runs.push({ source, in: inTime, out, start: cut.start, end, layer, transform });
+      runs.push({
+        source,
+        in: inTime,
+        out,
+        start: cut.start,
+        end,
+        layer,
+        transform,
+        ...(cut.keys ? { keys: cut.keys } : {}),
+      });
     }
   }
   return runs;

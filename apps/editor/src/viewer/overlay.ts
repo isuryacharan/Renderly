@@ -323,6 +323,8 @@ export class ViewerOverlay {
       payload = {
         clips: drag.clips,
         component: "transform",
+        // Animated fields take the value into the key at the playhead.
+        time: this.options.view.get().playhead,
         field: "position",
         values: drag.from.map((t) => [t.x + dx, t.y + dy]),
       };
@@ -335,6 +337,8 @@ export class ViewerOverlay {
       payload = {
         clips: drag.clips,
         component: "transform",
+        // Animated fields take the value into the key at the playhead.
+        time: this.options.view.get().playhead,
         field: "rotation",
         values: drag.from.map((t) => Math.round((t.rotation + delta) * 10) / 10),
       };
@@ -361,6 +365,8 @@ export class ViewerOverlay {
       payload = {
         clips: drag.clips,
         component: "transform",
+        // Animated fields take the value into the key at the playhead.
+        time: this.options.view.get().playhead,
         field: "scale",
         values: drag.from.map((t) => [
           Math.round(clampScale(t.scaleX * fx) * 1000) / 1000,
