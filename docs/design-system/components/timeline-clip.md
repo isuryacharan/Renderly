@@ -29,5 +29,6 @@ The consumer provides the clip's kind, name, start and duration, selection state
 ## In code
 
 - **Styles**: none: the track area is drawn on a canvas. Use the resolved values in `packages/ui/src/tokens.ts`
+- **Implementation**: `apps/editor/src/timeline/view.ts` draws clips; `thumbnails.ts` loads the filmstrips
 - **Classes**: see the reference markup in `docs/design-system/preview/timeline.fragment.html`
 - **Preview**: `docs/design-system/preview/index.html`

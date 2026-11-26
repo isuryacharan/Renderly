@@ -251,7 +251,7 @@ export class ProjectSession {
       const copy: UnsavedCopy = {
         base: autosave.state.savedRevision,
         stamp: autosave.diskStamp,
-        text: serialiseProject(this.store.project),
+        text: serialiseProject(this.store.committed),
       };
       storage()?.setItem(this.unsavedKey, JSON.stringify(copy));
     } catch {

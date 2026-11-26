@@ -8,8 +8,8 @@ export interface ViewState {
   playhead: number;
   /** Timeline zoom: flicks per pixel. */
   zoom: number;
-  /** Timeline scroll: the time at the left edge, in flicks, and the first visible track row. */
-  scroll: { t: number; row: number };
+  /** Timeline scroll: the time at the left edge, in flicks, and the track rows' offset, in pixels. */
+  scroll: { t: number; y: number };
   /** Selected ids (clips, markers, tracks). */
   selection: readonly string[];
 }
@@ -18,7 +18,7 @@ export const INITIAL_VIEW: ViewState = {
   sequence: null,
   playhead: 0,
   zoom: 705_600_000 / 100, // 100 pixels a second
-  scroll: { t: 0, row: 0 },
+  scroll: { t: 0, y: 0 },
   selection: [],
 };
 

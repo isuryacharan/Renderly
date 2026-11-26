@@ -99,6 +99,12 @@ export const ICONS = {
   "zoom-in": [["path",{"d":"M3 10a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"}],["path",{"d":"M7 10l6 0"}],["path",{"d":"M10 7l0 6"}],["path",{"d":"M21 21l-6 -6"}]],
   /** Zoom the timeline out. Tabler: zoom-out. */
   "zoom-out": [["path",{"d":"M3 10a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"}],["path",{"d":"M7 10l6 0"}],["path",{"d":"M21 21l-6 -6"}]],
+  /** Zoom the timeline to show the whole sequence. Tabler: arrow-autofit-width. */
+  "zoom-fit": [["path",{"d":"M4 12v-6a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v6"}],["path",{"d":"M10 18h-7"}],["path",{"d":"M21 18h-7"}],["path",{"d":"M6 15l-3 3l3 3"}],["path",{"d":"M18 15l3 3l-3 3"}]],
+  /** The selection tool: select, move and trim clips. Tabler: pointer. */
+  "select-tool": [["path",{"d":"M7.904 17.563a1.2 1.2 0 0 0 2.228 .308l2.09 -3.093l4.907 4.907a1.067 1.067 0 0 0 1.509 0l1.047 -1.047a1.067 1.067 0 0 0 0 -1.509l-4.907 -4.907l3.113 -2.09a1.2 1.2 0 0 0 -.309 -2.228l-13.582 -3.904l3.904 13.563"}]],
+  /** The blade tool: click a clip to cut it there. Tabler: slice. */
+  "blade-tool": [["path",{"d":"M3 19l15 -15l3 3l-6 6l2 2a14 14 0 0 1 -14 4"}]],
   /** Show items as a grid of pictures. Tabler: layout-grid. */
   "grid": [["path",{"d":"M4 5a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -4"}],["path",{"d":"M14 5a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -4"}],["path",{"d":"M4 15a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -4"}],["path",{"d":"M14 15a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1h-4a1 1 0 0 1 -1 -1l0 -4"}]],
   /** Show items as a list with details. Tabler: list. */

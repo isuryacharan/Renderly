@@ -1,11 +1,13 @@
 // The editor's four panels: library, viewer and inspector above, the timeline below. The three
 // splitters resize them, by pointer or keyboard, and the sizes are kept across reloads.
 
-import type { Project } from "@renderly/core";
+import { ViewStore, type Project } from "@renderly/core";
 import type { ProjectSession } from "@renderly/storage";
 import { Splitter } from "@renderly/ui/react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Timeline } from "../timeline/Timeline";
 import { MediaBin } from "./MediaBin";
+import { MediaStatus } from "./media-status";
 
 interface Sizes {
   library: number;
@@ -49,6 +51,13 @@ export function Layout({
     }
   }, [sizes]);
   const set = (key: keyof Sizes) => (value: number) => setSizes((s) => ({ ...s, [key]: value }));
+  // Where the user is looking (playhead, zoom, selection) and which files are reachable: shared
+  // by the panels, never saved.
+  const view = useMemo(
+    () => new ViewStore({ sequence: session.store.project.sequences[0]?.id ?? null }),
+    [session],
+  );
+  const status = useMemo(() => new MediaStatus(), [session]);
 
   return (
     <div className="editor">
@@ -56,7 +65,7 @@ export function Layout({
         <section className="r-panel" style={{ width: sizes.library }} aria-label="Library">
           <h2 className="r-panel__header text-body-strong">Library</h2>
           <div className="r-panel__body">
-            <MediaBin session={session} project={project} readOnly={readOnly} />
+            <MediaBin session={session} project={project} readOnly={readOnly} status={status} />
           </div>
         </section>
         <Splitter
@@ -96,12 +105,15 @@ export function Layout({
         invert
         onChange={set("timeline")}
       />
-      <section className="r-panel" style={{ height: sizes.timeline }} aria-label="Timeline">
-        <h2 className="r-panel__header text-body-strong">Timeline</h2>
-        <div className="r-panel__body r-panel__body--viewer">
-          <p className="r-panel__empty">The timeline is empty.</p>
-        </div>
-      </section>
+      <div className="editor__timeline" style={{ height: sizes.timeline }}>
+        <Timeline
+          session={session}
+          project={project}
+          readOnly={readOnly}
+          view={view}
+          status={status}
+        />
+      </div>
     </div>
   );
 }
