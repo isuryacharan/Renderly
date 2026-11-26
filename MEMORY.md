@@ -11,7 +11,7 @@ Last updated: 2026-11-24
   (`docs/decisions/0001-engine.md`) is **go**, accepted by the owner on 2026-11-25.
 - M1 in progress. S1.1 to S1.3 (schema, commands and undo, timeline edits) are merged. S1.4
   (project storage), S1.5 (app shell and home screen), the icon set and S1.6 (media bin) are
-  merged. S1.7 (canvas timeline) is built; in review as a pull request. Next: S1.8.
+  merged, and so is S1.7 (canvas timeline). Next: S1.8.
 - Waiting on the owner: the manual checks in `packages/storage/MANUAL-CHECK.md`: part 1 disk-folder
   projects (S1.4), part 2 media files on disk and the permission prompt after a restart (S1.6).
   About twenty minutes, includes a browser restart.
@@ -103,6 +103,7 @@ Ask the project owner for the locations.
 
 ## Log
 
+- 2026-11-26 — `test:timeline` failed once in CI on main after the S1.7 merge (and once locally): the first drag from the bin in a fresh browser produced no drop. Not reproduced in 12 local runs (cold Vite cache, 6× CPU throttling). The test now drags like a person (press, nudge, move in steps) after the bin's thumbnails load, and logs page state and any reload if a drop is lost again.
 - 2026-11-26 — S1.7: `pnpm test:timeline` (Edge and Chrome, mouse and keyboard): drag two files from the bin, move (snaps to the neighbour's end), Escape mid-drag (no change, no undo step, same revision), trim, split at the playhead, delete, ripple delete, blade; 8 undo steps undo back to the empty timeline. Box select from a gap to the right edge auto-scrolled and selected 33 clips; the snap guide shows while dragging. Redraw, one per display frame, 1920×1080: 500 clips visible p95 1.02 ms (Edge, max 1.68) and 1.05 ms (Chrome, max 2.59 on the first frame); with filmstrips p95 under 0.9 ms. A tight loop of redraws without presenting showed 40–80 ms stalls, so the benchmark draws once per frame. Checked by eye in dark and light: filmstrips, video sound strip, selection, hidden track, offline clip. Not done: audio clips show a flat line until waveform peaks (M2); trimming does not yet show the edge frame in the viewer (needs S1.8).
 - 2026-11-26 — S1.6: import of 8 files, 15.99 GB of test media (headless Edge, measured with File objects, so without the per-file IndexedDB handle write): 1,177 ms, heap 15.2 MB at start and 15.8 MB at peak. `pnpm test:media` (Edge and Chrome, with WebM files made in the page): import with a refused non-video file, copy with progress, two moved files (one renamed into a subfolder) making 8 clips offline and relink from the folder restoring all 8, a different file refused on relink, a changed file shown as offline. The editor bin checked by eye in grid and list, dark and light; fixed a list layout where badges hid the name. Not verified: real disk files and the permission prompt after a restart (manual check part 2).
 - 2026-11-26 — Icons: 51 Tabler icons in the design system, a generated preview gallery, guidelines (`components/icon.md`), and icons in the app shell (toolbar, theme and location switches, card menu, recycle bin, banners, save status, error toasts). Checked by eye in dark and light; Undo and Redo buttons added to the editor toolbar.

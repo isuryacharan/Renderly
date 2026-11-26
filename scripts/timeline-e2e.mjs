@@ -73,6 +73,10 @@ async function openEditor(context, folder) {
   await page.waitForFunction(() => !window.renderlyTimeline["options"].readOnly(), null, {
     timeout: 10_000,
   });
+  // A reload in the middle of a scenario would explain a lost drop: say so.
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame()) log("  the editor reloaded:", frame.url());
+  });
   return page;
 }
 
@@ -102,6 +106,29 @@ const state = (page) =>
 const clips = (s) => s.tracks.flatMap((t) => t.clips);
 const box = (page, id) => page.evaluate((id) => window.renderlyTimeline.clipBox(id), id);
 const pageX = (page, t) => page.evaluate((t) => window.renderlyTimeline.pageX(t), t);
+
+/**
+ * Drags bin item `index` onto the track area at (x, y) relative to it, the way a person does:
+ * press, nudge past the drag threshold, move in steps, release. Waits for the bin to settle first
+ * (its thumbnails load after it appears), and re-measures right before pressing.
+ */
+async function dropMedia(page, index, x, y) {
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll(".r-bin__item img")].every((img) => img.complete),
+  );
+  const item = page.locator(".r-bin__item").nth(index);
+  await item.scrollIntoViewIfNeeded();
+  const from = await item.boundingBox();
+  const area = await page.locator(".timeline__tracks").boundingBox();
+  const x0 = from.x + from.width / 2;
+  const y0 = from.y + from.height / 3;
+  await page.mouse.move(x0, y0);
+  await page.mouse.down();
+  await page.mouse.move(x0 + 8, y0 + 8);
+  await page.mouse.move(area.x + x, area.y + y, { steps: 12 });
+  await page.mouse.move(area.x + x, area.y + y);
+  await page.mouse.up();
+}
 
 /** Presses at (x0, y), moves in steps to (x1, y1) and releases, like a person dragging. */
 async function drag(page, x0, y0, x1, y1, { steps = 20, before } = {}) {
@@ -133,17 +160,30 @@ const scenarios = {
     const page = await openEditor(context, folder);
     await page.waitForFunction(() => document.querySelectorAll(".r-bin__item").length === 2);
     const tracks = page.locator(".timeline__tracks");
-    const items = page.locator(".r-bin__item");
 
     // Drop a at the start (snaps to 0), then b at about 5 s.
-    await items.nth(0).dragTo(tracks, { targetPosition: { x: 3, y: 60 } });
+    await dropMedia(page, 0, 3, 60);
     let s = await state(page);
+    if (s.tracks.length === 0)
+      log(
+        "  debug:",
+        JSON.stringify(
+          await page.evaluate(() => ({
+            readOnly: window.renderlyTimeline["options"].readOnly(),
+            media: window.renderlyTimeline["project"].media.length,
+            toasts: [...document.querySelectorAll(".r-toast")].map((t) => t.textContent),
+            draws: window.renderlyTimeline.draws,
+            tracksBox: document.querySelector(".timeline__tracks")?.getBoundingClientRect(),
+            canvasBox: document.querySelector(".timeline__canvas")?.getBoundingClientRect(),
+          })),
+        ),
+      );
     check(s.tracks.length === 1 && s.tracks[0].kind === "video", "the drop made a video track");
     const [a] = clips(s);
     check(a?.start === 0 && a.duration === 4 * SECOND, `a sits at 0 for 4 s: ${JSON.stringify(a)}`);
     const area = await tracks.boundingBox();
     const at5 = (await pageX(page, 5 * SECOND)) - area.x;
-    await items.nth(1).dragTo(tracks, { targetPosition: { x: at5, y: 60 } });
+    await dropMedia(page, 1, at5, 60);
     s = await state(page);
     const b = clips(s).find((c) => c.id !== a.id);
     check(b && Math.abs(b.start - 5 * SECOND) <= 2 * FRAME, `b near 5 s: ${b?.start / SECOND}`);
