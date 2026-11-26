@@ -25,6 +25,7 @@
     "test:editor": "node scripts/editor-e2e.mjs",
     "test:media": "node scripts/media-e2e.mjs",
     "test:timeline": "node scripts/timeline-e2e.mjs",
+    "test:golden": "node scripts/golden-e2e.mjs",
     "verify": "node scripts/verify.mjs"
   },
   "devDependencies": {

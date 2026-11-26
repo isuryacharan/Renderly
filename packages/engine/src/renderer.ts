@@ -1085,12 +1085,8 @@ export function serveRenderer(scope: RendererScope): void {
     await opening;
     const usable = cuts.filter((cut) => sources[cut.source]?.info);
     const next = toTimeline(usable);
-    const key = (run: Run) => {
-      const t = run.transform;
-      return [run.source, run.in, run.out, run.start, run.layer, t.x, t.y, t.scale, t.opacity].join(
-        "|",
-      );
-    };
+    const key = (run: Run) =>
+      [run.source, run.in, run.out, run.start, run.layer, JSON.stringify(run.transform)].join("|");
     const newIds = new Map(next.runs.map((run, id) => [key(run), id]));
     const remap = (id: number) => {
       const run = timeline.runs[id];

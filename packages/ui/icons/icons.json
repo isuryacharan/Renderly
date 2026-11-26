@@ -69,6 +69,21 @@
     { "name": "split", "tabler": "scissors", "usage": "Split clips at the playhead" },
     { "name": "magnetic", "tabler": "magnet", "usage": "A magnetic track; snapping" },
     { "name": "keyframe", "tabler": "keyframe", "usage": "Keyframes" },
+    {
+      "name": "reset",
+      "tabler": "rotate",
+      "usage": "Reset a property or a section to its default"
+    },
+    { "name": "linked", "tabler": "link", "usage": "Values kept together, such as scale X and Y" },
+    { "name": "unlinked", "tabler": "unlink", "usage": "Values set separately" },
+    { "name": "flip-x", "tabler": "flip-vertical", "usage": "Mirror left to right" },
+    { "name": "flip-y", "tabler": "flip-horizontal", "usage": "Mirror top to bottom" },
+    {
+      "name": "safe-area",
+      "tabler": "focus-centered",
+      "usage": "Show the title and action safe areas"
+    },
+    { "name": "thirds", "tabler": "grid-3x3", "usage": "Show a rule-of-thirds grid" },
     { "name": "zoom-in", "tabler": "zoom-in", "usage": "Zoom the timeline in" },
     { "name": "zoom-out", "tabler": "zoom-out", "usage": "Zoom the timeline out" },
     {

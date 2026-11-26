@@ -16,11 +16,14 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { MediaStatus } from "../editor/media-status";
 import { onThemeChange, resolvedTheme } from "../theme";
 import { EngineLink } from "./link";
+import { ViewerOverlay } from "./overlay";
 
 declare global {
   interface Window {
     /** Dev builds only: the viewer's link to the engine, for the end-to-end checks. */
     renderlyViewer?: EngineLink;
+    /** Dev builds only: the viewer overlay (handles), for the end-to-end checks. */
+    renderlyOverlay?: ViewerOverlay;
   }
 }
 
@@ -52,6 +55,12 @@ export function Viewer({
   const [failed, setFailed] = useState<string | null>(null);
   const [zoom, setZoom] = useState<number | null>(null);
   const pan = useRef({ x: 0, y: 0 });
+  const zoomNow = useRef<number | null>(null);
+  zoomNow.current = zoom;
+  const stage = useRef<HTMLDivElement>(null);
+  const overlay = useRef<ViewerOverlay | null>(null);
+  const linkNow = useRef<EngineLink | null>(null);
+  const [overlays, setOverlays] = useState({ safeArea: false, thirds: false });
   const toast = useToast();
   const latestToast = useRef(toast);
   latestToast.current = toast;
@@ -71,9 +80,36 @@ export function Viewer({
           pan.current = { x: 0, y: 0 };
           setZoom(next);
         },
+        ...overlays,
+        setOverlay: (change) => setOverlays((current) => ({ ...current, ...change })),
       },
     });
-  }, [actions, zoom]);
+    if (overlay.current) {
+      overlay.current.safeArea = overlays.safeArea;
+      overlay.current.thirds = overlays.thirds;
+      overlay.current.invalidate();
+    }
+  }, [actions, zoom, overlays]);
+
+  // Handles over the picture: move, scale and rotate the selected clips.
+  useEffect(() => {
+    if (!stage.current) return;
+    const created = new ViewerOverlay(stage.current, {
+      store,
+      view,
+      viewer: () => ({ zoom: zoomNow.current, pan: pan.current }),
+      readOnly: () => actions.ctx.readOnly,
+      onError: (message) => latestToast.current(message, { kind: "danger" }),
+      pause: () => void linkNow.current?.pause(),
+    });
+    overlay.current = created;
+    if (import.meta.env.DEV) window.renderlyOverlay = created;
+    return () => {
+      created.destroy();
+      overlay.current = null;
+      if (window.renderlyOverlay === created) delete window.renderlyOverlay;
+    };
+  }, [store, view, actions]);
   useEffect(() => () => actions.attach({ viewer: null }), [actions]);
 
   // The engine: created once per project session. The canvas is handed to its worker for good.
@@ -92,6 +128,7 @@ export function Viewer({
         if (import.meta.env.DEV) window.renderlyViewer = created;
         await created.start();
         setLink(created);
+        linkNow.current = created;
         actions.attach({ link: created });
       })
       .catch((error: unknown) => setFailed(error instanceof Error ? error.message : String(error)));
@@ -106,8 +143,10 @@ export function Viewer({
   // How the picture sits: fitted or zoomed, panned, on the viewer colour of the theme.
   useEffect(() => {
     if (!link) return;
-    const apply = () =>
+    const apply = () => {
       link.setView({ zoom, pan: pan.current }, hex(colors[resolvedTheme()].viewer));
+      overlay.current?.invalidate();
+    };
     apply();
     return onThemeChange(apply);
   }, [link, zoom]);
@@ -132,6 +171,8 @@ export function Viewer({
       <div className="r-panel__header viewer__header">
         <h2 className="text-body-strong viewer__title">Viewer</h2>
         <span className="r-toolbar__spacer" />
+        <ActionButton id="viewer.safeArea" />
+        <ActionButton id="viewer.thirds" />
         <MenuButton
           label={
             <>
@@ -146,6 +187,7 @@ export function Viewer({
         />
       </div>
       <div
+        ref={stage}
         className={`viewer__stage${zoom === null ? "" : " viewer__stage--zoomed"}`}
         onPointerDown={(event) => {
           if (zoom === null || !link) return;
@@ -159,6 +201,7 @@ export function Viewer({
               y: start.pan.y + (e.clientY - start.y) * ratio,
             };
             link.setView({ zoom, pan: pan.current }, hex(colors[resolvedTheme()].viewer));
+            overlay.current?.invalidate();
           };
           const up = () => {
             target.removeEventListener("pointermove", move);

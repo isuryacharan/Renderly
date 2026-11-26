@@ -1,8 +1,8 @@
-import type { SequenceGraph } from "@renderly/core";
+import { IDENTITY_TRANSFORM, type SequenceGraph } from "@renderly/core";
 import { describe, expect, it } from "vitest";
 import { cutsFromGraph } from "./project";
 
-const T = { x: 0, y: 0, scale: 1, opacity: 1 };
+const T = IDENTITY_TRANSFORM;
 
 const graph: SequenceGraph = {
   sequence: "s",
@@ -24,7 +24,14 @@ const graph: SequenceGraph = {
       track: "v2",
       muted: false,
       clips: [
-        { clip: "c", media: "m1", in: 0, out: 20, start: 30, transform: { ...T, scale: 0.5 } },
+        {
+          clip: "c",
+          media: "m1",
+          in: 0,
+          out: 20,
+          start: 30,
+          transform: { ...T, scaleX: 0.5, scaleY: 0.5 },
+        },
       ],
     },
   ],
@@ -42,7 +49,7 @@ describe("cutsFromGraph", () => {
         out: 20,
         start: 30,
         layer: 1,
-        transform: { ...T, scale: 0.5 },
+        transform: { ...T, scaleX: 0.5, scaleY: 0.5 },
         muted: false,
       },
     ]);

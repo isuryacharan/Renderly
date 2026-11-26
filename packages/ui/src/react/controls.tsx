@@ -66,7 +66,8 @@ export function Slider({ value, min, max, step = 1, label, onChange }: SliderPro
 // --- numeric field ---
 
 export interface NumericFieldProps {
-  value: number;
+  /** null: several values differ (shown as an en dash). */
+  value: number | null;
   onChange: (value: number) => void;
   label: string;
   min?: number;
@@ -95,7 +96,7 @@ export function NumericField({
 }: NumericFieldProps) {
   const [draft, setDraft] = useState<string | null>(null);
   const clamp = (n: number) => Math.min(max, Math.max(min, n));
-  const shown = draft ?? value.toFixed(precision);
+  const shown = draft ?? (value === null ? "–" : value.toFixed(precision));
   const commit = () => {
     if (draft === null) return;
     const parsed = Number(draft.replace(",", "."));
@@ -118,7 +119,7 @@ export function NumericField({
             event.preventDefault();
             const delta = (event.key === "ArrowUp" ? step : -step) * (event.shiftKey ? 10 : 1);
             setDraft(null);
-            onChange(clamp(value + delta));
+            if (value !== null) onChange(clamp(value + delta));
           }
         }}
       />

@@ -21,6 +21,7 @@ export default defineConfig({
         decode: resolve(import.meta.dirname, "decode.html"),
         preview: resolve(import.meta.dirname, "preview.html"),
         storage: resolve(import.meta.dirname, "storage.html"),
+        golden: resolve(import.meta.dirname, "golden.html"),
       },
     },
   },

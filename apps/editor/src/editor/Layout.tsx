@@ -5,6 +5,7 @@ import type { Project, ViewStore } from "@renderly/core";
 import type { ProjectSession } from "@renderly/storage";
 import { Splitter } from "@renderly/ui/react";
 import { useEffect, useState } from "react";
+import { Inspector } from "../inspector/Inspector";
 import { Timeline } from "../timeline/Timeline";
 import { Viewer } from "../viewer/Viewer";
 import { MediaBin } from "./MediaBin";
@@ -87,7 +88,7 @@ export function Layout({
         <section className="r-panel" style={{ width: sizes.inspector }} aria-label="Inspector">
           <h2 className="r-panel__header text-body-strong">Inspector</h2>
           <div className="r-panel__body">
-            <ProjectProperties session={session} project={project} readOnly={readOnly} />
+            <Inspector store={session.store} project={project} view={view} readOnly={readOnly} />
           </div>
         </section>
       </div>
@@ -109,54 +110,6 @@ export function Layout({
           status={status}
         />
       </div>
-    </div>
-  );
-}
-
-/** The project's own properties. The name is changed through the rename command. */
-function ProjectProperties({
-  session,
-  project,
-  readOnly,
-}: {
-  session: ProjectSession;
-  project: Project;
-  readOnly: boolean;
-}) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const commit = () => {
-    const name = draft?.trim();
-    setDraft(null);
-    if (name && name !== project.name)
-      session.store.dispatch({ type: "project.rename", payload: { name } });
-  };
-  const main = project.sequences[0];
-  return (
-    <div className="r-form">
-      <label className="r-label" htmlFor="project-name">
-        Name
-      </label>
-      <div className={`r-field${readOnly ? " r-field--disabled" : ""}`}>
-        <input
-          id="project-name"
-          value={draft ?? project.name}
-          disabled={readOnly}
-          onChange={(event) => setDraft(event.target.value)}
-          onBlur={commit}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") commit();
-            if (event.key === "Escape") setDraft(null);
-          }}
-        />
-      </div>
-      {main && (
-        <>
-          <span className="r-label">Sequence</span>
-          <span className="r-tabular editor__fact">
-            {main.width} × {main.height} · {main.fps[0] / main.fps[1]} fps
-          </span>
-        </>
-      )}
     </div>
   );
 }

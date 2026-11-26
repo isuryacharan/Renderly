@@ -11,7 +11,7 @@ describe("component registry", () => {
     const media = createId();
     const result = migrate({
       format: "renderly",
-      version: 1,
+      version: 2,
       id: createId(),
       name: "Tinted",
       revision: 0,

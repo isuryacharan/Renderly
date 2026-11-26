@@ -11,6 +11,7 @@ import {
   serialiseProject,
   type Command,
   type Project,
+  CURRENT_VERSION,
 } from "@renderly/core";
 import {
   access,
@@ -67,7 +68,7 @@ function newProject(name: string, markers = 0): Project {
   const sequence = createId();
   return projectSchema().parse({
     format: "renderly",
-    version: 1,
+    version: CURRENT_VERSION,
     id: createId(),
     name,
     revision: 0,

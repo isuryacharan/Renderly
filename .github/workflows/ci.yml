@@ -30,4 +30,5 @@ jobs:
       - run: pnpm test:editor --browser chrome
       - run: pnpm test:media --browser chrome
       - run: pnpm test:timeline --browser chrome
+      - run: pnpm test:golden --browser chrome
       - run: pnpm build

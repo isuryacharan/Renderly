@@ -55,7 +55,7 @@ const track = (trackId: string, kind: Track["kind"], clips: Clip[], magnetic = f
 function project(): Project {
   return projectSchema().parse({
     format: "renderly",
-    version: 1,
+    version: 2,
     id: id("pj"),
     name: "Timeline",
     revision: 0,
@@ -415,7 +415,7 @@ describe("clip.split", () => {
               {
                 type: "transform",
                 position: [0, 0],
-                scale: 1,
+                scale: [1, 1],
                 rotation: 0,
                 opacity: 1,
                 keys: {

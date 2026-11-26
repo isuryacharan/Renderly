@@ -68,7 +68,9 @@ with graceful fallbacks; probe capabilities at run time instead of assuming.
 
 - **Work one slice at a time** from `docs/plans/`. A slice is done only when every item in its
   "done when" list is verified. Do not start M1 or later until the M0 engine decision is recorded.
-- **Tests come with the change.** Commands get unit tests; render changes get golden frames;
+- **Tests come with the change.** Commands get unit tests; render changes get golden frames
+  (cases in `apps/spike/src/golden-page.ts`, compared with the CPU reference in
+  `packages/engine/src/reference.ts` by `pnpm test:golden`);
   pack items must pass the determinism check (frame N rendered cold equals frame N after playing
   from 0); performance work is done when its benchmark runs in CI.
 - **Record decisions** in `docs/decisions/` when a slice settles a design question, and add a

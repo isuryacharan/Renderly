@@ -7,10 +7,18 @@
   gap: var(--space-6);
 }
 .r-property-section__title {
+  margin: 0;
   padding-bottom: var(--space-4);
   font-size: 13px;
   line-height: 18px;
   font-weight: 600;
+}
+/* Title on the left, the section's reset on the right. */
+.r-property-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8);
 }
 .r-property-section + .r-property-section {
   margin-top: var(--space-16);

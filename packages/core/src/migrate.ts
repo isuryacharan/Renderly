@@ -18,13 +18,69 @@ export type MigrateResult =
 
 /**
  * One pure function per stored version: upgrades a version-N document to version N + 1.
- * Each must be small and tested. There are none yet; version 1 is the first.
+ * Each must be small and tested. They never change their input.
  */
 type Upgrade = (document: Record<string, unknown>) => Record<string, unknown>;
-const UPGRADES: Record<number, Upgrade> = {};
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Applies `change` to every component of every clip, returning a new document. */
+function mapComponents(
+  document: Record<string, unknown>,
+  change: (component: Record<string, unknown>) => Record<string, unknown>,
+): Record<string, unknown> {
+  const list = (value: unknown) => (Array.isArray(value) ? value : []);
+  return {
+    ...document,
+    sequences: list(document["sequences"]).map((sequence: unknown) =>
+      !isObject(sequence)
+        ? sequence
+        : {
+            ...sequence,
+            tracks: list(sequence["tracks"]).map((track: unknown) =>
+              !isObject(track)
+                ? track
+                : {
+                    ...track,
+                    clips: list(track["clips"]).map((clip: unknown) =>
+                      !isObject(clip)
+                        ? clip
+                        : {
+                            ...clip,
+                            components: list(clip["components"]).map((c: unknown) =>
+                              isObject(c) ? change(c) : c,
+                            ),
+                          },
+                    ),
+                  },
+            ),
+          },
+    ),
+  };
+}
+
+const pair = (value: unknown) => (typeof value === "number" ? [value, value] : value);
+
+/** 1 → 2: the transform's `scale` becomes per axis, [s, s], and so do its scale keyframes. */
+export function upgrade1to2(document: Record<string, unknown>): Record<string, unknown> {
+  return mapComponents(document, (component) => {
+    if (component["type"] !== "transform") return component;
+    const next: Record<string, unknown> = { ...component };
+    if ("scale" in component) next["scale"] = pair(component["scale"]);
+    const keys = component["keys"];
+    if (isObject(keys) && Array.isArray(keys["scale"]))
+      next["keys"] = {
+        ...keys,
+        scale: keys["scale"].map((key: unknown) =>
+          isObject(key) ? { ...key, v: pair(key["v"]) } : key,
+        ),
+      };
+    return next;
+  });
+}
+
+const UPGRADES: Record<number, Upgrade> = { 1: upgrade1to2 };
 
 export function migrate(raw: unknown): MigrateResult {
   const invalid = (path: string, message: string): MigrateResult => ({

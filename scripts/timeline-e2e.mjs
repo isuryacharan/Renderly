@@ -4,6 +4,8 @@
 // benchmark (500 clips in under 2 ms).
 // S1.9 and the M1 exit: create, import, cut, play, close and reopen with the keyboard alone, and
 // every toolbar button and menu item is an action from the registry.
+// S2.1: the inspector and the viewer's handles: a slider, label or handle drag is one undo step,
+// Escape cancels one, and an edit with several clips selected changes all of them in one step.
 // S1.8: the viewer plays what the timeline says (transport, frame step, cuts, loop), edits during
 // playback reach the engine within a frame and never break it, and trimming shows the edge frame.
 // The media lab makes the test files (see media-e2e.mjs).
@@ -99,6 +101,16 @@ async function stop(server) {
     await new Promise((resolve) => setTimeout(resolve, 200));
 }
 
+/**
+ * Waits for `fn` to be true in the page, checking every 100 ms. Playwright's default checks on
+ * animation frames, and one such wait in the keyboard scenario never resolved after another
+ * scenario had run, although the page was visible, focused, drawing 150 frames a second and the
+ * condition was already true; interval checks do not stall.
+ */
+function until(target, fn, arg, options = {}) {
+  return target.waitForFunction(fn, arg, { polling: 100, ...options });
+}
+
 class Failure extends Error {}
 /** Uncaught errors in any page during the current scenario: each one fails it. */
 const pageErrors = [];
@@ -113,7 +125,7 @@ async function openLab(context) {
     pageErrors.push(error.message);
   });
   await page.goto(`${BASE}/media-lab.html`);
-  await page.waitForFunction(() => window.labReadyAt !== undefined, null, { timeout: 60_000 });
+  await until(page, () => window.labReadyAt !== undefined, null, { timeout: 60_000 });
   return page;
 }
 
@@ -131,12 +143,12 @@ async function openEditor(context, folder) {
   await page.goto(
     `${BASE}/${slowSeek > 0 ? `?slow-seek=${slowSeek}` : ""}#/project/browser/${folder}`,
   );
-  await page.waitForFunction(() => window.renderlyTimeline !== undefined, null, {
+  await until(page, () => window.renderlyTimeline !== undefined, null, {
     timeout: 20_000,
   });
-  await page.waitForFunction(() => window.renderlyTimeline.sequence !== undefined);
+  await until(page, () => window.renderlyTimeline.sequence !== undefined);
   // The lab's tab may still hold the project's writer lock for a moment; edits need the writer.
-  await page.waitForFunction(() => !window.renderlyTimeline["options"].readOnly(), null, {
+  await until(page, () => !window.renderlyTimeline["options"].readOnly(), null, {
     timeout: 10_000,
   });
   // A reload in the middle of a scenario would explain a lost drop: say so.
@@ -179,7 +191,7 @@ const pageX = (page, t) => page.evaluate((t) => window.renderlyTimeline.pageX(t)
  * (its thumbnails load after it appears), and re-measures right before pressing.
  */
 async function dropMedia(page, index, x, y) {
-  await page.waitForFunction(() =>
+  await until(page, () =>
     [...document.querySelectorAll(".r-bin__item img")].every((img) => img.complete),
   );
   const item = page.locator(".r-bin__item").nth(index);
@@ -242,8 +254,8 @@ async function playbackProject(context, name) {
   }, name);
   await lab.close();
   const page = await openEditor(context, folder);
-  await page.waitForFunction(() => window.renderlyViewer !== undefined, null, { timeout: 20_000 });
-  await page.waitForFunction(() => document.querySelectorAll(".r-bin__item").length === 2);
+  await until(page, () => window.renderlyViewer !== undefined, null, { timeout: 20_000 });
+  await until(page, () => document.querySelectorAll(".r-bin__item").length === 2);
   await page.evaluate((S) => {
     const t = window.renderlyTimeline;
     const [a, b] = t["project"].media;
@@ -260,7 +272,8 @@ async function playbackProject(context, name) {
     t["options"].view.set({ selection: [] });
   }, SECOND);
   // The engine has the edit list and every file opened.
-  await page.waitForFunction(
+  await until(
+    page,
     () => window.renderlyViewer.updates > 0 && window.renderlyViewer.duration > 0,
     null,
     {
@@ -272,6 +285,136 @@ async function playbackProject(context, name) {
 }
 
 const scenarios = {
+  async "inspector and handles: one undo step per drag, all selected clips in one step"({
+    context,
+  }) {
+    const page = await playbackProject(context, "Transform");
+    // Both clips show at 2.5 s; select the top one (V2).
+    const ids = await page.evaluate((S) => {
+      const t = window.renderlyTimeline;
+      t["options"].view.set({ playhead: 2.5 * S });
+      const top = t.sequence.tracks[1].clips[0].id;
+      const bottom = t.sequence.tracks[0].clips[0].id;
+      t["options"].view.set({ selection: [top] });
+      return { top, bottom };
+    }, SECOND);
+    await page.waitForSelector('input[aria-label="Rotation"]');
+    const transform = (id) =>
+      page.evaluate((id) => {
+        const clip = window.renderlyTimeline.sequence.tracks
+          .flatMap((t) => t.clips)
+          .find((c) => c.id === id);
+        return clip.components.find((c) => c.type === "transform") ?? null;
+      }, id);
+    const undo = () => page.evaluate(() => window.renderlyTimeline["options"].store.undoLabels);
+
+    // Half size first, so every handle stays on screen when the clip turns.
+    const scaleField = page.locator('input[aria-label="Scale value"]');
+    await scaleField.click();
+    await scaleField.fill("50");
+    await page.keyboard.press("Enter");
+    check(JSON.stringify((await transform(ids.top)).scale) === "[0.5,0.5]", "typed scale 50%");
+
+    // A slider drag: one undo step.
+    let before = (await undo()).length;
+    const slider = await page.locator('input[aria-label="Rotation"]').boundingBox();
+    await drag(
+      page,
+      slider.x + slider.width / 2,
+      slider.y + slider.height / 2,
+      slider.x + slider.width * 0.55,
+      slider.y + slider.height / 2,
+    );
+    let t = await transform(ids.top);
+    let labels = await undo();
+    check(t && t.rotation > 10, `the slider turned the clip: ${t?.rotation}`);
+    check(
+      labels.length === before + 1 && labels[0] === "Change rotation",
+      `one step: ${labels.slice(0, 2)}`,
+    );
+
+    // A label scrub: one undo step.
+    before = labels.length;
+    const label = await page
+      .locator(".r-property-row__label", { hasText: "Position X" })
+      .boundingBox();
+    await drag(
+      page,
+      label.x + 10,
+      label.y + label.height / 2,
+      label.x + 60,
+      label.y + label.height / 2,
+    );
+    t = await transform(ids.top);
+    labels = await undo();
+    check(t.position[0] > 0, `the label scrub moved it: ${t.position[0]}`);
+    check(labels.length === before + 1, "a label scrub is one step");
+
+    // Handle drags: corner scale, rotate, move; each one step.
+    const handle = (name) => page.evaluate((n) => window.renderlyOverlay.handleAt(n), name);
+    for (const [name, dx, dy, field] of [
+      ["scale-se", 40, 30, "scale"],
+      ["rotate", 60, 0, "rotation"],
+      ["move", -50, 20, "position"],
+    ]) {
+      before = (await undo()).length;
+      const from = await transform(ids.top);
+      const at = await handle(name);
+      check(at, `the ${name} handle is on screen`);
+      await drag(page, at.x, at.y, at.x + dx, at.y + dy);
+      const after = await transform(ids.top);
+      labels = await undo();
+      check(
+        JSON.stringify(after[field]) !== JSON.stringify(from[field]),
+        `${name} changed ${field}: ${JSON.stringify(from[field])} → ${JSON.stringify(after[field])}`,
+      );
+      check(labels.length === before + 1, `${name} is one step: ${labels.slice(0, 2)}`);
+    }
+
+    // Escape in the middle of a handle drag puts it back.
+    const kept = await transform(ids.top);
+    before = (await undo()).length;
+    const corner = await handle("scale-ne");
+    await drag(page, corner.x, corner.y, corner.x + 80, corner.y - 40, {
+      before: async () => {
+        const mid = await transform(ids.top);
+        check(JSON.stringify(mid.scale) !== JSON.stringify(kept.scale), "the drag previews");
+        await page.keyboard.press("Escape");
+      },
+    });
+    check(JSON.stringify(await transform(ids.top)) === JSON.stringify(kept), "Escape restored it");
+    check((await undo()).length === before, "a cancelled handle drag is not a step");
+
+    // Both clips selected: the opacity typed once applies to both, in one undoable step.
+    await page.evaluate(
+      (all) => window.renderlyTimeline["options"].view.set({ selection: all }),
+      [ids.top, ids.bottom],
+    );
+    await page.waitForSelector('input[aria-label="Rotation, mixed values"]');
+    before = (await undo()).length;
+    const field = page.locator('input[aria-label="Opacity value"]');
+    await field.click();
+    await field.fill("40");
+    await page.keyboard.press("Enter");
+    const top = await transform(ids.top);
+    const bottom = await transform(ids.bottom);
+    labels = await undo();
+    check(
+      top.opacity === 0.4 && bottom.opacity === 0.4,
+      `both at 40%: ${top.opacity}, ${bottom.opacity}`,
+    );
+    check(
+      labels.length === before + 1 && labels[0] === "Change opacity on 2 clips",
+      `one step: ${labels[0]}`,
+    );
+    await page.evaluate(() => window.renderlyTimeline["options"].store.undo());
+    check(
+      (await transform(ids.top)).opacity === 1 && (await transform(ids.bottom)) === null,
+      "one undo put both back",
+    );
+    return "slider, label and three handle drags one step each; Escape cancels; two clips in one step";
+  },
+
   async "M1 exit by keyboard alone: create, import, cut, play, close and reopen"({ context }) {
     const lab = await openLab(context);
     await lab.evaluate(async () => {
@@ -294,7 +437,7 @@ const scenarios = {
       pageErrors.push(error.message);
     });
     await page.goto(`${BASE}/`);
-    await page.waitForFunction(() => window.appReadyAt !== undefined);
+    await until(page, () => window.appReadyAt !== undefined);
     const keys = async (...list) => {
       for (const key of list) await page.keyboard.press(key);
     };
@@ -317,7 +460,8 @@ const scenarios = {
     await keys("Enter");
     await page.keyboard.type("Keyboard cut");
     await keys("Enter");
-    await page.waitForFunction(
+    await until(
+      page,
       () =>
         window.renderlyTimeline &&
         window.renderlyViewer &&
@@ -348,7 +492,7 @@ const scenarios = {
 
     // Import (Ctrl+I), then add each file to the timeline from the library with the keyboard.
     await keys("Control+i");
-    await page.waitForFunction(() => document.querySelectorAll("[data-media-id]").length === 2);
+    await until(page, () => document.querySelectorAll("[data-media-id]").length === 2);
     await tabTo(page, "k1.webm");
     await keys("Enter");
     let c = await clips();
@@ -357,7 +501,8 @@ const scenarios = {
       `k1 at 0: ${JSON.stringify(c)}`,
     );
     await keys("End"); // the playhead to the end of the sequence (3 s)
-    await page.waitForFunction(
+    await until(
+      page,
       (t) => window.renderlyTimeline["options"].view.get().playhead === t,
       3 * SECOND,
     );
@@ -372,10 +517,7 @@ const scenarios = {
     // Cut on the timeline: split k1 at 1 s, select the right half, ripple delete it.
     await tabTo(page, "Timeline tracks");
     await keys("Home", "Shift+ArrowRight", "Shift+ArrowRight", "Shift+ArrowRight"); // 30 frames
-    await page.waitForFunction(
-      (t) => window.renderlyTimeline["options"].view.get().playhead === t,
-      SECOND,
-    );
+    await until(page, (t) => window.renderlyTimeline["options"].view.get().playhead === t, SECOND);
     await keys("s");
     check((await clips()).length === 3, "S split k1 at the playhead");
     await keys("d", "Shift+Delete");
@@ -387,7 +529,8 @@ const scenarios = {
 
     // Trim k2's end to the playhead at 2 s, nudge it a frame later and back.
     await keys("Shift+ArrowRight", "Shift+ArrowRight", "Shift+ArrowRight");
-    await page.waitForFunction(
+    await until(
+      page,
       (t) => window.renderlyTimeline["options"].view.get().playhead === t,
       2 * SECOND,
     );
@@ -410,15 +553,16 @@ const scenarios = {
 
     // Play from the start with Space, pause with K.
     await keys("Home");
-    await page.waitForFunction(() => window.renderlyTimeline["options"].view.get().playhead === 0);
+    await until(page, () => window.renderlyTimeline["options"].view.get().playhead === 0);
     await keys("Space");
-    await page.waitForFunction(() => window.renderlyViewer.preview.readPlayhead().playing, null, {
+    await until(page, () => window.renderlyViewer.preview.readPlayhead().playing, null, {
       timeout: 10_000,
     });
     await page.waitForTimeout(800);
     await keys("k");
     // Pausing ends when the engine reports the frame on screen, snapped to the frame grid.
-    await page.waitForFunction(
+    await until(
+      page,
       (frame) => {
         const v = window.renderlyTimeline["options"].view.get();
         return !v.playing && v.playhead % frame === 0;
@@ -433,10 +577,11 @@ const scenarios = {
     await keys("Shift+Slash");
     await page.waitForSelector("dialog[open] .shortcuts", { timeout: 5000 });
     await keys("Escape");
-    await page.waitForFunction(() => !document.querySelector("dialog[open]"));
+    await until(page, () => !document.querySelector("dialog[open]"));
 
     // Close the tab once saved, reopen: the project is exactly as it was.
-    await page.waitForFunction(
+    await until(
+      page,
       () => document.querySelector(".r-status")?.textContent?.includes("Saved"),
       null,
       {
@@ -448,7 +593,7 @@ const scenarios = {
     await page.close();
     const again = await context.newPage();
     await again.goto(url);
-    await again.waitForFunction(() => window.renderlyTimeline?.sequence, null, { timeout: 20_000 });
+    await until(again, () => window.renderlyTimeline?.sequence, null, { timeout: 20_000 });
     const after = await again.evaluate(() => JSON.stringify(window.renderlyTimeline["project"]));
     check(after === before, "the reopened project is byte for byte the one that was closed");
     const errors = await again.evaluate(() => window.renderlyViewer?.errors ?? []);
@@ -471,7 +616,7 @@ const scenarios = {
     });
     await lab.close();
     const page = await openEditor(context, folder);
-    await page.waitForFunction(() => document.querySelectorAll(".r-bin__item").length === 2);
+    await until(page, () => document.querySelectorAll(".r-bin__item").length === 2);
     const tracks = page.locator(".timeline__tracks");
 
     // Drop a at the start (snaps to 0), then b at about 5 s.
@@ -650,13 +795,13 @@ const scenarios = {
 
     // Play from 0 for a second; the playhead moves and the engine reports playing.
     await page.getByRole("button", { name: "Play", exact: true }).click();
-    await page.waitForFunction(() => window.renderlyViewer.preview.readPlayhead().playing);
+    await until(page, () => window.renderlyViewer.preview.readPlayhead().playing);
     await page.waitForTimeout(1000);
     let v = await view();
     check(v.playing && v.playhead > t(0.3), `playing, playhead ${v.playhead / SECOND} s`);
     // Pause rests on a frame start.
     await page.getByRole("button", { name: "Pause", exact: true }).click();
-    await page.waitForFunction(() => !window.renderlyViewer.preview.readPlayhead().playing);
+    await until(page, () => !window.renderlyViewer.preview.readPlayhead().playing);
     v = await view();
     check(!v.playing && v.playhead % FRAME === 0, `paused on a frame: ${v.playhead / FRAME}`);
     const timecode = await page.locator(".viewer__timecode").textContent();
@@ -754,13 +899,13 @@ const scenarios = {
       `still playing after quick seeks then Play: ${JSON.stringify(afterJumps)}`,
     );
     await page.getByRole("button", { name: "Pause", exact: true }).click();
-    await page.waitForFunction(() => !window.renderlyViewer.preview.readPlayhead().playing);
+    await until(page, () => !window.renderlyViewer.preview.readPlayhead().playing);
 
     // Playing to the end stops there.
     await page.evaluate(() => window.renderlyTimeline["options"].view.set({ loop: false }));
     await page.evaluate((t) => window.renderlyTimeline["options"].view.set({ playhead: t }), t(7));
     await page.getByRole("button", { name: "Play", exact: true }).click();
-    await page.waitForFunction(() => !window.renderlyTimeline["options"].view.get().playing, null, {
+    await until(page, () => !window.renderlyTimeline["options"].view.get().playing, null, {
       timeout: 10_000,
     });
     v = await view();
@@ -773,7 +918,7 @@ const scenarios = {
   async "edits during playback reach the engine within a frame and never break it"({ context }) {
     const page = await playbackProject(context, "Live edits");
     await page.getByRole("button", { name: "Play", exact: true }).click();
-    await page.waitForFunction(() => window.renderlyViewer.preview.readPlayhead().playing);
+    await until(page, () => window.renderlyViewer.preview.readPlayhead().playing);
     // 40 edits, one every 100 ms: moves, trims, splits, hiding a track, deletes, undos and redos.
     const done = await page.evaluate(async () => {
       const tl = window.renderlyTimeline;
@@ -877,7 +1022,7 @@ const scenarios = {
       `peek is the last frame of the trimmed clip: ${during.peek / FRAME}`,
     );
     check(during.engine === expected, `the engine shows it: ${during.engine / FRAME} (frames)`);
-    await page.waitForFunction(() => window.renderlyTimeline["options"].view.get().peek === null);
+    await until(page, () => window.renderlyTimeline["options"].view.get().peek === null);
     // Back to the playhead takes one exact seek: wait for it, however slow seeks are.
     await page
       .waitForFunction(

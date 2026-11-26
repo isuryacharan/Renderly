@@ -40,6 +40,13 @@ export function componentTypes(): string[] {
   return [...registry.keys()];
 }
 
+/** A component of `type` with every field at its default (without keyframes). */
+export function componentDefaults(type: string): Record<string, unknown> {
+  const schema = registry.get(type);
+  if (!schema) throw new Error(`No component type "${type}"`);
+  return schema.parse({ type }) as Record<string, unknown>;
+}
+
 /** Bumped on every registration, so cached schemas know to rebuild. */
 export function registryVersion(): number {
   return version;
@@ -55,13 +62,24 @@ export function componentSchema(): z.ZodType {
 // --- built-in component types ---
 
 /**
- * Where a visual clip sits in the frame. `position` moves the clip's centre by a fraction of the
- * sequence size (x right, y down); `scale` 1 fits the clip to the frame; `rotation` is degrees
- * clockwise; `opacity` is 0 to 1.
+ * Where a visual clip sits in the frame (schema version 2).
+ * - `position`: where the anchor sits, as a fraction of the sequence size from the frame's centre
+ *   (x right, y down).
+ * - `scale`: per axis; [1, 1] fits the clip to the frame. `uniform` keeps the two together in the
+ *   inspector (it does not change the picture).
+ * - `rotation`: degrees clockwise, about the anchor.
+ * - `anchor`: the point of the clip that `position` places and that scale and rotation turn about,
+ *   as a fraction of the clip's (fitted) picture from its centre.
+ * - `flipX`, `flipY`: mirror the picture.
+ * - `opacity`: 0 to 1.
  */
 registerComponent("transform", {
   position: z.tuple([z.number(), z.number()]).default([0, 0]),
-  scale: z.number().positive().default(1),
+  scale: z.tuple([z.number().positive(), z.number().positive()]).default([1, 1]),
+  uniform: z.boolean().default(true),
   rotation: z.number().default(0),
+  anchor: z.tuple([z.number(), z.number()]).default([0, 0]),
+  flipX: z.boolean().default(false),
+  flipY: z.boolean().default(false),
   opacity: z.number().min(0).max(1).default(1),
 });

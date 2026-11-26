@@ -2,7 +2,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createId } from "./ids";
-import { migrate, parseProject, serialiseProject, type MigrateResult } from "./migrate";
+import {
+  migrate,
+  parseProject,
+  serialiseProject,
+  upgrade1to2,
+  type MigrateResult,
+} from "./migrate";
 import { newProject } from "./new-project";
 
 const fixture = readFileSync(
@@ -50,6 +56,41 @@ describe("fixture project", () => {
   });
 });
 
+describe("upgrades", () => {
+  const v1 = readFileSync(
+    join(import.meta.dirname, "..", "fixtures", "holiday-edit.v1.project.json"),
+    "utf8",
+  );
+
+  it("upgrade a version 1 project to exactly the current fixture", () => {
+    const result = parseProject(v1);
+    if (!result.ok) throw new Error(JSON.stringify(result));
+    expect(serialiseProject(result.project)).toBe(fixture);
+  });
+
+  it("1 → 2 makes the transform's scale and its keyframes per axis, without touching the input", () => {
+    const document = JSON.parse(v1) as Record<string, unknown>;
+    const before = JSON.stringify(document);
+    const clip = (d: Record<string, unknown>) =>
+      (d as { sequences: { tracks: { clips: { components: Record<string, unknown>[] }[] }[] }[] })
+        .sequences[0]?.tracks[0]?.clips[0]?.components[0] ?? {};
+    const transform = clip(document);
+    const ownKeys = transform["keys"] as Record<string, unknown>;
+    transform["keys"] = { ...ownKeys, scale: [{ t: 0, v: 2, ease: "auto" }] };
+    const withScaleKeys = JSON.stringify(document);
+    const upgraded = upgrade1to2(document);
+    expect(clip(upgraded)["scale"]).toEqual([1.1, 1.1]);
+    expect((clip(upgraded)["keys"] as { scale: { v: unknown }[] }).scale[0]?.v).toEqual([2, 2]);
+    // Other keys survive, and the input is untouched.
+    expect((clip(upgraded)["keys"] as Record<string, unknown>)["position"]).toEqual(
+      ownKeys["position"],
+    );
+    expect(JSON.stringify(document)).toBe(withScaleKeys);
+    transform["keys"] = ownKeys;
+    expect(JSON.stringify(document)).toBe(before);
+  });
+});
+
 describe("defaults", () => {
   it("fills every default, and the result then round-trips", () => {
     const minimal = {
@@ -80,10 +121,10 @@ describe("invalid documents fail with a path and a reason", () => {
   });
 
   it("refuses a project from a newer version instead of half-loading it", () => {
-    expect(migrate(changed("version", setTo(2)))).toEqual({
+    expect(migrate(changed("version", setTo(3)))).toEqual({
       ok: false,
       reason: "newer",
-      version: 2,
+      version: 3,
     });
   });
 
