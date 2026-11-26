@@ -16,17 +16,32 @@ import type { Transform } from "./timeline";
 /** Composited frames kept for scrubbing. */
 export const FRAME_CACHE_ENTRIES = 12;
 
+/**
+ * Draws one layer with its transform. Each output pixel is mapped back to the layer: undo the
+ * position, then the rotation (in pixels, so a non-square frame does not shear), then the scale,
+ * add the anchor, mirror. The same mapping, written separately on the CPU, is the golden-frame
+ * reference (reference.ts).
+ */
 const FRAGMENT = /* glsl */ `
 uniform sampler2D tLayer;
-uniform vec2 uOffset;   // layer centre offset, as a fraction of the frame (x right, y down)
-uniform float uScale;
+uniform vec2 uSize;      // composite size in pixels
+uniform vec2 uOffset;    // where the anchor sits, as a fraction of the frame from its centre (y down)
+uniform vec2 uScale;     // per axis
+uniform float uRotation; // radians, clockwise on screen
+uniform vec2 uAnchor;    // fraction of the layer from its centre
+uniform vec2 uFlip;      // 1 or -1 per axis
 uniform float uOpacity;
 in vec2 vUv;
 out vec4 fragColor;
 
 void main() {
-  vec2 d = vec2(vUv.x, 1.0 - vUv.y);          // frame coordinates, y down
-  vec2 p = (d - 0.5 - uOffset) / uScale + 0.5; // layer coordinates
+  vec2 d = vec2(vUv.x, 1.0 - vUv.y);                  // frame coordinates, y down
+  vec2 q = (d - 0.5 - uOffset) * uSize;               // pixels from the anchor's place
+  float c = cos(uRotation);
+  float s = sin(uRotation);
+  q = vec2(c * q.x + s * q.y, -s * q.x + c * q.y);     // undo a clockwise rotation (y down)
+  vec2 l = (q / (uScale * uSize) + uAnchor) * uFlip;  // layer, from its centre
+  vec2 p = l + 0.5;
   if (any(lessThan(p, vec2(0.0))) || any(greaterThan(p, vec2(1.0)))) discard;
   fragColor = texture(tLayer, vec2(p.x, 1.0 - p.y)) * uOpacity; // premultiplied
 }`;
@@ -52,8 +67,12 @@ export class Compositor {
     FRAGMENT,
     {
       tLayer: { value: null },
+      uSize: { value: new THREE.Vector2(2, 2) },
       uOffset: { value: new THREE.Vector2() },
-      uScale: { value: 1 },
+      uScale: { value: new THREE.Vector2(1, 1) },
+      uRotation: { value: 0 },
+      uAnchor: { value: new THREE.Vector2() },
+      uFlip: { value: new THREE.Vector2(1, 1) },
       uOpacity: { value: 1 },
     },
     { premultiplied: true },
@@ -120,8 +139,12 @@ export class Compositor {
       const target = this.layers.get(layer);
       if (!target || transform.opacity <= 0) continue;
       (u["tLayer"] as THREE.IUniform).value = target.texture;
+      (u["uSize"]?.value as THREE.Vector2).set(this.size.width, this.size.height);
       (u["uOffset"]?.value as THREE.Vector2).set(transform.x, transform.y);
-      (u["uScale"] as THREE.IUniform).value = transform.scale;
+      (u["uScale"]?.value as THREE.Vector2).set(transform.scaleX, transform.scaleY);
+      (u["uRotation"] as THREE.IUniform).value = (transform.rotation * Math.PI) / 180;
+      (u["uAnchor"]?.value as THREE.Vector2).set(transform.anchorX, transform.anchorY);
+      (u["uFlip"]?.value as THREE.Vector2).set(transform.flipX ? -1 : 1, transform.flipY ? -1 : 1);
       (u["uOpacity"] as THREE.IUniform).value = transform.opacity;
       this.pass.run(r, this.output);
     }

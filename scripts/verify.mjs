@@ -69,6 +69,7 @@ for (let i = 1; i <= repeat; i++) {
     { name: `editor${pass}`, command: `pnpm test:editor --browser ${browser}` },
     { name: `media${pass}`, command: `pnpm test:media --browser ${browser}` },
     { name: `timeline${pass}`, command: `pnpm test:timeline --browser ${browser}` },
+    { name: `golden${pass}`, command: `pnpm test:golden --browser ${browser}` },
   );
   if (slowSeek > 0)
     steps.push({
@@ -83,7 +84,7 @@ if (start < 0) throw new Error(`No step matches "${from}"`);
 
 // The browser suites start their own dev servers on these ports; one left over from an earlier,
 // interrupted run would make them fail. Say so up front.
-const TEST_PORTS = [5181, 5182, 5183, 5198];
+const TEST_PORTS = [5181, 5182, 5183, 5184, 5198];
 const busy = [];
 for (const port of TEST_PORTS)
   if (

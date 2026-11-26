@@ -9,17 +9,49 @@
 import type { Flicks } from "@renderly/media";
 
 /**
- * Where a layer sits in the frame. `x` and `y` move the layer's centre by a fraction of the
- * sequence size (right and down); `scale` 1 fits the layer to the frame; `opacity` is 0 to 1.
+ * Where a layer sits in the frame: core's `LayerTransform`. `x` and `y` place the anchor as a
+ * fraction of the frame from its centre (right and down); `scaleX`/`scaleY` 1 fit the layer to the
+ * frame; `rotation` is degrees clockwise about the anchor; `anchorX`/`anchorY` are a fraction of
+ * the layer from its centre; `flipX`/`flipY` mirror it; `opacity` is 0 to 1.
  */
 export interface Transform {
   x: number;
   y: number;
-  scale: number;
+  scaleX: number;
+  scaleY: number;
+  rotation: number;
+  anchorX: number;
+  anchorY: number;
+  flipX: boolean;
+  flipY: boolean;
   opacity: number;
 }
 
-export const IDENTITY: Transform = { x: 0, y: 0, scale: 1, opacity: 1 };
+export const IDENTITY: Transform = {
+  x: 0,
+  y: 0,
+  scaleX: 1,
+  scaleY: 1,
+  rotation: 0,
+  anchorX: 0,
+  anchorY: 0,
+  flipX: false,
+  flipY: false,
+  opacity: 1,
+};
+
+/** A transform given in part; `scale` sets both axes. Everything left out is the identity. */
+export type TransformInput = Partial<Transform> & { scale?: number };
+
+export function toTransform(input: TransformInput | undefined): Transform {
+  if (!input) return IDENTITY;
+  const { scale, ...rest } = input;
+  return {
+    ...IDENTITY,
+    ...(scale === undefined ? {} : { scaleX: scale, scaleY: scale }),
+    ...rest,
+  };
+}
 
 export interface Cut {
   /** Index into the list of source files. */
@@ -29,7 +61,7 @@ export interface Cut {
   start: Flicks;
   /** 0 is the bottom layer. Default 0. */
   layer?: number;
-  transform?: Transform;
+  transform?: TransformInput;
   /** Layer 0's cuts give the sound (until the audio engine mixes layers); muted ones do not. */
   muted?: boolean;
 }
@@ -45,7 +77,7 @@ export interface Run {
 }
 
 const sameTransform = (a: Transform, b: Transform) =>
-  a.x === b.x && a.y === b.y && a.scale === b.scale && a.opacity === b.opacity;
+  (Object.keys(IDENTITY) as (keyof Transform)[]).every((key) => a[key] === b[key]);
 
 /**
  * Sorts one layer's cuts by start and merges continuous ones into runs. Rejects overlaps and
@@ -60,7 +92,7 @@ export function toRuns(cuts: readonly Cut[]): Run[] {
     const last = runs[runs.length - 1];
     if (last && cut.start < last.end) throw new RangeError(`Cuts overlap at ${cut.start}`);
     const layer = cut.layer ?? 0;
-    const transform = cut.transform ?? IDENTITY;
+    const transform = toTransform(cut.transform);
     if (
       last &&
       last.source === cut.source &&

@@ -19,6 +19,7 @@ export default tseslint.config(
       "scripts/editor-e2e.mjs",
       "scripts/media-e2e.mjs",
       "scripts/timeline-e2e.mjs",
+      "scripts/golden-e2e.mjs",
     ],
     languageOptions: { globals: { ...globals.node, ...globals.browser } },
   },

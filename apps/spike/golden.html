@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Renderly golden frames</title>
+  </head>
+  <body>
+    <main class="spike">
+      <h1 class="text-title">Golden frames</h1>
+      <p class="spike__lead">
+        The compositor's output for fixed test pictures and settings, compared with the CPU
+        reference. Driven by <code>pnpm test:golden</code>; the results are listed below.
+      </p>
+      <ul id="results"></ul>
+    </main>
+    <script type="module" src="/src/golden-page.ts"></script>
+  </body>
+</html>

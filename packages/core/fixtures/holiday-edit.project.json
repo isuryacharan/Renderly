@@ -1,6 +1,6 @@
 {
   "format": "renderly",
-  "version": 1,
+  "version": 2,
   "id": "0j8kd2m4n6p8r0t2",
   "name": "Holiday edit",
   "revision": 412,
@@ -98,8 +98,18 @@
                     0,
                     0
                   ],
-                  "scale": 1.1,
+                  "scale": [
+                    1.1,
+                    1.1
+                  ],
+                  "uniform": true,
                   "rotation": 0,
+                  "anchor": [
+                    0,
+                    0
+                  ],
+                  "flipX": false,
+                  "flipY": false,
                   "opacity": 1,
                   "keys": {
                     "position": [
@@ -168,8 +178,18 @@
                     0.25,
                     0.25
                   ],
-                  "scale": 0.45,
+                  "scale": [
+                    0.45,
+                    0.45
+                  ],
+                  "uniform": true,
                   "rotation": 0,
+                  "anchor": [
+                    0,
+                    0
+                  ],
+                  "flipX": false,
+                  "flipY": false,
                   "opacity": 0.85
                 }
               ]

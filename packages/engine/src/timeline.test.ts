@@ -9,6 +9,7 @@ import {
   toTimeline,
   wantedRuns,
   type Cut,
+  toTransform,
 } from "./timeline";
 
 const cut = (source: number, inT: number, out: number, start: number): Cut => ({
@@ -92,7 +93,8 @@ describe("layers", () => {
   it("groups runs by layer, bottom first, and keeps transforms", () => {
     expect(layered.layers.map((l) => l.layer)).toEqual([0, 1]);
     expect(top).toHaveLength(3);
-    expect(layered.runs[top[0] ?? -1]?.transform).toEqual(small);
+    expect(layered.runs[top[0] ?? -1]?.transform).toEqual(toTransform(small));
+    expect(toTransform(small)).toMatchObject({ scaleX: 0.5, scaleY: 0.5, rotation: 0 });
     expect(layered.duration).toBe(125);
   });
 

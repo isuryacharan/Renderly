@@ -51,7 +51,7 @@ const media = (mediaId: string) => ({
 function fixture(): Project {
   return projectSchema().parse({
     format: "renderly",
-    version: 1,
+    version: 2,
     id: id("pj"),
     name: "Evaluate",
     revision: 0,
@@ -68,7 +68,17 @@ function fixture(): Project {
           track("a1", "audio", [clip("e", 0, 8)]),
           track("v2", "video", [
             clip("c", 1, 2, {
-              components: [{ type: "transform", position: [0.25, 0], scale: 0.5, opacity: 0.8 }],
+              components: [
+                {
+                  type: "transform",
+                  position: [0.25, 0],
+                  scale: [0.5, 0.4],
+                  rotation: 30,
+                  anchor: [0.1, -0.2],
+                  flipX: true,
+                  opacity: 0.8,
+                },
+              ],
             }),
             clip("d", 6, 1, { enabled: false }),
           ]),
@@ -92,7 +102,13 @@ describe("evaluateSequence", () => {
     expect(graph.layers[1]?.clips[0]?.transform).toEqual({
       x: 0.25,
       y: 0,
-      scale: 0.5,
+      scaleX: 0.5,
+      scaleY: 0.4,
+      rotation: 30,
+      anchorX: 0.1,
+      anchorY: -0.2,
+      flipX: true,
+      flipY: false,
       opacity: 0.8,
     });
     expect(graph.duration).toBe(s(8)); // the audio track is the longest

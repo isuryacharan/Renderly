@@ -14,15 +14,36 @@ import { sequenceDuration } from "./timeline";
 import type { Clip, Project, Sequence } from "./schema";
 import type { Rate } from "./time";
 
-/** Where a layer sits: centre offset as a fraction of the frame, scale (1 fits), opacity. */
+/**
+ * Where a layer sits (the transform component, flattened): the anchor's place as a fraction of the
+ * frame from its centre (x right, y down), scale per axis (1 fits), rotation in degrees clockwise
+ * about the anchor, the anchor as a fraction of the layer from its centre, mirroring, opacity.
+ */
 export interface LayerTransform {
   x: number;
   y: number;
-  scale: number;
+  scaleX: number;
+  scaleY: number;
+  rotation: number;
+  anchorX: number;
+  anchorY: number;
+  flipX: boolean;
+  flipY: boolean;
   opacity: number;
 }
 
-export const IDENTITY_TRANSFORM: LayerTransform = { x: 0, y: 0, scale: 1, opacity: 1 };
+export const IDENTITY_TRANSFORM: LayerTransform = {
+  x: 0,
+  y: 0,
+  scaleX: 1,
+  scaleY: 1,
+  rotation: 0,
+  anchorX: 0,
+  anchorY: 0,
+  flipX: false,
+  flipY: false,
+  opacity: 1,
+};
 
 export interface GraphClip {
   clip: string;
@@ -59,15 +80,31 @@ export interface EvaluateOptions {
   available?: (media: string) => boolean;
 }
 
+interface TransformComponent {
+  position?: [number, number];
+  scale?: [number, number];
+  rotation?: number;
+  anchor?: [number, number];
+  flipX?: boolean;
+  flipY?: boolean;
+  opacity?: number;
+}
+
 function transformOf(clip: Clip): LayerTransform {
-  const component = (clip.components as { type: string }[]).find((c) => c.type === "transform") as
-    { position?: [number, number]; scale?: number; opacity?: number } | undefined;
-  if (!component) return IDENTITY_TRANSFORM;
+  const c = (clip.components as { type: string }[]).find((x) => x.type === "transform") as
+    TransformComponent | undefined;
+  if (!c) return IDENTITY_TRANSFORM;
   return {
-    x: component.position?.[0] ?? 0,
-    y: component.position?.[1] ?? 0,
-    scale: component.scale ?? 1,
-    opacity: component.opacity ?? 1,
+    x: c.position?.[0] ?? 0,
+    y: c.position?.[1] ?? 0,
+    scaleX: c.scale?.[0] ?? 1,
+    scaleY: c.scale?.[1] ?? 1,
+    rotation: c.rotation ?? 0,
+    anchorX: c.anchor?.[0] ?? 0,
+    anchorY: c.anchor?.[1] ?? 0,
+    flipX: c.flipX ?? false,
+    flipY: c.flipY ?? false,
+    opacity: c.opacity ?? 1,
   };
 }
 

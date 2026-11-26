@@ -15,6 +15,7 @@ import {
 import {
   cutsFromGraph,
   IDENTITY,
+  toTransform,
   type Cut,
   type LoadedTimeline,
   type Preview,
@@ -36,7 +37,7 @@ const normalise = (cuts: readonly Cut[]) =>
       out: cut.out,
       start: cut.start,
       layer: cut.layer ?? 0,
-      transform: cut.transform ?? IDENTITY,
+      transform: toTransform(cut.transform),
     }))
     .sort((a, b) => a.layer - b.layer || a.start - b.start);
 
@@ -80,8 +81,8 @@ function buildProject(
     const clips = cuts
       .filter((cut) => (cut.layer ?? 0) === layer)
       .map((cut) => {
-        const t = cut.transform ?? IDENTITY;
-        const moved = t.x !== 0 || t.y !== 0 || t.scale !== 1 || t.opacity !== 1;
+        const t = toTransform(cut.transform);
+        const moved = JSON.stringify(t) !== JSON.stringify(IDENTITY);
         return {
           id: createId(),
           media: mediaIds[cut.source],
@@ -89,7 +90,18 @@ function buildProject(
           duration: cut.out - cut.in,
           in: cut.in,
           components: moved
-            ? [{ type: "transform", position: [t.x, t.y], scale: t.scale, opacity: t.opacity }]
+            ? [
+                {
+                  type: "transform",
+                  position: [t.x, t.y],
+                  scale: [t.scaleX, t.scaleY],
+                  rotation: t.rotation,
+                  anchor: [t.anchorX, t.anchorY],
+                  flipX: t.flipX,
+                  flipY: t.flipY,
+                  opacity: t.opacity,
+                },
+              ]
             : [],
         };
       });

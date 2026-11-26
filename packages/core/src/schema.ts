@@ -9,7 +9,7 @@ import { componentSchema, registryVersion } from "./components";
 import { ID_PATTERN } from "./ids";
 import { isMediaRate, isSupportedRate, MEDIA_SAMPLE_RATES, SUPPORTED_SAMPLE_RATES } from "./time";
 
-export const CURRENT_VERSION = 1;
+export const CURRENT_VERSION = 2;
 
 export const Id = z.string().regex(ID_PATTERN, "must be a 16-character id");
 export const Flicks = z.int().min(0);
