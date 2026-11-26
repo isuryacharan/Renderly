@@ -111,6 +111,11 @@ export class DecodeClient {
     return reply.stats;
   }
 
+  /** Tests only: makes every seek wait `ms` first, as on a slow machine. 0 turns it off. */
+  setTestSeekDelay(ms: number): void {
+    this.send({ type: "test-seek-delay", ms });
+  }
+
   /** Closes the file. The worker stays alive for the next `open`. */
   async close(): Promise<void> {
     await this.request((id) => ({ type: "close", id }));

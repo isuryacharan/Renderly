@@ -9,10 +9,12 @@
 //   pnpm test:timeline                    installed Edge
 //   pnpm test:timeline --browser chrome   installed Chrome (CI)
 //   pnpm test:timeline --only redraw      one scenario
+//   pnpm test:timeline --slow-seek 300    every decoder seek takes 300 ms longer (slow machine)
+//   pnpm test:timeline --cpu-slowdown 6   the editor page's main thread six times slower
 
 /* global mediaLab -- the media lab page's test hooks, used inside page.evaluate() */
 
-import { spawn } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import { chromium } from "playwright-core";
 
 const arg = (name, fallback) => {
@@ -22,6 +24,8 @@ const arg = (name, fallback) => {
 const channel = arg("browser", "msedge");
 const only = arg("only", null);
 const slowdown = Number(arg("cpu-slowdown", "1"));
+// --slow-seek MS: every decoder seek waits MS first, as on a slow machine (see testSeekDelayMs).
+const slowSeek = Number(arg("slow-seek", "0"));
 const PORT = Number(process.env.PORT ?? 5183);
 const BASE = `http://localhost:${PORT}`;
 const SECOND = 705_600_000;
@@ -30,11 +34,26 @@ const FRAME = SECOND / 30;
 const log = (...parts) => console.log(new Date().toISOString().slice(11, 19), ...parts);
 
 async function startServer() {
+  // A server left on the port from an earlier, interrupted run would answer instead of ours (and
+  // ours would fail to start without a word): refuse rather than test the wrong server.
+  if (
+    await fetch(`${BASE}/`).then(
+      () => true,
+      () => false,
+    )
+  )
+    throw new Error(
+      `Port ${PORT} is already in use, probably by a dev server from an earlier run. Stop it and try again.`,
+    );
   const server = spawn(`pnpm --filter @renderly/editor exec vite --port ${PORT} --strictPort`, {
+    detached: process.platform !== "win32",
     cwd: new URL("..", import.meta.url),
     shell: true,
     stdio: "ignore",
   });
+  // Stop the server if this run is interrupted (Ctrl+C or a kill), so it does not outlive us.
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"])
+    process.once(signal, () => void stop(server).then(() => process.exit(130)));
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     try {
@@ -47,9 +66,35 @@ async function startServer() {
   throw new Error("Dev server did not start");
 }
 
-function stop(server) {
-  if (process.platform === "win32") spawn("taskkill", ["/pid", String(server.pid), "/T", "/F"]);
-  else server.kill();
+/**
+ * Stops the dev server and everything it started, and waits until its port is free, so the next
+ * run can start its own server on it.
+ */
+async function stop(server) {
+  if (process.platform === "win32") {
+    // Killing only the shell would leave Vite running; taskkill /T takes the whole tree.
+    try {
+      execSync(`taskkill /pid ${server.pid} /T /F`, { stdio: "ignore" });
+    } catch {
+      // already gone
+    }
+  } else {
+    // The server runs in its own process group (see startServer): stop all of it.
+    try {
+      process.kill(-server.pid, "SIGTERM");
+    } catch {
+      server.kill();
+    }
+  }
+  const deadline = Date.now() + 10_000;
+  while (
+    Date.now() < deadline &&
+    (await fetch(`${BASE}/`).then(
+      () => true,
+      () => false,
+    ))
+  )
+    await new Promise((resolve) => setTimeout(resolve, 200));
 }
 
 class Failure extends Error {}
@@ -73,7 +118,9 @@ async function openEditor(context, folder) {
       await context.newCDPSession(page)
     ).send("Emulation.setCPUThrottlingRate", { rate: slowdown });
   page.on("pageerror", (error) => log("page error:", error.message));
-  await page.goto(`${BASE}/#/project/browser/${folder}`);
+  await page.goto(
+    `${BASE}/${slowSeek > 0 ? `?slow-seek=${slowSeek}` : ""}#/project/browser/${folder}`,
+  );
   await page.waitForFunction(() => window.renderlyTimeline !== undefined, null, {
     timeout: 20_000,
   });
@@ -697,7 +744,7 @@ const scenarios = {
 };
 
 async function main() {
-  log(`starting dev server; browser: ${channel}`);
+  log(`starting dev server; browser: ${channel}${slowSeek ? `; seeks +${slowSeek} ms` : ""}`);
   const server = await startServer();
   const browser = await chromium.launch({ channel, headless: true });
   let failed = 0;
@@ -721,7 +768,7 @@ async function main() {
     }
   } finally {
     await browser.close();
-    stop(server);
+    await stop(server);
   }
   log(failed === 0 ? "all checks passed" : `${failed} check(s) failed`);
   process.exit(failed === 0 ? 0 : 1);

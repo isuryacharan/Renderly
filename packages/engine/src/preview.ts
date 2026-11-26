@@ -75,6 +75,16 @@ function devicePixelSize(entry: ResizeObserverEntry): Size {
 
 type Reply = Extract<FromRenderer, { id: number }>;
 
+/**
+ * Tests only: a `slow-seek=<ms>` query parameter on the page makes every decoder seek wait that
+ * long, so races that need a slow machine show up on a fast one (`pnpm verify` uses it).
+ */
+export function testSeekDelayMs(): number {
+  const value = new URLSearchParams(globalThis.location?.search ?? "").get("slow-seek");
+  const ms = Number(value);
+  return value !== null && Number.isFinite(ms) && ms > 0 ? ms : 0;
+}
+
 export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview> {
   const audio = await createAudioOutput();
   const decoders = Array.from({ length: DECODER_POOL_SIZE }, () => startDecodeWorker());
@@ -137,6 +147,7 @@ export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview>
       decoders: decoders.map((decoder) => decoder.port),
       audioClock: audio.clock,
       playhead: playheadBuffer,
+      testSeekDelayMs: testSeekDelayMs(),
       size: {
         width: Math.round(canvas.clientWidth * ratio),
         height: Math.round(canvas.clientHeight * ratio),

@@ -7,6 +7,7 @@
 // Keys sit on a power-of-two time grid (`level`), so they stay the same across zoom levels, and a
 // coarser tile already in the cache stands in while a finer one loads.
 
+import { testSeekDelayMs } from "@renderly/engine";
 import { createDecodeClient, type DecodeClient } from "@renderly/media";
 
 export interface ThumbRequest {
@@ -107,6 +108,8 @@ export class Thumbnails {
   private spawn(): Decoder | undefined {
     if (this.decoders.length >= DECODERS) return undefined;
     const decoder: Decoder = { client: createDecodeClient(), media: null, busy: false };
+    const delay = testSeekDelayMs();
+    if (delay > 0) decoder.client.setTestSeekDelay(delay);
     this.decoders.push(decoder);
     return decoder;
   }

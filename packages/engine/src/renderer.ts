@@ -255,6 +255,7 @@ export function serveRenderer(scope: RendererScope): void {
     audioClock: SharedArrayBuffer,
     size: Size,
     playheadBuffer?: SharedArrayBuffer,
+    testSeekDelayMs = 0,
   ): void {
     clock = new ClockBuffer(audioClock);
     if (playheadBuffer) playheadOut = new Float64Array(playheadBuffer);
@@ -294,6 +295,7 @@ export function serveRenderer(scope: RendererScope): void {
       stream: null,
       lastUsed: 0,
     }));
+    if (testSeekDelayMs > 0) for (const slot of pool) slot.client.setTestSeekDelay(testSeekDelayMs);
     reserved = pool.pop() ?? null;
     slots = pool;
     scope.requestAnimationFrame(tick);
@@ -1144,7 +1146,14 @@ export function serveRenderer(scope: RendererScope): void {
   async function handle(message: ToRenderer): Promise<void> {
     switch (message.type) {
       case "init":
-        init(message.canvas, message.decoders, message.audioClock, message.size, message.playhead);
+        init(
+          message.canvas,
+          message.decoders,
+          message.audioClock,
+          message.size,
+          message.playhead,
+          message.testSeekDelayMs,
+        );
         return;
       case "resize":
         resize(message.size);

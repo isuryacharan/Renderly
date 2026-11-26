@@ -60,6 +60,11 @@ export type ToWorker =
   /** The client closed this many frames; the worker may send as many more. */
   | { type: "credit"; count: number }
   | { type: "stats"; id: number }
+  /**
+   * Tests only: every seek waits this long before it starts, as on a slow machine (software
+   * decoding), so races that need slow seeks show up on a fast one. 0 turns it off.
+   */
+  | { type: "test-seek-delay"; ms: number }
   | { type: "close"; id: number };
 
 export type FromWorker =

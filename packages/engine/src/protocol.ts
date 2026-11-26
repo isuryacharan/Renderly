@@ -109,6 +109,8 @@ export type ToRenderer =
       size: Size;
       /** The renderer writes [playhead, playing, refresh count] here every refresh. */
       playhead?: SharedArrayBuffer;
+      /** Tests only: every decoder seek waits this long first (see `testSeekDelayMs`). */
+      testSeekDelayMs?: number;
     }
   /** The canvas's size in device pixels changed. */
   | { type: "resize"; size: Size }
