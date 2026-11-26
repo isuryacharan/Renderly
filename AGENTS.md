@@ -78,8 +78,9 @@ with graceful fallbacks; probe capabilities at run time instead of assuming.
 - **Verify locally before every push: `pnpm verify` must pass.** The owner's rule is to keep CI
   failures, and the fixes they need, to a minimum: CI confirms a change, it does not find its
   bugs. `pnpm verify` runs everything CI runs, in the same order, from a cold Vite cache, then the
-  timeline and viewer suite again with every decoder seek slowed down (races that only open on a
-  slow machine). For changes to playback, the engine, timing or the browser suites, run
+  timeline and viewer suite again as on a slow machine: every decoder seek slowed down and the
+  engine's first load held back (`slow-seek` and `slow-start`; races that only open on a slow
+  machine). For changes to playback, the engine, timing or the browser suites, run
   `pnpm verify --repeat 3`. Do not push after a red or skipped step, and do not push on the
   strength of one lucky run: a check that fails even once has a cause, so find it first. Put the
   verify summary in the pull request. If CI still fails, find out why `pnpm verify` missed it and

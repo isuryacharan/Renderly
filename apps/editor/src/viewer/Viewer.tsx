@@ -118,6 +118,10 @@ export function Viewer({
     if (!element) return;
     let created: EngineLink | null = null;
     let cancelled = false;
+    // Tests only: `slow-start=<ms>` on the page holds the engine's first load back, as a slow
+    // machine (software rendering) does, so a check that acts before the engine is up shows on a
+    // fast one.
+    const slowStart = Number(new URLSearchParams(location.search).get("slow-start") ?? 0);
     createPreview(element)
       .then(async (preview) => {
         if (cancelled) return preview.dispose();
@@ -126,6 +130,7 @@ export function Viewer({
         );
         preview.onError((message) => latestToast.current(message, { kind: "danger" }));
         if (import.meta.env.DEV) window.renderlyViewer = created;
+        if (slowStart > 0) await new Promise((resolve) => setTimeout(resolve, slowStart));
         await created.start();
         setLink(created);
         linkNow.current = created;
