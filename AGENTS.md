@@ -95,6 +95,10 @@ Read `docs/design-system/README.md` before building or changing any interface.
   `packages/ui/src/styles/tokens.css`, or from `packages/ui/src/tokens.ts` for canvas drawing.
   If a token is missing, add it to `packages/ui/tokens/tokens.json` with a usage note and run
   `node packages/ui/scripts/build-tokens.mjs`. Never edit the generated files.
+- **Buttons, menu items and shortcuts are actions.** Add each new one to the actions registry
+  (`apps/editor/src/actions/editor-actions.ts`: id, label, icon, default keys, enabled-when) and
+  render it with `ActionButton`, `ActionSegment` or `actionItem`, never with its own handler. A
+  default key must not clash with another global key (a unit test checks).
 - **Use the existing component styles** (`.r-*` classes in `packages/ui/src/styles/components/`)
   and follow the matching guideline in `docs/design-system/components/`. Every numeric property
   in the inspector uses the property row.

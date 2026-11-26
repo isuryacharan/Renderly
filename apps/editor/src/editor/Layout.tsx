@@ -1,14 +1,14 @@
 // The editor's four panels: library, viewer and inspector above, the timeline below. The three
 // splitters resize them, by pointer or keyboard, and the sizes are kept across reloads.
 
-import { ViewStore, type Project } from "@renderly/core";
+import type { Project, ViewStore } from "@renderly/core";
 import type { ProjectSession } from "@renderly/storage";
 import { Splitter } from "@renderly/ui/react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Timeline } from "../timeline/Timeline";
 import { Viewer } from "../viewer/Viewer";
 import { MediaBin } from "./MediaBin";
-import { MediaStatus } from "./media-status";
+import type { MediaStatus } from "./media-status";
 
 interface Sizes {
   library: number;
@@ -38,10 +38,14 @@ export function Layout({
   session,
   project,
   readOnly,
+  view,
+  status,
 }: {
   session: ProjectSession;
   project: Project;
   readOnly: boolean;
+  view: ViewStore;
+  status: MediaStatus;
 }) {
   const [sizes, setSizes] = useState(loadSizes);
   useEffect(() => {
@@ -52,13 +56,6 @@ export function Layout({
     }
   }, [sizes]);
   const set = (key: keyof Sizes) => (value: number) => setSizes((s) => ({ ...s, [key]: value }));
-  // Where the user is looking (playhead, zoom, selection) and which files are reachable: shared
-  // by the panels, never saved.
-  const view = useMemo(
-    () => new ViewStore({ sequence: session.store.project.sequences[0]?.id ?? null }),
-    [session],
-  );
-  const status = useMemo(() => new MediaStatus(), [session]);
 
   return (
     <div className="editor">

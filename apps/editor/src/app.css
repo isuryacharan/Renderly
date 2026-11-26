@@ -258,3 +258,53 @@ body {
   margin: 0 auto;
   padding: var(--space-32) var(--space-24);
 }
+
+/* --- keyboard shortcuts list --- */
+
+.shortcuts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--space-16) var(--space-24);
+  max-height: 60vh;
+  overflow: auto;
+  /* The list scrolls, so it takes focus: keep its focus ring off the text. */
+  padding: var(--space-4) var(--space-8);
+  border-radius: var(--radius-sm);
+}
+.shortcuts__title {
+  margin: 0 0 var(--space-8);
+}
+.shortcuts__list {
+  display: grid;
+  gap: var(--space-4);
+  margin: 0;
+}
+.shortcuts__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-12);
+}
+.shortcuts__row dt {
+  color: var(--text-secondary);
+}
+.shortcuts__row dd {
+  display: flex;
+  flex: none;
+  gap: var(--space-4);
+  margin: 0;
+}
+.shortcuts__key {
+  padding: 0 var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.shortcuts__note {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--text-tertiary);
+}

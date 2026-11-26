@@ -1,13 +1,14 @@
 // The timeline panel: a toolbar, track headers (React, so they are real buttons for keyboard and
 // screen readers) and the canvas track area (TimelineView).
 
-import { createId, type Project, type Track, type ViewStore } from "@renderly/core";
+import { type Project, type Track, type ViewStore } from "@renderly/core";
 import type { ProjectSession } from "@renderly/storage";
-import { Icon, IconButton, Tooltip, useToast, type IconName } from "@renderly/ui/react";
+import { Icon, IconButton, useToast, type IconName } from "@renderly/ui/react";
+import { ActionButton, ActionSegment, useActions } from "../actions/react";
 import { useEffect, useReducer, useRef, useState } from "react";
 import type { MediaStatus } from "../editor/media-status";
 import { layoutRows, RULER_HEIGHT } from "./geometry";
-import { TimelineView, type Tool } from "./view";
+import { TimelineView } from "./view";
 
 declare global {
   interface Window {
@@ -46,6 +47,7 @@ export function Timeline({
   const [timeline, setTimeline] = useState<TimelineView | null>(null);
   const [, refresh] = useReducer((n: number) => n + 1, 0);
   const toast = useToast();
+  const actions = useActions();
   const latest = useRef({ readOnly, toast });
   latest.current = { readOnly, toast };
 
@@ -57,15 +59,20 @@ export function Timeline({
       status,
       readOnly: () => latest.current.readOnly,
       onError: (message) => latest.current.toast(message, { kind: "danger" }),
-      onChange: refresh,
+      onChange: () => {
+        refresh();
+        actions.changed();
+      },
     });
     setTimeline(created);
+    actions.attach({ timeline: created });
     if (import.meta.env.DEV) window.renderlyTimeline = created;
     return () => {
+      actions.attach({ timeline: null });
       created.destroy();
       if (window.renderlyTimeline === created) delete window.renderlyTimeline;
     };
-  }, [session, view, status]);
+  }, [session, view, status, actions]);
 
   const sequence =
     project.sequences.find((s) => s.id === view.get().sequence) ?? project.sequences[0];
@@ -86,17 +93,6 @@ export function Timeline({
     if (!result.ok) toast(result.error.message, { kind: "danger" });
   };
 
-  const addTrack = (kind: Track["kind"]) => {
-    if (!sequence) return;
-    const result = session.store.dispatch({
-      type: "track.add",
-      payload: { sequence: sequence.id, id: createId(), kind },
-    });
-    if (!result.ok) toast(result.error.message, { kind: "danger" });
-  };
-
-  const tool: Tool = timeline?.tool ?? "select";
-  const snapping = timeline?.snapping ?? true;
   const scrollY = timeline?.scrollY ?? 0;
   const empty = rows.length === 0;
 
@@ -104,88 +100,20 @@ export function Timeline({
     <section className="r-panel timeline" aria-label="Timeline">
       <div className="r-panel__header timeline__toolbar">
         <h2 className="text-body-strong timeline__title">Timeline</h2>
-        <div className="r-segmented r-segmented--icons" role="group" aria-label="Tool">
-          {(
-            [
-              ["select", "select-tool", "Selection tool", "V"],
-              ["blade", "blade-tool", "Blade tool", "B"],
-            ] as const
-          ).map(([id, icon, label, key]) => (
-            <Tooltip key={id} label={label} shortcut={key}>
-              <button
-                type="button"
-                aria-label={label}
-                aria-pressed={tool === id}
-                onClick={() => timeline?.setTool(id)}
-              >
-                <Icon name={icon} />
-              </button>
-            </Tooltip>
-          ))}
-        </div>
-        <IconButton
-          icon="split"
-          label="Split at the playhead"
-          shortcut="S"
-          size="sm"
-          disabled={readOnly || empty}
-          onClick={() => timeline?.splitAtPlayhead()}
-        />
-        <IconButton
-          icon="delete"
-          label="Delete the selected clips"
-          shortcut="Delete"
-          size="sm"
-          disabled={readOnly || empty}
-          onClick={() => timeline?.deleteSelected(false)}
-        />
-        <IconButton
-          icon="magnetic"
-          label="Snapping"
-          size="sm"
-          aria-pressed={snapping}
-          onClick={() => timeline?.setSnapping(!snapping)}
-        />
+        <ActionSegment ids={["timeline.selectTool", "timeline.bladeTool"]} label="Tool" />
+        <ActionButton id="timeline.split" />
+        <ActionButton id="timeline.delete" />
+        <ActionButton id="timeline.snapping" />
         <span className="r-toolbar__spacer" />
-        <IconButton
-          icon="zoom-out"
-          label="Zoom out"
-          shortcut="−"
-          size="sm"
-          onClick={() => timeline?.zoomBy(1.5)}
-        />
-        <IconButton
-          icon="zoom-in"
-          label="Zoom in"
-          shortcut="="
-          size="sm"
-          onClick={() => timeline?.zoomBy(1 / 1.5)}
-        />
-        <IconButton
-          icon="zoom-fit"
-          label="Zoom to fit"
-          shortcut="Shift Z"
-          size="sm"
-          onClick={() => timeline?.fit()}
-        />
+        <ActionButton id="timeline.zoomOut" />
+        <ActionButton id="timeline.zoomIn" />
+        <ActionButton id="timeline.fit" />
       </div>
       <div className="timeline__body">
         <div className="timeline__heads">
           <div className="timeline__corner" style={{ height: RULER_HEIGHT }}>
-            <IconButton
-              icon="video"
-              label="Add a video track"
-              size="sm"
-              disabled={readOnly}
-              onClick={() => addTrack("video")}
-            />
-            <IconButton
-              icon="audio"
-              label="Add an audio track"
-              size="sm"
-              disabled={readOnly}
-              onClick={() => addTrack("audio")}
-            />
+            <ActionButton id="timeline.addVideoTrack" />
+            <ActionButton id="timeline.addAudioTrack" />
           </div>
           <div
             className="timeline__heads-scroll"

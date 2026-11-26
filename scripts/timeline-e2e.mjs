@@ -2,6 +2,8 @@
 // S1.7: drag from the bin, move, trim, split, delete, ripple delete, the blade tool, box select
 // with edge auto-scroll, snapping, one undo step per drag and Escape cancelling one; the redraw
 // benchmark (500 clips in under 2 ms).
+// S1.9 and the M1 exit: create, import, cut, play, close and reopen with the keyboard alone, and
+// every toolbar button and menu item is an action from the registry.
 // S1.8: the viewer plays what the timeline says (transport, frame step, cuts, loop), edits during
 // playback reach the engine within a frame and never break it, and trimming shows the edge frame.
 // The media lab makes the test files (see media-e2e.mjs).
@@ -198,6 +200,23 @@ async function drag(page, x0, y0, x1, y1, { steps = 20, before } = {}) {
   await page.mouse.up();
 }
 
+/** The accessible name of the focused element: aria-label, else its text. */
+const focusedName = (page) =>
+  page.evaluate(() => {
+    const el = document.activeElement;
+    if (!el || el === document.body) return "";
+    return (el.getAttribute("aria-label") ?? el.textContent ?? "").trim().replace(/\s+/g, " ");
+  });
+
+/** Presses Tab until the focused control's name starts with `name`, as a keyboard user would. */
+async function tabTo(page, name, limit = 80) {
+  for (let i = 0; i < limit; i++) {
+    await page.keyboard.press("Tab");
+    if ((await focusedName(page)).startsWith(name)) return;
+  }
+  throw new Failure(`could not reach "${name}" with Tab`);
+}
+
 /**
  * A project for playback: an 8 s clip on V1 at 0 (two 4 s files back to back) and a 1 s clip on
  * V2 at 2 s. Returns the editor page once the viewer's engine is up.
@@ -245,6 +264,185 @@ async function playbackProject(context, name) {
 }
 
 const scenarios = {
+  async "M1 exit by keyboard alone: create, import, cut, play, close and reopen"({ context }) {
+    const lab = await openLab(context);
+    await lab.evaluate(async () => {
+      await mediaLab.makeClip("k1.webm", 3, "k1");
+      await mediaLab.makeClip("k2.webm", 2, "k2");
+    });
+    await lab.close();
+
+    // The operating system's file dialog cannot be driven from a test: it stands in by returning
+    // the two "outside" files, as if the user had chosen them (by keyboard) in the dialog.
+    await context.addInitScript(() => {
+      window.showOpenFilePicker = async () => {
+        const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("outside");
+        return [await dir.getFileHandle("k1.webm"), await dir.getFileHandle("k2.webm")];
+      };
+    });
+    const page = await context.newPage();
+    page.on("pageerror", (error) => log("page error:", error.message));
+    await page.goto(`${BASE}/`);
+    await page.waitForFunction(() => window.appReadyAt !== undefined);
+    const keys = async (...list) => {
+      for (const key of list) await page.keyboard.press(key);
+    };
+    const clips = () =>
+      page.evaluate(() =>
+        window.renderlyTimeline.sequence.tracks.flatMap((t) =>
+          t.clips.map((c) => ({
+            media: window.renderlyTimeline["project"].media.find((m) => m.id === c.media)?.name,
+            start: c.start,
+            duration: c.duration,
+            in: c.in,
+          })),
+        ),
+      );
+    const playhead = () =>
+      page.evaluate(() => window.renderlyTimeline["options"].view.get().playhead);
+
+    // Create a project.
+    await tabTo(page, "New project");
+    await keys("Enter");
+    await page.keyboard.type("Keyboard cut");
+    await keys("Enter");
+    await page.waitForFunction(
+      () =>
+        window.renderlyTimeline &&
+        window.renderlyViewer &&
+        !window.renderlyTimeline["options"].readOnly(),
+      null,
+      { timeout: 20_000 },
+    );
+
+    // Every toolbar button and menu trigger's items are actions from the registry.
+    const strays = await page.evaluate(() => {
+      const labels = new Set(window.renderlyActions.list().map((a) => a.label));
+      const bars =
+        ".r-toolbar, .r-panel__header, .viewer__transport, .timeline__corner, .r-bin__toolbar";
+      return [...document.querySelectorAll(`:is(${bars}) button`)]
+        .filter((b) => !b.hasAttribute("aria-haspopup"))
+        .map((b) => ({
+          label: b.getAttribute("aria-label") ?? b.textContent?.trim() ?? "",
+          // A menu item's text is its label followed by its shortcut.
+          item: b.getAttribute("role") === "menuitem",
+        }))
+        .filter(
+          ({ label, item }) =>
+            !labels.has(label) && !(item && [...labels].some((l) => label.startsWith(l))),
+        )
+        .map(({ label }) => label);
+    });
+    check(strays.length === 0, `buttons that are not actions: ${strays.join(", ")}`);
+
+    // Import (Ctrl+I), then add each file to the timeline from the library with the keyboard.
+    await keys("Control+i");
+    await page.waitForFunction(() => document.querySelectorAll("[data-media-id]").length === 2);
+    await tabTo(page, "k1.webm");
+    await keys("Enter");
+    let c = await clips();
+    check(
+      c.length === 1 && c[0].media === "k1.webm" && c[0].start === 0,
+      `k1 at 0: ${JSON.stringify(c)}`,
+    );
+    await keys("End"); // the playhead to the end of the sequence (3 s)
+    await page.waitForFunction(
+      (t) => window.renderlyTimeline["options"].view.get().playhead === t,
+      3 * SECOND,
+    );
+    await tabTo(page, "k2.webm");
+    await keys("e");
+    c = await clips();
+    check(
+      c.length === 2 && c[1].media === "k2.webm" && c[1].start === 3 * SECOND,
+      `k2 at 3 s: ${JSON.stringify(c)}`,
+    );
+
+    // Cut on the timeline: split k1 at 1 s, select the right half, ripple delete it.
+    await tabTo(page, "Timeline tracks");
+    await keys("Home", "Shift+ArrowRight", "Shift+ArrowRight", "Shift+ArrowRight"); // 30 frames
+    await page.waitForFunction(
+      (t) => window.renderlyTimeline["options"].view.get().playhead === t,
+      SECOND,
+    );
+    await keys("s");
+    check((await clips()).length === 3, "S split k1 at the playhead");
+    await keys("d", "Shift+Delete");
+    c = await clips();
+    check(
+      c.length === 2 && c[1].media === "k2.webm" && c[1].start === SECOND,
+      `ripple delete pulled k2 back to 1 s: ${JSON.stringify(c)}`,
+    );
+
+    // Trim k2's end to the playhead at 2 s, nudge it a frame later and back.
+    await keys("Shift+ArrowRight", "Shift+ArrowRight", "Shift+ArrowRight");
+    await page.waitForFunction(
+      (t) => window.renderlyTimeline["options"].view.get().playhead === t,
+      2 * SECOND,
+    );
+    await keys("d", "]");
+    c = await clips();
+    check(
+      c[1].duration === SECOND,
+      `] trimmed k2 to end at the playhead: ${c[1].duration / SECOND} s`,
+    );
+    await keys(".");
+    check((await clips())[1].start === SECOND + FRAME, ". moved k2 one frame later");
+    await keys(",");
+    check((await clips())[1].start === SECOND, ", moved it back");
+
+    // Undo and redo.
+    await keys("Control+z");
+    check((await clips())[1].start === SECOND + FRAME, "Ctrl+Z undid the last nudge");
+    await keys("Control+Shift+z");
+    check((await clips())[1].start === SECOND, "Ctrl+Shift+Z redid it");
+
+    // Play from the start with Space, pause with K.
+    await keys("Home");
+    await page.waitForFunction(() => window.renderlyTimeline["options"].view.get().playhead === 0);
+    await keys("Space");
+    await page.waitForFunction(() => window.renderlyViewer.preview.readPlayhead().playing, null, {
+      timeout: 10_000,
+    });
+    await page.waitForTimeout(800);
+    await keys("k");
+    // Pausing ends when the engine reports the frame on screen, snapped to the frame grid.
+    await page.waitForFunction(
+      (frame) => {
+        const v = window.renderlyTimeline["options"].view.get();
+        return !v.playing && v.playhead % frame === 0;
+      },
+      FRAME,
+      { timeout: 5000 },
+    );
+    const paused = await playhead();
+    check(paused > 0 && paused % FRAME === 0, `played and paused on a frame: ${paused / FRAME}`);
+
+    // The shortcuts list opens with ? and closes with Escape.
+    await keys("Shift+Slash");
+    await page.waitForSelector("dialog[open] .shortcuts", { timeout: 5000 });
+    await keys("Escape");
+    await page.waitForFunction(() => !document.querySelector("dialog[open]"));
+
+    // Close the tab once saved, reopen: the project is exactly as it was.
+    await page.waitForFunction(
+      () => document.querySelector(".r-status")?.textContent?.includes("Saved"),
+      null,
+      {
+        timeout: 10_000,
+      },
+    );
+    const before = await page.evaluate(() => JSON.stringify(window.renderlyTimeline["project"]));
+    const url = page.url();
+    await page.close();
+    const again = await context.newPage();
+    await again.goto(url);
+    await again.waitForFunction(() => window.renderlyTimeline?.sequence, null, { timeout: 20_000 });
+    const after = await again.evaluate(() => JSON.stringify(window.renderlyTimeline["project"]));
+    check(after === before, "the reopened project is byte for byte the one that was closed");
+    return `${JSON.parse(after).sequences[0].tracks[0].clips.length} clips cut by keyboard; reopened identical`;
+  },
+
   async "drag from the bin, then move, trim, split and delete with the mouse and keys"({
     context,
   }) {
