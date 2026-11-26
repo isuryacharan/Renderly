@@ -454,6 +454,20 @@ const scenarios = {
           min: Math.min(...seen) / SECOND,
           max: Math.max(...seen) / SECOND,
           engine: await page.evaluate(() => window.renderlyViewer.preview.readPlayhead()),
+          stats: await page.evaluate(() => {
+            const st = window.renderlyViewer.stats;
+            return (
+              st && {
+                playing: st.playing,
+                audioClock: st.audioClock,
+                startLatencyMs: st.startLatencyMs,
+                presented: st.presented,
+                late: st.late,
+                fps: st.fps,
+              }
+            );
+          }),
+          errors: await page.evaluate(() => window.renderlyViewer.errors),
           view: await view(),
         }),
       );
