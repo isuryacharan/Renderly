@@ -30,6 +30,8 @@ export interface Cut {
   /** 0 is the bottom layer. Default 0. */
   layer?: number;
   transform?: Transform;
+  /** Layer 0's cuts give the sound (until the audio engine mixes layers); muted ones do not. */
+  muted?: boolean;
 }
 
 export interface Run {

@@ -2,11 +2,12 @@
 // machine's GPU and writes one JSON file of results next to the spec §6.4 targets.
 //
 //   node scripts/bench.mjs [--browser msedge|chrome] [--out bench-results/<file>.json] [--quick]
-//                          [--fail-on-miss]
+//                          [--fail-on-miss] [--project]
 //
 // Needs the test media (node scripts/make-test-media.mjs) and a GPU. Starts its own dev server.
 // --quick shortens the long runs (for trying the runner, not for recorded results).
 // --fail-on-miss exits with 1 when a scenario fails or a target is missed (for CI).
+// --project builds every edit list as a real project first (the editor's path; S1.8).
 
 import { execSync, spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -19,6 +20,12 @@ const arg = (name, fallback) => {
   return i > 0 ? process.argv[i + 1] : fallback;
 };
 const quick = process.argv.includes("--quick");
+// --project: every edit list is built as a real project and played through the evaluator and the
+// engine's in-place update, as the editor does (S1.8). The results file records it.
+const viaProject = process.argv.includes("--project");
+const PREVIEW = viaProject ? "/preview.html?project" : "/preview.html";
+/** Each project-built edit list and whether it lowered back to exactly the benchmark's own. */
+const projectChecks = [];
 const failOnMiss = process.argv.includes("--fail-on-miss");
 const channel = arg("browser", "msedge");
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -52,6 +59,10 @@ async function startServer() {
 async function openPage(context, path) {
   const page = await context.newPage();
   page.on("pageerror", (error) => log("page error:", error.message));
+  page.on("console", (message) => {
+    const text = message.text();
+    if (text.startsWith("project-check: ")) projectChecks.push(JSON.parse(text.slice(15)));
+  });
   await page.goto(`${BASE}${path}`);
   await page.waitForFunction(() => window.pageReadyAt !== undefined, null, { timeout: 60_000 });
   return page;
@@ -60,7 +71,7 @@ async function openPage(context, path) {
 const scenarios = {
   /** Cold start: navigation to a usable preview (workers, audio worklet, GL context). */
   async coldStart(context) {
-    const page = await openPage(context, "/preview.html");
+    const page = await openPage(context, PREVIEW);
     const ms = await page.evaluate(() => Math.round(window.pageReadyAt));
     await page.close();
     return { readyMs: ms };
@@ -89,7 +100,7 @@ const scenarios = {
 
   /** Single-layer 4K60 playback on the audio clock. */
   async play4k(context) {
-    const page = await openPage(context, "/preview.html");
+    const page = await openPage(context, PREVIEW);
     const seconds = quick ? 15 : 60;
     const result = await page.evaluate(
       async ({ seconds, F }) => {
@@ -129,7 +140,7 @@ const scenarios = {
 
   /** Three 1080p60 layers, and two 4K layers at full and half preview resolution. */
   async layers(context) {
-    const page = await openPage(context, "/preview.html");
+    const page = await openPage(context, PREVIEW);
     const seconds = quick ? 10 : 30;
     const result = await page.evaluate(
       async ({ seconds }) => {
@@ -210,7 +221,7 @@ const scenarios = {
 
   /** The seeded cut stress list over H.264 and HEVC 4K60 files. */
   async cuts(context) {
-    const page = await openPage(context, "/preview.html");
+    const page = await openPage(context, PREVIEW);
     const count = quick ? 30 : 100;
     const result = await page.evaluate(
       async ({ count, F }) => {
@@ -246,7 +257,7 @@ const scenarios = {
 
   /** A 4-second drag with a seek request on every display frame, after a warm-up drag. */
   async scrub(context) {
-    const page = await openPage(context, "/preview.html");
+    const page = await openPage(context, PREVIEW);
     const result = await page.evaluate(
       async ({ F }) => {
         const R = window.previewResults;
@@ -270,7 +281,7 @@ const scenarios = {
 
   /** Export speed and parity. */
   async export(context) {
-    const page = await openPage(context, "/preview.html");
+    const page = await openPage(context, PREVIEW);
     const seconds = quick ? 20 : 120;
     const result = await page.evaluate(
       async ({ seconds, F }) => {
@@ -364,7 +375,11 @@ function compare(r) {
       `${r.scrub.updatesPerSecond}/s, worst UI frame ${r.scrub.maxUiFrameMs} ms`,
       r.scrub.updatesPerSecond >= 30,
     ),
-    na("Timeline redraw, 500 clips", "< 2 ms", "No timeline UI until M1"),
+    na(
+      "Timeline redraw, 500 clips",
+      "< 2 ms",
+      "Measured by pnpm test:timeline (the editor), not here",
+    ),
     na("Non-AI effect stack per frame, 720p", "< 4 ms", "No effects until M2"),
     row(
       "Export, 1080p30, no AI effects",
@@ -392,7 +407,7 @@ async function main() {
   });
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   try {
-    const probe = await openPage(context, "/preview.html").catch(() => null);
+    const probe = await openPage(context, PREVIEW).catch(() => null);
     const environment = probe
       ? await probe.evaluate(() => {
           const gl = new OffscreenCanvas(1, 1).getContext("webgl2");
@@ -447,6 +462,8 @@ async function main() {
       commit,
       browser: channel,
       quick,
+      viaProject,
+      ...(viaProject ? { projectChecks } : {}),
       environment,
       results,
       targets,
@@ -461,6 +478,15 @@ async function main() {
           "—",
           t.value ?? t.note,
         );
+    }
+    if (viaProject) {
+      const inexact = projectChecks.filter((check) => !check.exact);
+      log(
+        inexact.length === 0 ? "  PASS" : "  FAIL",
+        `${projectChecks.length} edit lists built as projects lowered back exactly`,
+        inexact.length ? `— ${inexact.map((c) => c.firstDifference).join("; ")}` : "",
+      );
+      if ((inexact.length > 0 || projectChecks.length === 0) && failOnMiss) process.exitCode = 1;
     }
     const missed = !Array.isArray(targets) || targets.some((t) => t.pass === false);
     if (failOnMiss && missed) process.exitCode = 1;

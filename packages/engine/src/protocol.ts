@@ -1,7 +1,7 @@
 // Messages between the main thread and the render worker. Times are integer flicks.
 
 import type { Flicks, MediaInput, OpenResult } from "@renderly/media";
-import type { PreviewScale, Size } from "./layout";
+import type { PreviewScale, Size, ViewerView } from "./layout";
 import type { Cut } from "./timeline";
 
 export interface LayerStats {
@@ -94,6 +94,8 @@ export interface LoadResult {
   /** The edit list in use: the one given, or one cut over the whole of source 0. */
   cuts: Cut[];
   duration: Flicks;
+  /** Display refreshes the renderer had run when the edit list took effect. */
+  refresh?: number;
 }
 
 export type ToRenderer =
@@ -105,11 +107,27 @@ export type ToRenderer =
       /** The audio clock (see @renderly/audio ClockBuffer). */
       audioClock: SharedArrayBuffer;
       size: Size;
+      /** The renderer writes [playhead, playing, refresh count] here every refresh. */
+      playhead?: SharedArrayBuffer;
     }
   /** The canvas's size in device pixels changed. */
   | { type: "resize"; size: Size }
   /** Opens the sources and sets the edit list (null: one cut over the whole of source 0). */
-  | { type: "load"; id: number; sources: MediaInput[]; cuts: Cut[] | null }
+  | {
+      type: "load";
+      id: number;
+      sources: MediaInput[];
+      cuts: Cut[] | null;
+      /** The sequence's size; left out, the first source's size. */
+      size?: Size;
+    }
+  /**
+   * Changes the edit list in place: `added` sources are appended to the ones already loaded, and
+   * `cuts` refer to all of them. Replies with "loaded"; the result lists the added sources only.
+   */
+  | { type: "update"; id: number; added: MediaInput[]; cuts: Cut[]; size: Size }
+  /** How the picture sits in the canvas, and the colour around it (0xRRGGBB). */
+  | { type: "view"; view: ViewerView; background: number }
   /** `session` is the audio session to follow, or 0 to run on the display refresh. */
   | { type: "play"; from: Flicks; session: number }
   /** Stops and replies with the start of the frame on screen, where playback should resume. */

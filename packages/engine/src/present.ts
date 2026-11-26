@@ -17,12 +17,13 @@ export class Presenter {
 
   constructor(private readonly renderer: THREE.WebGLRenderer) {}
 
-  present(image: THREE.Texture, rect: Rect): void {
+  /** Draws `image` into `rect`; the rest of the canvas is `background` (0xRRGGBB). */
+  present(image: THREE.Texture, rect: Rect, background = 0x000000): void {
     const r = this.renderer;
     (this.pass.uniforms["tImage"] as THREE.IUniform).value = image;
     r.setRenderTarget(null);
     r.setScissorTest(false);
-    r.setClearColor(0x000000, 1);
+    r.setClearColor(background, 1);
     r.clear(true, false, false);
     r.setViewport(rect.x, rect.y, rect.width, rect.height);
     this.pass.run(r, null);

@@ -12,6 +12,14 @@ export interface ViewState {
   scroll: { t: number; y: number };
   /** Selected ids (clips, markers, tracks). */
   selection: readonly string[];
+  /** True while the playhead is being dragged: the viewer shows quick pictures until it rests. */
+  scrubbing: boolean;
+  /** A time the viewer shows instead of the playhead, such as the edge frame while trimming. */
+  peek: number | null;
+  /** True while the sequence is playing. */
+  playing: boolean;
+  /** Playback loops over the selected clips' span, or the whole sequence when none are selected. */
+  loop: boolean;
 }
 
 export const INITIAL_VIEW: ViewState = {
@@ -20,6 +28,10 @@ export const INITIAL_VIEW: ViewState = {
   zoom: 705_600_000 / 100, // 100 pixels a second
   scroll: { t: 0, y: 0 },
   selection: [],
+  scrubbing: false,
+  peek: null,
+  playing: false,
+  loop: false,
 };
 
 export class ViewStore {

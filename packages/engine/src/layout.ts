@@ -55,3 +55,27 @@ export function containUvScale(content: Size, target: Size): [number, number] {
     ? [1, contentAspect / targetAspect]
     : [targetAspect / contentAspect, 1];
 }
+
+/** How the viewer shows the picture: fitted, or at a zoom (1 = one picture pixel per device pixel) with a pan. */
+export interface ViewerView {
+  zoom: number | null;
+  /** Offset of the picture's centre from the viewport's centre, in device pixels (x right, y down). */
+  pan: { x: number; y: number };
+}
+
+/**
+ * Where the picture goes in the viewport, as a GL viewport rectangle (origin bottom left). Fitted
+ * when `zoom` is null; otherwise the content size times the zoom, centred, then panned. The
+ * rectangle may extend past the viewport: what is outside is cut off.
+ */
+export function viewRect(content: Size, viewport: Size, view: ViewerView): Rect {
+  if (view.zoom === null) return containRect(content, viewport);
+  const width = Math.max(1, Math.round(content.width * view.zoom));
+  const height = Math.max(1, Math.round(content.height * view.zoom));
+  return {
+    x: Math.floor((viewport.width - width) / 2 + view.pan.x),
+    y: Math.floor((viewport.height - height) / 2 - view.pan.y),
+    width,
+    height,
+  };
+}

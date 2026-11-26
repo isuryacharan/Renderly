@@ -86,3 +86,18 @@ export {
 } from "./timeline-commands";
 export { newProject, type NewProjectOptions } from "./new-project";
 export { ImportMedia, RemoveMedia } from "./media-commands";
+export {
+  cutPoints,
+  evaluateSequence,
+  frameAt,
+  graphHash,
+  IDENTITY_TRANSFORM,
+  stableHash,
+  type EvaluateOptions,
+  type FrameGraph,
+  type FrameLayer,
+  type GraphClip,
+  type GraphLayer,
+  type LayerTransform,
+  type SequenceGraph,
+} from "./evaluate";

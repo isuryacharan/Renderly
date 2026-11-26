@@ -5,7 +5,7 @@
 
 import { createAudioOutput, type AudioOpenResult, type AudioOutput } from "@renderly/audio";
 import { startDecodeWorker, type Flicks, type MediaInput, type OpenResult } from "@renderly/media";
-import type { PreviewScale, Size } from "./layout";
+import type { PreviewScale, Size, ViewerView } from "./layout";
 import type { FromRenderer, LoadResult, RenderStats, ToRenderer } from "./protocol";
 import type { Cut } from "./timeline";
 
@@ -29,8 +29,19 @@ export const DECODER_POOL_SIZE = 6;
 export interface Preview {
   /** Opens one file as a timeline of one cut. */
   open(input: MediaInput): Promise<OpenedMedia>;
-  /** Opens several files and plays `cuts` over them. */
-  load(sources: MediaInput[], cuts: Cut[]): Promise<LoadedTimeline>;
+  /** Opens several files and plays `cuts` over them, at `size` (default: the first file's). */
+  load(sources: MediaInput[], cuts: Cut[], size?: Size): Promise<LoadedTimeline>;
+  /**
+   * Changes the edit list in place, while playing too: `added` files are appended to the loaded
+   * ones and `cuts` refer to all of them. Decoders and unchanged runs carry over. When the sound
+   * (layer 0) changed during playback, playback restarts at the playhead so picture and sound
+   * stay in sync.
+   */
+  update(added: MediaInput[], cuts: Cut[], size: Size): Promise<LoadedTimeline>;
+  /** Fitted (zoom null) or zoomed and panned; `background` (0xRRGGBB) fills around the picture. */
+  setView(view: ViewerView, background: number): void;
+  /** The playhead and whether it is playing, as of the renderer's last refresh. Cheap. */
+  readPlayhead(): { time: Flicks; playing: boolean; refreshes: number };
   play(from: Flicks): void;
   /** Stops; resolves with the playhead, where `play` should resume. */
   pause(): Promise<Flicks>;
@@ -78,6 +89,11 @@ export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview>
   let session = 0;
   let hasAudio = false;
   let cuts: Cut[] = [];
+  let duration = 0;
+  let inputs: MediaInput[] = [];
+  let sound: AudioOpenResult[] = [];
+  const playheadBuffer = new SharedArrayBuffer(3 * Float64Array.BYTES_PER_ELEMENT);
+  const playheadView = new Float64Array(playheadBuffer);
   const pending = new Map<number, { resolve: (m: Reply) => void; reject: (e: Error) => void }>();
   const statsListeners: ((stats: RenderStats) => void)[] = [];
   const errorListeners: ((message: string) => void)[] = [];
@@ -120,6 +136,7 @@ export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview>
       canvas: offscreen,
       decoders: decoders.map((decoder) => decoder.port),
       audioClock: audio.clock,
+      playhead: playheadBuffer,
       size: {
         width: Math.round(canvas.clientWidth * ratio),
         height: Math.round(canvas.clientHeight * ratio),
@@ -145,30 +162,88 @@ export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview>
     });
   }
 
-  async function loadTimeline(sources: MediaInput[], list: Cut[] | null): Promise<LoadedTimeline> {
+  const loadAudio = (sources: MediaInput[]) =>
+    audio.load(sources).catch((error: unknown): AudioOpenResult[] => {
+      reportError(`Audio: ${String(error)}`);
+      return sources.map(() => ({ ok: false, reason: "unsupported-format" }));
+    });
+
+  /** Sound comes from layer 0's unmuted cuts until the audio engine mixes layers (M2). */
+  const soundCuts = (list: readonly Cut[]) =>
+    list.filter((cut) => (cut.layer ?? 0) === 0 && !cut.muted);
+
+  function setTimeline(list: Cut[], end: number): void {
+    cuts = list;
+    duration = end;
+    hasAudio = soundCuts(list).some((cut) => sound[cut.source]?.ok === true);
+  }
+
+  async function loadTimeline(
+    sources: MediaInput[],
+    list: Cut[] | null,
+    size?: Size,
+  ): Promise<LoadedTimeline> {
     audio.stop();
-    const [video, sound] = await Promise.all([
+    const [video, opened] = await Promise.all([
       request<Extract<Reply, { type: "loaded" }>>((id) => ({
         type: "load",
         id,
         sources,
         cuts: list,
+        ...(size ? { size } : {}),
       })),
-      audio.load(sources).catch((error: unknown): AudioOpenResult[] => {
-        reportError(`Audio: ${String(error)}`);
-        return sources.map(() => ({ ok: false, reason: "unsupported-format" }));
-      }),
+      loadAudio(sources),
     ]);
-    cuts = video.result.cuts;
-    hasAudio = cuts.length > 0 && sound.some((result) => result.ok);
-    return { ...video.result, audio: sound };
+    inputs = [...sources];
+    sound = opened;
+    setTimeline(video.result.cuts, video.result.duration);
+    return { ...video.result, audio: opened };
+  }
+
+  function startSound(from: Flicks): void {
+    session++;
+    if (hasAudio) {
+      // The sound runs to the end of the timeline, silent past the last sounding cut, so the clock
+      // it drives keeps going while upper layers still play.
+      const list = soundCuts(cuts);
+      const end = list.reduce((t, cut) => Math.max(t, cut.start + cut.out - cut.in), 0);
+      const pad = duration > end ? [{ source: -1, in: 0, out: duration - end, start: end }] : [];
+      audio.play(session, from, [...list, ...pad]);
+    }
+    send({ type: "play", from, session: hasAudio ? session : 0 });
   }
 
   return {
     audio,
-    async load(sources, list) {
-      return loadTimeline(sources, list);
+    async load(sources, list, size) {
+      return loadTimeline(sources, list, size);
     },
+    async update(added, list, size) {
+      const before = JSON.stringify(soundCuts(cuts));
+      const wasPlaying = playheadView[1] === 1;
+      if (added.length > 0) {
+        inputs = [...inputs, ...added];
+        if (wasPlaying) audio.stop();
+        sound = await loadAudio(inputs);
+      }
+      const reply = await request<Extract<Reply, { type: "loaded" }>>((id) => ({
+        type: "update",
+        id,
+        added,
+        cuts: list,
+        size,
+      }));
+      setTimeline(reply.result.cuts, reply.result.duration);
+      const soundChanged = added.length > 0 || JSON.stringify(soundCuts(cuts)) !== before;
+      if (wasPlaying && soundChanged && playheadView[1] === 1) startSound(playheadView[0] ?? 0);
+      return { ...reply.result, audio: sound.slice(inputs.length - added.length) };
+    },
+    setView: (view, background) => send({ type: "view", view, background }),
+    readPlayhead: () => ({
+      time: playheadView[0] ?? 0,
+      playing: playheadView[1] === 1,
+      refreshes: playheadView[2] ?? 0,
+    }),
     async open(input) {
       const loaded = await loadTimeline([input], null);
       return {
@@ -181,15 +256,7 @@ export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview>
       };
     },
     play(from) {
-      session++;
-      // Sound comes from the bottom layer for now; mixing layers is the audio engine (M2).
-      if (hasAudio)
-        audio.play(
-          session,
-          from,
-          cuts.filter((cut) => (cut.layer ?? 0) === 0),
-        );
-      send({ type: "play", from, session: hasAudio ? session : 0 });
+      startSound(from);
     },
     async pause() {
       audio.stop();

@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@renderly/audio": "workspace:*",
+    "@renderly/core": "workspace:*",
     "@renderly/media": "workspace:*",
     "mediabunny": "^1.66.4",
     "three": "^0.187.0"
