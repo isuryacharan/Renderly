@@ -54,6 +54,12 @@ export class EngineLink {
   readonly errors: string[] = [];
   stats: RenderStats | null = null;
 
+  /** Shows an error and keeps it in `errors` (tests read it). */
+  private report(message: string): void {
+    this.errors.push(message);
+    this.onError(message);
+  }
+
   constructor(
     readonly preview: Preview,
     private readonly store: ProjectStore,
@@ -136,7 +142,7 @@ export class EngineLink {
         await this.syncOnce();
       } while (this.again && !this.closed);
     } catch (error) {
-      this.onError(`Preview: ${error instanceof Error ? error.message : String(error)}`);
+      this.report(`Preview: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       this.syncing = false;
     }
@@ -283,7 +289,7 @@ export class EngineLink {
       // stop waiting so the transport does not stay in "playing".
       if (this.preview.readPlayhead().refreshes - this.startRefresh > START_TIMEOUT_REFRESHES) {
         this.view.set({ playing: false });
-        this.onError("Playback did not start.");
+        this.report("Playback did not start.");
       }
       return;
     }
@@ -325,7 +331,12 @@ export class EngineLink {
     this.seekChain = this.seekChain.then(async () => {
       const wanted = this.seekWanted;
       this.seekWanted = null;
-      if (wanted !== null && !this.closed) await this.preview.seek(wanted);
+      if (wanted === null || this.closed) return;
+      try {
+        await this.preview.seek(wanted);
+      } catch (error) {
+        this.report(`Preview: ${error instanceof Error ? error.message : String(error)}`);
+      }
     });
   }
 

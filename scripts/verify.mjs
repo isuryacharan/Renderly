@@ -8,7 +8,7 @@
 //   pnpm verify                     all checks once, browser suites in Chrome (as CI)
 //   pnpm verify --repeat 3          browser suites three times (the first from a cold cache)
 //   pnpm verify --browser msedge    browser suites in Edge
-//   pnpm verify --slow-seek 500     slow seeks by 500 ms (default 300; 0 skips that pass)
+//   pnpm verify --slow-seek 1500    slow seeks by 1500 ms (default 800; 0 skips that pass)
 //   pnpm verify --from timeline     start at the first step whose name contains "timeline"
 //
 // Exits 1 if anything failed; the summary lists every step with its time.
@@ -24,7 +24,9 @@ const arg = (name, fallback) => {
 };
 const repeat = Math.max(1, Number(arg("repeat", "1")));
 const browser = arg("browser", "chrome");
-const slowSeek = Number(arg("slow-seek", "300"));
+// 800 ms: slower than CI's software decoding, which 300 ms was not (a fixed 500 ms wait in a check
+// passed locally at 300 ms and failed on CI).
+const slowSeek = Number(arg("slow-seek", "800"));
 const from = arg("from", null);
 
 const log = (...parts) => console.log(new Date().toISOString().slice(11, 19), ...parts);

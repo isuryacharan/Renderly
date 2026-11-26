@@ -81,7 +81,8 @@ with graceful fallbacks; probe capabilities at run time instead of assuming.
   `pnpm verify --repeat 3`. Do not push after a red or skipped step, and do not push on the
   strength of one lucky run: a check that fails even once has a cause, so find it first. Put the
   verify summary in the pull request. If CI still fails, find out why `pnpm verify` missed it and
-  make it catch that kind of failure too.
+  make it catch that kind of failure too. In browser checks, wait for a condition (with a
+  timeout), never for a fixed time before asserting: fixed waits pass on a fast machine only.
 - **Report honestly.** If a test fails or a step was skipped, say so with the output.
 - **Do not commit or push unless asked.**
 - **Keep it small.** Prefer the simplest change that satisfies the slice. No speculative
