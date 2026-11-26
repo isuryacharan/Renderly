@@ -105,6 +105,20 @@ export const ICONS = {
   "magnetic": [["path",{"d":"M4 13v-8a2 2 0 0 1 2 -2h1a2 2 0 0 1 2 2v8a2 2 0 0 0 6 0v-8a2 2 0 0 1 2 -2h1a2 2 0 0 1 2 2v8a8 8 0 0 1 -16 0"}],["path",{"d":"M4 8l5 0"}],["path",{"d":"M15 8l4 0"}]],
   /** Keyframes. Tabler: keyframe. */
   "keyframe": [["path",{"d":"M13.225 18.412a1.595 1.595 0 0 1 -1.225 .588c-.468 0 -.914 -.214 -1.225 -.588l-4.361 -5.248a1.844 1.844 0 0 1 0 -2.328l4.361 -5.248a1.595 1.595 0 0 1 1.225 -.588c.468 0 .914 .214 1.225 .588l4.361 5.248a1.844 1.844 0 0 1 0 2.328l-4.361 5.248"}]],
+  /** Reset a property or a section to its default. Tabler: rotate. */
+  "reset": [["path",{"d":"M19.95 11a8 8 0 1 0 -.5 4m.5 5v-5h-5"}]],
+  /** Values kept together, such as scale X and Y. Tabler: link. */
+  "linked": [["path",{"d":"M9 15l6 -6"}],["path",{"d":"M11 6l.463 -.536a5 5 0 0 1 7.071 7.072l-.534 .464"}],["path",{"d":"M13 18l-.397 .534a5.068 5.068 0 0 1 -7.127 0a4.972 4.972 0 0 1 0 -7.071l.524 -.463"}]],
+  /** Values set separately. Tabler: unlink. */
+  "unlinked": [["path",{"d":"M17 22v-2"}],["path",{"d":"M9 15l6 -6"}],["path",{"d":"M11 6l.463 -.536a5 5 0 0 1 7.071 7.072l-.534 .464"}],["path",{"d":"M13 18l-.397 .534a5.068 5.068 0 0 1 -7.127 0a4.972 4.972 0 0 1 0 -7.071l.524 -.463"}],["path",{"d":"M20 17h2"}],["path",{"d":"M2 7h2"}],["path",{"d":"M7 2v2"}]],
+  /** Mirror left to right. Tabler: flip-vertical. */
+  "flip-x": [["path",{"d":"M3 12l18 0"}],["path",{"d":"M7 16l10 0l-10 5l0 -5"}],["path",{"d":"M7 8l10 0l-10 -5l0 5"}]],
+  /** Mirror top to bottom. Tabler: flip-horizontal. */
+  "flip-y": [["path",{"d":"M12 3l0 18"}],["path",{"d":"M16 7l0 10l5 0l-5 -10"}],["path",{"d":"M8 7l0 10l-5 0l5 -10"}]],
+  /** Show the title and action safe areas. Tabler: focus-centered. */
+  "safe-area": [["path",{"d":"M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0"}],["path",{"d":"M4 8v-2a2 2 0 0 1 2 -2h2"}],["path",{"d":"M4 16v2a2 2 0 0 0 2 2h2"}],["path",{"d":"M16 4h2a2 2 0 0 1 2 2v2"}],["path",{"d":"M16 20h2a2 2 0 0 0 2 -2v-2"}]],
+  /** Show a rule-of-thirds grid. Tabler: grid-3x3. */
+  "thirds": [["path",{"d":"M3 8h18"}],["path",{"d":"M3 16h18"}],["path",{"d":"M8 3v18"}],["path",{"d":"M16 3v18"}]],
   /** Zoom the timeline in. Tabler: zoom-in. */
   "zoom-in": [["path",{"d":"M3 10a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"}],["path",{"d":"M7 10l6 0"}],["path",{"d":"M10 7l0 6"}],["path",{"d":"M21 21l-6 -6"}]],
   /** Zoom the timeline out. Tabler: zoom-out. */

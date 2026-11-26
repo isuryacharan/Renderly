@@ -114,6 +114,12 @@ body {
   width: 100%;
   height: 100%;
 }
+/* Handles and guides over the picture. */
+.viewer__overlay {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+}
 .viewer__message {
   position: absolute;
   inset: auto 0 50%;
@@ -307,4 +313,23 @@ body {
   grid-column: 1 / -1;
   margin: 0;
   color: var(--text-tertiary);
+}
+
+/* --- inspector --- */
+
+.inspector {
+  display: grid;
+  gap: var(--space-12);
+}
+.inspector__subject {
+  overflow: hidden;
+  margin: 0;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.inspector__toggles {
+  display: flex;
+  gap: var(--space-4);
+  padding-top: var(--space-4);
 }

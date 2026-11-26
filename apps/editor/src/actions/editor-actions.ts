@@ -214,6 +214,27 @@ export const EDITOR_ACTIONS: Action[] = [
     run: (ctx) => ctx.viewer?.setZoom(zoom),
   })),
 
+  {
+    id: "viewer.safeArea",
+    label: "Show the safe areas",
+    group: "Viewer",
+    icon: "safe-area",
+    keys: ["'"],
+    enabled: (ctx) => ctx.viewer !== null,
+    pressed: (ctx) => ctx.viewer?.safeArea ?? false,
+    run: (ctx) => ctx.viewer?.setOverlay({ safeArea: !ctx.viewer.safeArea }),
+  },
+  {
+    id: "viewer.thirds",
+    label: "Show a rule-of-thirds grid",
+    group: "Viewer",
+    icon: "thirds",
+    keys: ["Shift+'"],
+    enabled: (ctx) => ctx.viewer !== null,
+    pressed: (ctx) => ctx.viewer?.thirds ?? false,
+    run: (ctx) => ctx.viewer?.setOverlay({ thirds: !ctx.viewer.thirds }),
+  },
+
   // --- timeline ---
   {
     id: "timeline.selectTool",

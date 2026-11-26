@@ -4,6 +4,7 @@
 import type { Draft } from "immer";
 import { z } from "zod";
 import { CommandError, defineCommand } from "./commands";
+import { componentDefaults, componentTypes } from "./components";
 import { Flicks, Id, type Project } from "./schema";
 
 function findSequence(project: Draft<Project>, id: string) {
@@ -73,6 +74,97 @@ export const RemoveMarker = defineCommand({
     const index = markers.findIndex((m) => m.id === id);
     if (index < 0) throw new CommandError("not-found", `No marker ${id}`, "id");
     markers.splice(index, 1);
+  },
+});
+
+const FieldValue = z.union([
+  z.number(),
+  z.boolean(),
+  z.string(),
+  z.array(z.number()).min(1).max(4),
+]);
+
+/** The component of `type` on a clip, added with its defaults when the clip has none. */
+function componentOf(
+  clip: Draft<Project>["sequences"][number]["tracks"][number]["clips"][number],
+  type: string,
+) {
+  const components = clip.components as Record<string, unknown>[];
+  let target = components.find((c) => c["type"] === type);
+  if (!target) {
+    target = componentDefaults(type);
+    components.push(target);
+  }
+  return target;
+}
+
+/**
+ * Sets one field of a component on several clips in one step (the inspector and the viewer's
+ * handles). Clips without the component get it, with its defaults. `value` goes to every clip, or
+ * `values` gives one per clip, in order. With `index`, only that element of a vector field
+ * changes (position X, scale Y). Values are checked against the component's schema when the store
+ * validates the result.
+ */
+export const SetComponentFieldMany = defineCommand({
+  type: "component.setMany",
+  payload: z
+    .strictObject({
+      clips: z.array(Id).min(1),
+      component: z.string().min(1),
+      field: z
+        .string()
+        .min(1)
+        .refine((f) => f !== "type" && f !== "keys", "cannot set `type` or `keys`"),
+      index: z.int().min(0).max(3).optional(),
+      value: FieldValue.optional(),
+      values: z.array(FieldValue).optional(),
+    })
+    .refine((p) => (p.value === undefined) !== (p.values === undefined), {
+      message: "needs exactly one of `value` or `values`",
+    })
+    .refine((p) => p.values === undefined || p.values.length === p.clips.length, {
+      message: "`values` needs one value per clip",
+      path: ["values"],
+    }),
+  label: ({ field, clips }) =>
+    `Change ${field}${clips.length > 1 ? ` on ${clips.length} clips` : ""}`,
+  apply: (project, { clips, component, field, index, value, values }) => {
+    if (!componentTypes().includes(component))
+      throw new CommandError("not-found", `No component type ${component}`, "component");
+    if (!(field in componentDefaults(component)))
+      throw new CommandError(
+        "rejected",
+        `The ${component} component has no field ${field}`,
+        "field",
+      );
+    clips.forEach((id, i) => {
+      const target = componentOf(findClip(project, id), component);
+      const next = values ? values[i] : value;
+      if (index === undefined) {
+        target[field] = next;
+        return;
+      }
+      const current = target[field];
+      if (!Array.isArray(current) || typeof next !== "number" || index >= current.length)
+        throw new CommandError("rejected", `${field} has no element ${index}`, "index");
+      current[index] = next;
+    });
+  },
+});
+
+/** Puts a component back to its defaults on several clips (keyframes go too). */
+export const ResetComponent = defineCommand({
+  type: "component.reset",
+  payload: z.strictObject({ clips: z.array(Id).min(1), component: z.string().min(1) }),
+  label: ({ component }) => `Reset ${component}`,
+  apply: (project, { clips, component }) => {
+    if (!componentTypes().includes(component))
+      throw new CommandError("not-found", `No component type ${component}`, "component");
+    for (const id of clips) {
+      const components = findClip(project, id).components as Record<string, unknown>[];
+      const at = components.findIndex((c) => c["type"] === component);
+      if (at >= 0) components[at] = componentDefaults(component);
+    }
   },
 });
 

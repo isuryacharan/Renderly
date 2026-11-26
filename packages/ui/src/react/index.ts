@@ -4,3 +4,4 @@
 export * from "./controls";
 export * from "./icons";
 export * from "./overlays";
+export * from "./property";

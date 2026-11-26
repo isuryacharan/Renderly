@@ -3,6 +3,7 @@
 export * from "./time";
 export { createId, deriveId, ID_LENGTH, ID_PATTERN, type RandomBytes } from "./ids";
 export {
+  componentDefaults,
   componentSchema,
   componentTypes,
   Ease,
@@ -55,7 +56,9 @@ export {
   AddMarker,
   MoveMarker,
   RemoveMarker,
+  ResetComponent,
   SetComponentField,
+  SetComponentFieldMany,
   SetProjectName,
 } from "./basic-commands";
 export { INITIAL_VIEW, ViewStore, type ViewState } from "./view-state";

@@ -29,6 +29,9 @@ export interface BinApi {
 export interface ViewerApi {
   zoom: number | null;
   setZoom(zoom: number | null): void;
+  safeArea: boolean;
+  thirds: boolean;
+  setOverlay(overlay: { safeArea?: boolean; thirds?: boolean }): void;
 }
 
 export interface ActionContext {

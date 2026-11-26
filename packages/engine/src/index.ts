@@ -5,6 +5,7 @@ export { IDENTITY, toTransform } from "./timeline";
 export type { Cut, Transform, TransformInput } from "./timeline";
 export type { LoadResult } from "./protocol";
 export type { LayerStats, RenderStats } from "./protocol";
+export { viewRect } from "./layout";
 export type { PreviewScale, Rect, Size, ViewerView } from "./layout";
 export { createExporter } from "./export";
 export type { ExportJob, Exporter, ExportProgress } from "./export";

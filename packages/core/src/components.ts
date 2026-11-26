@@ -40,6 +40,13 @@ export function componentTypes(): string[] {
   return [...registry.keys()];
 }
 
+/** A component of `type` with every field at its default (without keyframes). */
+export function componentDefaults(type: string): Record<string, unknown> {
+  const schema = registry.get(type);
+  if (!schema) throw new Error(`No component type "${type}"`);
+  return schema.parse({ type }) as Record<string, unknown>;
+}
+
 /** Bumped on every registration, so cached schemas know to rebuild. */
 export function registryVersion(): number {
   return version;
