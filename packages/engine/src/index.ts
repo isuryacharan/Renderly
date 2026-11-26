@@ -1,4 +1,4 @@
-export { createPreview } from "./preview";
+export { createPreview, testSeekDelayMs } from "./preview";
 export { DECODER_POOL_SIZE } from "./preview";
 export type { LoadedTimeline, OpenedMedia, Preview } from "./preview";
 export { IDENTITY } from "./timeline";

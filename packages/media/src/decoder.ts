@@ -46,6 +46,8 @@ interface OpenFile {
 
 export function serveDecoder(endpoint: Endpoint): void {
   let file: OpenFile | null = null;
+  /** Tests only (see "test-seek-delay"). */
+  let seekDelayMs = 0;
   /** Id of the play or seek that may send frames. Anything else stops at its next step. */
   let current = 0;
   let framesSent = 0;
@@ -174,6 +176,10 @@ export function serveDecoder(endpoint: Endpoint): void {
   async function seek(f: OpenFile, id: number, time: Flicks, mode: SeekMode): Promise<number> {
     let target = lookupSeconds(time, f.first);
     const cancelled = () => current !== id;
+    if (seekDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, seekDelayMs));
+      if (cancelled()) return 0;
+    }
 
     if (mode === "exact" && f.seeker) {
       const result = await f.seeker.seek(target, cancelled);
@@ -240,6 +246,9 @@ export function serveDecoder(endpoint: Endpoint): void {
         return;
       case "stats":
         post({ type: "stats", id: message.id, stats: stats() });
+        return;
+      case "test-seek-delay":
+        seekDelayMs = Math.max(0, message.ms);
         return;
       case "close":
         closeFile();
