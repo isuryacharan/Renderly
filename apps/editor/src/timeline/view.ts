@@ -54,6 +54,8 @@ import { thumbKey, Thumbnails, type ThumbRequest } from "./thumbnails";
 export type Tool = "select" | "blade";
 
 const SCROLLBAR = 10;
+/** Keyframe diamonds on clips, in pixels. */
+const KEY_SIZE = 8;
 /** Clips narrower than this are drawn as plain rectangles, batched per track. */
 const NARROW_PX = 8;
 const NAME_ROW = 18;
@@ -62,6 +64,16 @@ const DRAG_THRESHOLD = 3;
 
 type Drag =
   | { kind: "scrub" }
+  | {
+      kind: "key";
+      clip: Clip;
+      /** Fields keyed at the grabbed time. */
+      fields: string[];
+      /** Timeline time of the key when grabbed. */
+      from: number;
+      gesture: Gesture;
+      payload: unknown;
+    }
   | { kind: "scrollbar"; startX: number; startT: number }
   | {
       kind: "pending-move" | "move";
@@ -494,6 +506,24 @@ export class TimelineView {
       return;
     }
 
+    // A keyframe diamond: drag to retime it (every field keyed at that time).
+    const key = !readOnly && !hit.row.track.locked ? this.keyAt(hit.row, hit.clip, x, cy) : null;
+    if (key) {
+      const gesture = this.begin("keyframe-move", "keyframe.move");
+      if (!gesture) return;
+      this.capture(e);
+      this.select([hit.clip.id]);
+      this.drag = {
+        kind: "key",
+        clip: hit.clip,
+        fields: key.fields,
+        from: key.t,
+        gesture,
+        payload: null,
+      };
+      return;
+    }
+
     const id = hit.clip.id;
     let selection = this.selection;
     if (e.shiftKey || e.ctrlKey || e.metaKey) {
@@ -578,6 +608,25 @@ export class TimelineView {
       case "scrub":
         this.scrubTo(x);
         return;
+      case "key": {
+        const raw = Math.min(clipEnd(drag.clip), Math.max(drag.clip.start, t));
+        const snapped = snapNearest(this.targets(), raw, SNAP_PX * view.zoom);
+        this.snapLine = snapped.hit;
+        const to = Math.min(
+          clipEnd(drag.clip),
+          Math.max(drag.clip.start, this.snapFrame(snapped.t)),
+        );
+        const payload = {
+          clip: drag.clip.id,
+          component: "transform",
+          fields: drag.fields,
+          from: drag.from,
+          to,
+        };
+        if (drag.gesture.preview(payload).ok) drag.payload = payload;
+        this.invalidate();
+        return;
+      }
       case "scrollbar": {
         const total = this.scrollTotal();
         this.follow = false;
@@ -676,7 +725,7 @@ export class TimelineView {
       this.follow = true;
       this.options.view.set({ playhead: this.snapFrame(Math.max(0, drag.startT)) });
     }
-    if ((drag.kind === "move" || drag.kind === "trim") && drag.gesture) {
+    if ((drag.kind === "move" || drag.kind === "trim" || drag.kind === "key") && drag.gesture) {
       if (drag.payload === null) drag.gesture.cancel();
       else {
         const result = drag.gesture.commit(drag.payload);
@@ -700,7 +749,8 @@ export class TimelineView {
     this.box = null;
     if (!drag) return;
     this.endViewerDrag(drag);
-    if ((drag.kind === "move" || drag.kind === "trim") && drag.gesture) drag.gesture.cancel();
+    if ((drag.kind === "move" || drag.kind === "trim" || drag.kind === "key") && drag.gesture)
+      drag.gesture.cancel();
     if (drag.kind === "box") this.select(drag.add);
     this.canvas.style.cursor = this.tool === "blade" ? "crosshair" : "default";
     this.invalidate();
@@ -727,6 +777,10 @@ export class TimelineView {
     }
     const hit = hitClip(this.rows, this.viewport, x, this.contentY(y));
     const editable = hit && !hit.row.track.locked && !this.options.readOnly();
+    if (editable && this.keyAt(hit.row, hit.clip, x, this.contentY(y))) {
+      this.canvas.style.cursor = "ew-resize";
+      return;
+    }
     this.canvas.style.cursor = !hit
       ? "default"
       : !editable
@@ -1286,6 +1340,57 @@ export class TimelineView {
       ctx.stroke();
       ctx.restore();
     }
+
+    // Keyframes: diamonds over the filmstrip, one per keyed time.
+    if (w > KEY_SIZE * 2) {
+      const mid = Math.round(y + NAME_ROW + (h - NAME_ROW) / 2) + 0.5;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x0, y, w, h);
+      ctx.clip();
+      for (const t of this.keyTimes(clip).keys()) {
+        const kx = Math.round(timeToX(view, clip.start + t)) + 0.5;
+        if (kx < -KEY_SIZE || kx > width + KEY_SIZE) continue;
+        ctx.beginPath();
+        ctx.moveTo(kx, mid - KEY_SIZE / 2);
+        ctx.lineTo(kx + KEY_SIZE / 2, mid);
+        ctx.lineTo(kx, mid + KEY_SIZE / 2);
+        ctx.lineTo(kx - KEY_SIZE / 2, mid);
+        ctx.closePath();
+        ctx.fillStyle = c.selection;
+        ctx.fill();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = c.selectionEdge;
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+
+  /** Clip times of the transform's keyframes, each with the fields keyed there. */
+  private keyTimes(clip: Clip): Map<number, string[]> {
+    const transform = clip.components.find((c) => (c as { type: string }).type === "transform") as
+      { keys?: Record<string, { t: number }[]> } | undefined;
+    const times = new Map<number, string[]>();
+    for (const [field, keys] of Object.entries(transform?.keys ?? {}))
+      for (const key of keys) times.set(key.t, [...(times.get(key.t) ?? []), field]);
+    return times;
+  }
+
+  /** The keyframe diamond under (x, content y) on a clip, if any. */
+  private keyAt(
+    row: Row,
+    clip: Clip,
+    x: number,
+    cy: number,
+  ): { t: number; fields: string[] } | null {
+    const mid = row.y + CLIP_INSET + NAME_ROW + (row.height - CLIP_INSET * 2 - NAME_ROW) / 2;
+    if (Math.abs(cy - mid) > KEY_SIZE) return null;
+    for (const [t, fields] of this.keyTimes(clip)) {
+      if (Math.abs(timeToX(this.viewport, clip.start + t) - x) <= KEY_SIZE / 2 + 2)
+        return { t: clip.start + t, fields };
+    }
+    return null;
   }
 
   private sequenceName(clip: Clip): string | undefined {

@@ -26,6 +26,7 @@ export function cutsFromGraph(
         layer: index,
         transform: clip.transform,
         muted: layer.muted,
+        ...(clip.keys ? { keys: clip.keys } : {}),
       });
     }
   });

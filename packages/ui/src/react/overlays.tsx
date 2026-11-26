@@ -90,9 +90,25 @@ export interface MenuButtonProps {
   className?: string;
   /** For an icon-only button: the tooltip naming it. */
   tooltip?: string;
+  /**
+   * "contextmenu": a click runs `onPress` (the button's own action) and the menu opens on
+   * right-click or the keyboard's menu key (Shift+F10). Default "click": a click opens the menu.
+   */
+  opensOn?: "click" | "contextmenu";
+  onPress?: () => void;
+  disabled?: boolean;
 }
 
-export function MenuButton({ label, items, className, tooltip, ...rest }: MenuButtonProps) {
+export function MenuButton({
+  label,
+  items,
+  className,
+  tooltip,
+  opensOn = "click",
+  onPress,
+  disabled = false,
+  ...rest
+}: MenuButtonProps) {
   const button = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const id = useId();
@@ -131,7 +147,17 @@ export function MenuButton({ label, items, className, tooltip, ...rest }: MenuBu
       aria-expanded={open}
       aria-controls={id}
       aria-label={rest["aria-label"]}
-      onClick={() => (open ? menu.current?.hidePopover() : show("first"))}
+      disabled={disabled}
+      onClick={() => {
+        if (opensOn === "contextmenu") onPress?.();
+        else if (open) menu.current?.hidePopover();
+        else show("first");
+      }}
+      onContextMenu={(event) => {
+        if (opensOn !== "contextmenu") return;
+        event.preventDefault();
+        show("first");
+      }}
       onKeyDown={(event) => {
         if (event.key === "ArrowDown" || event.key === "ArrowUp") {
           event.preventDefault();

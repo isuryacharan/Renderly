@@ -9,6 +9,7 @@ import {
   compare,
   referenceComposite,
   renderGolden,
+  runTransformAt,
   testPattern,
   toTransform,
   type Image,
@@ -25,6 +26,41 @@ interface Case {
 
 const base = testPattern(WIDTH, HEIGHT);
 const overlay = testPattern(WIDTH, HEIGHT, true);
+
+const S = 705_600_000;
+
+/**
+ * An animated clip as the engine plays it: position, scale and rotation keyed with eased and auto
+ * spans, evaluated by the engine's own `runTransformAt` 1.3 s into a 3 s clip.
+ */
+const animated = runTransformAt(
+  {
+    source: 0,
+    in: 0,
+    out: 3 * S,
+    start: 0,
+    end: 3 * S,
+    layer: 1,
+    transform: toTransform({ opacity: 0.85 }),
+    keys: {
+      position: [
+        { t: 0, v: [-0.3, 0.2], ease: "bezier" },
+        { t: 2 * S, v: [0.2, -0.1], ease: "auto" },
+        { t: 3 * S, v: [0.25, 0], ease: "auto" },
+      ],
+      scale: [
+        { t: 0, v: [0.3, 0.3], ease: "linear" },
+        { t: 3 * S, v: [0.7, 0.6], ease: "linear" },
+      ],
+      rotation: [
+        { t: 0, v: -20, ease: "auto" },
+        { t: S, v: 10, ease: "auto" },
+        { t: 3 * S, v: 45, ease: "auto" },
+      ],
+    },
+  },
+  1.3 * S,
+);
 
 const CASES: Record<string, Case> = {
   "transform: identity": { layers: [{ image: base, transform: toTransform({}) }] },
@@ -58,6 +94,12 @@ const CASES: Record<string, Case> = {
           opacity: 0.7,
         }),
       },
+    ],
+  },
+  "keyframes: position, scale and rotation eased, 1.3 s into the clip": {
+    layers: [
+      { image: base, transform: toTransform({}) },
+      { image: overlay, transform: animated },
     ],
   },
 };

@@ -6,6 +6,8 @@
 // every toolbar button and menu item is an action from the registry.
 // S2.1: the inspector and the viewer's handles: a slider, label or handle drag is one undo step,
 // Escape cancels one, and an edit with several clips selected changes all of them in one step.
+// S2.2: keyframes from the inspector (add, edit at another time, previous key, ease menu), retimed
+// by dragging their diamond on the timeline, and played back without engine errors.
 // S1.8: the viewer plays what the timeline says (transport, frame step, cuts, loop), edits during
 // playback reach the engine within a frame and never break it, and trimming shows the edge frame.
 // The media lab makes the test files (see media-e2e.mjs).
@@ -285,6 +287,98 @@ async function playbackProject(context, name) {
 }
 
 const scenarios = {
+  async "keyframes: add, edit, ease and retime, then play through the motion"({ context }) {
+    const page = await playbackProject(context, "Keys");
+    const view = (change) =>
+      page.evaluate((c) => window.renderlyTimeline["options"].view.set(c), change);
+    const id = await page.evaluate(() => window.renderlyTimeline.sequence.tracks[0].clips[0].id);
+    await view({ selection: [id], playhead: SECOND });
+    await page.waitForSelector('button[aria-label="Add a Rotation keyframe"]');
+    const keys = () =>
+      page.evaluate((id) => {
+        const clip = window.renderlyTimeline.sequence.tracks[0].clips.find((c) => c.id === id);
+        return clip.components.find((c) => c.type === "transform")?.keys?.rotation ?? [];
+      }, id);
+    const undo = () => page.evaluate(() => window.renderlyTimeline["options"].store.undoLabels);
+    const steps = (await undo()).length;
+
+    // The diamond adds a key at the playhead (1 s), holding the current value.
+    await page.locator('button[aria-label="Add a Rotation keyframe"]').click();
+    let k = await keys();
+    check(
+      k.length === 1 && k[0].t === SECOND && k[0].v === 0,
+      `a key at 1 s: ${JSON.stringify(k)}`,
+    );
+    await page.waitForSelector('button[aria-label^="Remove the Rotation keyframe"]');
+
+    // At 3 s, typing a value adds the second key there: the property is animated.
+    await view({ playhead: 3 * SECOND });
+    await page.waitForSelector('button[aria-label="Add a Rotation keyframe"]');
+    const field = page.locator('input[aria-label="Rotation value"]');
+    await field.click();
+    await field.fill("90");
+    await page.keyboard.press("Enter");
+    k = await keys();
+    check(
+      k.length === 2 && k[1].t === 3 * SECOND && k[1].v === 90,
+      `a key at 3 s: ${JSON.stringify(k)}`,
+    );
+    // Half way the smooth (auto) curve is at half the turn; the inspector shows it.
+    await view({ playhead: 2 * SECOND });
+    await until(
+      page,
+      () => document.querySelector('input[aria-label="Rotation value"]')?.value === "45.0",
+    );
+
+    // The previous-key arrow goes back to 1 s; the menu on the diamond sets Hold.
+    await page.locator('button[aria-label="Previous Rotation keyframe"]').click();
+    await until(page, (s) => window.renderlyTimeline["options"].view.get().playhead === s, SECOND);
+    await page
+      .locator('button[aria-label^="Remove the Rotation keyframe"]')
+      .click({ button: "right" });
+    await page.locator(':popover-open [role="menuitem"]', { hasText: "Hold" }).click();
+    k = await keys();
+    check(k[0].ease === "hold", `the first key holds: ${k[0].ease}`);
+    await view({ playhead: 2 * SECOND });
+    await until(
+      page,
+      () => document.querySelector('input[aria-label="Rotation value"]')?.value === "0.0",
+    );
+
+    // On the timeline, drag the 3 s diamond to 4 s: one step.
+    const r = await box(page, id);
+    const y = r.y + 18 + (r.height - 18) / 2;
+    const from = await pageX(page, 3 * SECOND);
+    const to = await pageX(page, 4 * SECOND);
+    await drag(page, from, y, to, y);
+    k = await keys();
+    check(k[1].t === 4 * SECOND, `the key moved to 4 s: ${k[1].t / SECOND}`);
+    const labels = await undo();
+    check(
+      labels.length === steps + 4 && labels[0] === "Move keyframe",
+      `add, set, ease, move: four steps: ${labels.slice(0, 4)}`,
+    );
+
+    // Play through the motion: the engine animates it without errors.
+    await view({ playhead: 0 });
+    await page.getByRole("button", { name: "Play", exact: true }).click();
+    await until(page, () => window.renderlyViewer.preview.readPlayhead().playing, null, {
+      timeout: 10_000,
+    });
+    await until(
+      page,
+      (s) => window.renderlyTimeline["options"].view.get().playhead > s,
+      4.5 * SECOND,
+      {
+        timeout: 15_000,
+      },
+    );
+    await page.getByRole("button", { name: "Pause", exact: true }).click();
+    const errors = await page.evaluate(() => window.renderlyViewer.errors);
+    check(errors.length === 0, `no engine errors: ${errors.join("; ")}`);
+    return "key added, second key by typing, 45° half way, hold from the menu, retimed by drag, played";
+  },
+
   async "inspector and handles: one undo step per drag, all selected clips in one step"({
     context,
   }) {

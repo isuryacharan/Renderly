@@ -5,6 +5,8 @@ import type { Draft } from "immer";
 import { z } from "zod";
 import { CommandError, defineCommand } from "./commands";
 import { componentDefaults, componentTypes } from "./components";
+import { keyAt } from "./keyframe-commands";
+import type { Key } from "./keyframes";
 import { Flicks, Id, type Project } from "./schema";
 
 function findSequence(project: Draft<Project>, id: string) {
@@ -118,6 +120,11 @@ export const SetComponentFieldMany = defineCommand({
       index: z.int().min(0).max(3).optional(),
       value: FieldValue.optional(),
       values: z.array(FieldValue).optional(),
+      /**
+       * Timeline time of the edit. Where the field is animated, the value goes into the key at
+       * that time (added without changing the motion, if there is none); elsewhere it is the value.
+       */
+      time: Flicks.optional(),
     })
     .refine((p) => (p.value === undefined) !== (p.values === undefined), {
       message: "needs exactly one of `value` or `values`",
@@ -128,7 +135,7 @@ export const SetComponentFieldMany = defineCommand({
     }),
   label: ({ field, clips }) =>
     `Change ${field}${clips.length > 1 ? ` on ${clips.length} clips` : ""}`,
-  apply: (project, { clips, component, field, index, value, values }) => {
+  apply: (project, { clips, component, field, index, value, values, time }) => {
     if (!componentTypes().includes(component))
       throw new CommandError("not-found", `No component type ${component}`, "component");
     if (!(field in componentDefaults(component)))
@@ -138,13 +145,30 @@ export const SetComponentFieldMany = defineCommand({
         "field",
       );
     clips.forEach((id, i) => {
-      const target = componentOf(findClip(project, id), component);
+      const clip = findClip(project, id);
+      const target = componentOf(clip, component) as Record<string, unknown> & {
+        keys?: Record<string, Key[]>;
+      };
       const next = values ? values[i] : value;
+      // An animated field: edit the key at the time (a plain value would be ignored).
+      let holder: Record<string, unknown> = target;
+      let slot = field;
+      if (time !== undefined && (target.keys?.[field]?.length ?? 0) > 0) {
+        const local = time - clip.start;
+        if (local < 0 || local > clip.duration)
+          throw new CommandError(
+            "rejected",
+            `${field} is animated: put the playhead on the clip`,
+            "time",
+          );
+        holder = keyAt(target, field, local) as unknown as Record<string, unknown>;
+        slot = "v";
+      }
       if (index === undefined) {
-        target[field] = next;
+        holder[slot] = next;
         return;
       }
-      const current = target[field];
+      const current = holder[slot];
       if (!Array.isArray(current) || typeof next !== "number" || index >= current.length)
         throw new CommandError("rejected", `${field} has no element ${index}`, "index");
       current[index] = next;

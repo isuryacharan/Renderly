@@ -5,18 +5,29 @@
 
 import {
   componentDefaults,
+  valueAt,
   type Clip,
+  type Key,
+  type KeyValue,
   type Gesture,
   type Project,
   type ProjectStore,
   type Sequence,
   type ViewStore,
 } from "@renderly/core";
-import { IconButton, PropertyRow, PropertySection, useToast } from "@renderly/ui/react";
+import {
+  IconButton,
+  PropertyRow,
+  PropertySection,
+  useToast,
+  type EasePreset,
+  type KeyframeState,
+} from "@renderly/ui/react";
 import { useRef, useState, useSyncExternalStore } from "react";
 import { useActions } from "../actions/react";
 
 interface Transform {
+  keys?: Partial<Record<Animatable, Key[]>>;
   position: [number, number];
   scale: [number, number];
   uniform: boolean;
@@ -29,9 +40,24 @@ interface Transform {
 
 const DEFAULTS = (): Transform => componentDefaults("transform") as unknown as Transform;
 
+/** The transform's fields that keyframes can animate. */
+type Animatable = "position" | "scale" | "rotation" | "anchor" | "opacity";
+const ANIMATABLE: Animatable[] = ["position", "scale", "rotation", "anchor", "opacity"];
+
 function transformOf(clip: Clip): Transform {
   const found = clip.components.find((c) => (c as { type: string }).type === "transform");
   return { ...DEFAULTS(), ...(found as Partial<Transform> | undefined) };
+}
+
+/** The transform as shown at clip time `t`: animated fields at their value there. */
+function transformAtTime(transform: Transform, t: number): Transform {
+  if (!transform.keys) return transform;
+  const shown = { ...transform } as Record<string, unknown>;
+  for (const field of ANIMATABLE) {
+    const keys = transform.keys[field];
+    if (keys && keys.length > 0) shown[field] = valueAt(keys, t) as KeyValue;
+  }
+  return shown as unknown as Transform;
 }
 
 /** The value all `items` share, or null when they differ. */
@@ -102,9 +128,16 @@ function TransformSection({
 }) {
   const toast = useToast();
   const actions = useActions();
+  const view = actions.ctx.view;
   const gesture = useRef<Gesture | null>(null);
+  // Values follow the playhead, so an animated clip shows what is on screen.
+  const playhead = useSyncExternalStore(
+    (listener) => view.select((s) => s.playhead, listener),
+    () => view.get().playhead,
+  );
   const ids = clips.map((c) => c.id);
-  const all = clips.map(transformOf);
+  const stored = clips.map(transformOf);
+  const all = stored.map((t, i) => transformAtTime(t, playhead - (clips[i]?.start ?? 0)));
   const pick = <T,>(get: (t: Transform) => T) => shared(all.map(get));
 
   /** Field changes as one command for every selected clip. */
@@ -114,6 +147,8 @@ function TransformSection({
     field,
     ...(index === undefined ? {} : { index }),
     value,
+    // Animated fields take the value into the key at the playhead.
+    time: playhead,
   });
   const report = (result: { ok: boolean; error?: { message: string } }) => {
     if (!result.ok && result.error) toast(result.error.message, { kind: "danger" });
@@ -149,6 +184,52 @@ function TransformSection({
       disabled: readOnly,
     };
   };
+  /** The keyframe control of one or more animatable fields (a pair is one field). */
+  const keyframe = (fields: Animatable[]): KeyframeState => {
+    const local = (clip: Clip) => playhead - clip.start;
+    const keyTimes = clips.flatMap((clip, i) =>
+      fields.flatMap((field) => (stored[i]?.keys?.[field] ?? []).map((k) => clip.start + k.t)),
+    );
+    const animated = keyTimes.length > 0;
+    const on = clips.some((clip, i) =>
+      fields.some((field) => stored[i]?.keys?.[field]?.some((k) => k.t === local(clip))),
+    );
+    const inside = clips.filter((clip) => local(clip) >= 0 && local(clip) <= clip.duration);
+    const earlier = keyTimes.filter((t) => t < playhead);
+    const later = keyTimes.filter((t) => t > playhead);
+    const go = (t: number) => {
+      void actions.ctx.link?.pause();
+      view.set({ playhead: t });
+    };
+    return {
+      state: on ? "on" : animated ? "animated" : "none",
+      onToggle: () => {
+        if (readOnly) return;
+        if (inside.length === 0) {
+          toast("Put the playhead on the clip to add a keyframe.");
+          return;
+        }
+        if (view.get().playing) actions.run("playback.pause");
+        const time = view.get().playhead;
+        report(
+          store.dispatch({
+            type: on ? "keyframe.remove" : "keyframe.add",
+            payload: { clips: inside.map((c) => c.id), component: "transform", fields, time },
+          }),
+        );
+      },
+      onPrevious: earlier.length ? () => go(Math.max(...earlier)) : undefined,
+      onNext: later.length ? () => go(Math.min(...later)) : undefined,
+      onEase: (preset: EasePreset) =>
+        report(
+          store.dispatch({
+            type: "keyframe.ease",
+            payload: { clips: ids, component: "transform", fields, time: playhead, preset },
+          }),
+        ),
+    };
+  };
+
   const setNow = (field: keyof Transform, value: unknown) =>
     report(store.dispatch({ type: "component.setMany", payload: payload(field, value) }));
 
@@ -163,6 +244,7 @@ function TransformSection({
   return (
     <PropertySection
       title="Transform"
+      keyframe={keyframe(ANIMATABLE)}
       resetDisabled={readOnly || isDefault}
       onReset={() =>
         report(
@@ -175,6 +257,7 @@ function TransformSection({
     >
       <PropertyRow
         label="Position X"
+        keyframe={keyframe(["position"])}
         value={pick((t) => t.position[0])}
         min={-2}
         max={2}
@@ -186,6 +269,7 @@ function TransformSection({
       />
       <PropertyRow
         label="Position Y"
+        keyframe={keyframe(["position"])}
         value={pick((t) => t.position[1])}
         min={-2}
         max={2}
@@ -198,6 +282,7 @@ function TransformSection({
       {uniform ? (
         <PropertyRow
           label="Scale"
+          keyframe={keyframe(["scale"])}
           value={scaleX !== null && scaleX === scaleY ? scaleX : null}
           min={0.01}
           max={4}
@@ -212,6 +297,7 @@ function TransformSection({
         <>
           <PropertyRow
             label="Scale X"
+            keyframe={keyframe(["scale"])}
             value={scaleX}
             min={0.01}
             max={4}
@@ -224,6 +310,7 @@ function TransformSection({
           />
           <PropertyRow
             label="Scale Y"
+            keyframe={keyframe(["scale"])}
             value={scaleY}
             min={0.01}
             max={4}
@@ -238,6 +325,7 @@ function TransformSection({
       )}
       <PropertyRow
         label="Rotation"
+        keyframe={keyframe(["rotation"])}
         value={pick((t) => t.rotation)}
         min={-360}
         max={360}
@@ -249,6 +337,7 @@ function TransformSection({
       />
       <PropertyRow
         label="Anchor X"
+        keyframe={keyframe(["anchor"])}
         value={pick((t) => t.anchor[0])}
         min={-1}
         max={1}
@@ -261,6 +350,7 @@ function TransformSection({
       />
       <PropertyRow
         label="Anchor Y"
+        keyframe={keyframe(["anchor"])}
         value={pick((t) => t.anchor[1])}
         min={-1}
         max={1}
@@ -273,6 +363,7 @@ function TransformSection({
       />
       <PropertyRow
         label="Opacity"
+        keyframe={keyframe(["opacity"])}
         value={pick((t) => t.opacity)}
         min={0}
         max={1}

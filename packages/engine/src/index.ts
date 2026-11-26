@@ -1,8 +1,8 @@
 export { createPreview, testSeekDelayMs } from "./preview";
 export { DECODER_POOL_SIZE } from "./preview";
 export type { LoadedTimeline, OpenedMedia, Preview } from "./preview";
-export { IDENTITY, toTransform } from "./timeline";
-export type { Cut, Transform, TransformInput } from "./timeline";
+export { IDENTITY, runTransformAt, toTransform } from "./timeline";
+export type { Cut, Run, Transform, TransformInput } from "./timeline";
 export type { LoadResult } from "./protocol";
 export type { LayerStats, RenderStats } from "./protocol";
 export { viewRect } from "./layout";
