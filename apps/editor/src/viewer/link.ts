@@ -19,6 +19,9 @@ import {
 import { cutsFromGraph, type Preview, type RenderStats, type ViewerView } from "@renderly/engine";
 import type { MediaStatus } from "../editor/media-status";
 
+/** Refreshes to wait for a play request to take effect before giving up (about 2 s at 60 Hz). */
+const START_TIMEOUT_REFRESHES = 120;
+
 export class EngineLink {
   private readonly sources = new Map<File, number>();
   private sourceCount = 0;
@@ -33,6 +36,8 @@ export class EngineLink {
   private frameId = 0;
   /** The renderer has reported playing since the last play request. */
   private started = false;
+  /** The renderer's refresh count when the last play was requested. */
+  private startRefresh = 0;
   /** A peek was showing: when it ends, the viewer goes back to the playhead. */
   private peeking = false;
   private readonly cleanup: (() => void)[] = [];
@@ -224,7 +229,11 @@ export class EngineLink {
   }
 
   private startAt(from: number): void {
+    // A seek still waiting to be sent would arrive after the play request and stop playback (seen
+    // on slow machines, where exact seeks queue up behind each other): drop it.
+    this.seekWanted = null;
     this.started = false;
+    this.startRefresh = this.preview.readPlayhead().refreshes;
     this.view.set({ playing: true, peek: null, scrubbing: false });
     this.echo(from);
     this.preview.play(from);
@@ -269,7 +278,15 @@ export class EngineLink {
     if (!this.view.get().playing) return;
     const { time, playing } = this.preview.readPlayhead();
     if (playing) this.started = true;
-    if (!this.started) return; // the play request has not reached the renderer yet
+    if (!this.started) {
+      // The play request has not taken effect yet. If it never does (about 2 s of refreshes),
+      // stop waiting so the transport does not stay in "playing".
+      if (this.preview.readPlayhead().refreshes - this.startRefresh > START_TIMEOUT_REFRESHES) {
+        this.view.set({ playing: false });
+        this.onError("Playback did not start.");
+      }
+      return;
+    }
     if (this.view.get().loop) {
       const range = this.loopRange();
       if (time >= range.to || !playing) {
@@ -313,11 +330,13 @@ export class EngineLink {
   }
 
   private startScrub(): void {
+    this.seekWanted = null;
     if (this.view.get().playing) void this.pause();
     this.preview.scrub(this.view.get().playhead);
   }
 
   private scrubTo(t: number): void {
+    this.seekWanted = null;
     if (this.view.get().playing) void this.pause();
     this.peeking = true;
     this.preview.scrub(t);

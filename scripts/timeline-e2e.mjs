@@ -477,6 +477,27 @@ const scenarios = {
       `stayed in the 2-3 s loop: ${Math.min(...seen) / SECOND}-${Math.max(...seen) / SECOND}`,
     );
 
+    // Quick playhead jumps, then Play at once: seeks still queued must not stop the playback.
+    await page.evaluate(() =>
+      window.renderlyTimeline["options"].view.set({ loop: false, selection: [] }),
+    );
+    await page.evaluate(async (S) => {
+      const view = window.renderlyTimeline["options"].view;
+      for (let i = 0; i < 20; i++) view.set({ playhead: Math.round(((i % 7) + 0.5) * S) });
+      window.renderlyViewer.play();
+    }, SECOND);
+    await page.waitForTimeout(2500);
+    const afterJumps = await page.evaluate(() => ({
+      engine: window.renderlyViewer.preview.readPlayhead(),
+      view: window.renderlyTimeline["options"].view.get().playing,
+    }));
+    check(
+      afterJumps.engine.playing && afterJumps.view,
+      `still playing after quick seeks then Play: ${JSON.stringify(afterJumps)}`,
+    );
+    await page.getByRole("button", { name: "Pause", exact: true }).click();
+    await page.waitForFunction(() => !window.renderlyViewer.preview.readPlayhead().playing);
+
     // Playing to the end stops there.
     await page.evaluate(() => window.renderlyTimeline["options"].view.set({ loop: false }));
     await page.evaluate((t) => window.renderlyTimeline["options"].view.set({ playhead: t }), t(7));
