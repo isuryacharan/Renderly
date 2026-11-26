@@ -12,12 +12,12 @@ Last updated: 2026-11-24
 - M1 in progress. S1.1 to S1.3 (schema, commands and undo, timeline edits) are merged. S1.4
   (project storage), S1.5 (app shell and home screen), the icon set and S1.6 (media bin) are
   merged, and so are S1.7 (canvas timeline), S1.8 (evaluator and playback) and `pnpm verify`.
-  S1.9 (actions registry and shortcuts) is built; in review as a pull request. With it, every M1
-  slice is built; the M1 exit is checked by keyboard in `pnpm test:timeline` for browser storage.
-  The disk-folder half of the exit is part of the owner's manual check.
+  S1.9 (actions registry and shortcuts) is merged: every M1 slice is in. The M1 exit is checked by
+  keyboard in `pnpm test:timeline` for browser storage; its disk-folder half is part 3 of the
+  owner's manual check. M1 counts as done once that check passes.
 - Waiting on the owner: the manual checks in `packages/storage/MANUAL-CHECK.md`: part 1 disk-folder
-  projects (S1.4), part 2 media files on disk and the permission prompt after a restart (S1.6).
-  About twenty minutes, includes a browser restart.
+  projects (S1.4), part 2 media files on disk and the permission prompt after a restart (S1.6),
+  part 3 the M1 exit in a disk folder. About thirty minutes, includes a browser restart.
 - The owner authorised building and merging M1 slices when CI passes and the automated checks
   pass (2026-11-25). Manual checks in S1.4 (disk folder) and S1.6 (moving and relinking files,
   permission prompts after a restart) are written as scripts and batched for the owner.
