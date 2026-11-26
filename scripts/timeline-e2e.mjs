@@ -188,26 +188,34 @@ const box = (page, id) => page.evaluate((id) => window.renderlyTimeline.clipBox(
 const pageX = (page, t) => page.evaluate((t) => window.renderlyTimeline.pageX(t), t);
 
 /**
- * Drags bin item `index` onto the track area at (x, y) relative to it, the way a person does:
- * press, nudge past the drag threshold, move in steps, release. Waits for the bin to settle first
- * (its thumbnails load after it appears), and re-measures right before pressing.
+ * Drops bin item `index` onto the track area at (x, y) relative to it, by firing the drag events
+ * a person's drag produces: dragstart on the item, then dragenter, dragover and drop on the
+ * timeline, and dragend. All of the editor's drag-and-drop code runs; only the browser starting
+ * the native drag is skipped. That part is the browser's job, and Playwright's emulation of it
+ * on CI (headless Linux Chrome) sometimes never started the drag: the drop never arrived, while
+ * the page was the writer, had its media and its canvas (2026-11-26 and -27).
  */
 async function dropMedia(page, index, x, y) {
-  await until(page, () =>
-    [...document.querySelectorAll(".r-bin__item img")].every((img) => img.complete),
+  await until(page, (i) => document.querySelectorAll(".r-bin__item").length > i, index);
+  await page.evaluate(
+    ({ index, x, y }) => {
+      const item = document.querySelectorAll(".r-bin__item")[index];
+      const canvas = document.querySelector(".timeline__canvas");
+      const box = canvas.getBoundingClientRect();
+      const dataTransfer = new DataTransfer();
+      const at = { clientX: box.left + x, clientY: box.top + y };
+      const fire = (target, type, extra = {}) =>
+        target.dispatchEvent(
+          new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer, ...extra }),
+        );
+      fire(item, "dragstart");
+      fire(canvas, "dragenter", at);
+      fire(canvas, "dragover", at);
+      fire(canvas, "drop", at);
+      fire(item, "dragend");
+    },
+    { index, x, y },
   );
-  const item = page.locator(".r-bin__item").nth(index);
-  await item.scrollIntoViewIfNeeded();
-  const from = await item.boundingBox();
-  const area = await page.locator(".timeline__tracks").boundingBox();
-  const x0 = from.x + from.width / 2;
-  const y0 = from.y + from.height / 3;
-  await page.mouse.move(x0, y0);
-  await page.mouse.down();
-  await page.mouse.move(x0 + 8, y0 + 8);
-  await page.mouse.move(area.x + x, area.y + y, { steps: 12 });
-  await page.mouse.move(area.x + x, area.y + y);
-  await page.mouse.up();
 }
 
 /** Presses at (x0, y), moves in steps to (x1, y1) and releases, like a person dragging. */
