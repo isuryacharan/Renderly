@@ -66,6 +66,21 @@
     { "name": "keyframe", "tabler": "keyframe", "usage": "Keyframes" },
     { "name": "zoom-in", "tabler": "zoom-in", "usage": "Zoom the timeline in" },
     { "name": "zoom-out", "tabler": "zoom-out", "usage": "Zoom the timeline out" },
+    {
+      "name": "zoom-fit",
+      "tabler": "arrow-autofit-width",
+      "usage": "Zoom the timeline to show the whole sequence"
+    },
+    {
+      "name": "select-tool",
+      "tabler": "pointer",
+      "usage": "The selection tool: select, move and trim clips"
+    },
+    {
+      "name": "blade-tool",
+      "tabler": "slice",
+      "usage": "The blade tool: click a clip to cut it there"
+    },
     { "name": "grid", "tabler": "layout-grid", "usage": "Show items as a grid of pictures" },
     { "name": "list", "tabler": "list", "usage": "Show items as a list with details" },
     { "name": "relink", "tabler": "link", "usage": "Point offline media at its file again" },

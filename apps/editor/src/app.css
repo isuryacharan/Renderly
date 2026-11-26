@@ -89,6 +89,102 @@ body {
 .editor > .r-panel {
   flex: none;
 }
+.editor__timeline {
+  display: flex;
+  flex: none;
+  min-height: 0;
+}
+
+/* --- timeline --- */
+
+.timeline {
+  flex: 1;
+}
+.timeline__toolbar {
+  padding-right: var(--space-8);
+}
+.timeline__title {
+  margin: 0 var(--space-8) 0 0;
+}
+.timeline__body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+/* Track headers: a column on surface beside the canvas, scrolled with it. */
+.timeline__heads {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: 148px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+.timeline__corner {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-4);
+  border-bottom: 1px solid var(--border);
+  box-sizing: border-box;
+}
+.timeline__heads-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.timeline__heads-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.timeline__head {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-4) 0 var(--space-8);
+  border-bottom: 1px solid var(--border);
+  box-sizing: content-box;
+}
+.timeline__head--hidden .timeline__head-name {
+  color: var(--text-tertiary);
+}
+.timeline__head-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  overflow: hidden;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.timeline__head-buttons {
+  display: flex;
+  gap: var(--space-2);
+}
+.timeline__tracks {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--viewer);
+}
+.timeline__canvas {
+  display: block;
+  touch-action: none;
+}
+.timeline__empty {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  margin: 0;
+  color: var(--text-tertiary);
+  text-align: center;
+  pointer-events: none;
+}
 .r-panel__header {
   margin: 0;
 }

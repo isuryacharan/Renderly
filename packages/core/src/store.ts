@@ -95,6 +95,14 @@ export class ProjectStore {
     return this.current.revision;
   }
 
+  /**
+   * The project without a running gesture's preview: what saving should write. The same as
+   * `project` when no gesture is running.
+   */
+  get committed(): Project {
+    return this.gesture ? this.gesture.base : this.current;
+  }
+
   get canUndo(): boolean {
     return this.undoStack.length > 0;
   }

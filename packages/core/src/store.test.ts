@@ -164,6 +164,8 @@ describe("ProjectStore", () => {
     const before = store.project;
     const gesture = store.beginGesture("drag", "component.set");
     gesture.preview({ clip: CLIP, component: "transform", field: "opacity", value: 0.2 });
+    expect(store.project).not.toBe(before);
+    expect(store.committed).toBe(before); // saving never writes a preview
     expect(store.dispatch(setOpacity(0.3)).ok).toBe(false);
     expect(store.dispatch(setOpacity(0.3))).toMatchObject({ error: { code: "gesture-active" } });
     expect(store.undo()).toMatchObject({ ok: false, reason: "gesture-active" });

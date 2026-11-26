@@ -62,7 +62,12 @@ const mediaLab = {
     if (!ctx) throw new Error("No 2D context");
     const target = new BufferTarget();
     const output = new Output({ format: new WebMOutputFormat(), target });
-    const video = new CanvasSource(canvas, { codec: "vp9", bitrate: QUALITY_LOW });
+    // A keyframe every half second, so timeline filmstrips have distinct pictures to show.
+    const video = new CanvasSource(canvas, {
+      codec: "vp9",
+      bitrate: QUALITY_LOW,
+      keyFrameInterval: 0.5,
+    });
     const audio = new AudioBufferSource({ codec: "opus", bitrate: QUALITY_LOW });
     output.addVideoTrack(video, { frameRate: 30 });
     output.addAudioTrack(audio);

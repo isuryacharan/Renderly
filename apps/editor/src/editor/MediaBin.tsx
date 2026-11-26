@@ -29,11 +29,8 @@ import {
 } from "@renderly/ui/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { formatDuration } from "../format";
-
-type ItemState =
-  | { status: "checking" }
-  | { status: "offline"; reason: OfflineReason }
-  | { status: "online"; unsupported?: string };
+import { startMediaDrag } from "../timeline/drag";
+import { useMediaStates, type MediaState, type MediaStatus } from "./media-status";
 
 const OFFLINE_WORDS: Record<OfflineReason, string> = {
   missing: "The file has moved or was deleted.",
@@ -79,10 +76,12 @@ export function MediaBin({
   session,
   project,
   readOnly,
+  status,
 }: {
   session: ProjectSession;
   project: Project;
   readOnly: boolean;
+  status: MediaStatus;
 }) {
   const toast = useToast();
   const prober = useRef<Prober | null>(null);
@@ -95,7 +94,7 @@ export function MediaBin({
   const [copy, setCopy] = useState(
     () => remembered("renderly:bin-copy", "link", ["link", "copy"] as const) === "copy",
   );
-  const [states, setStates] = useState<Map<string, ItemState>>(new Map());
+  const states = useMediaStates(status);
   const [thumbs, setThumbs] = useState<Map<string, string>>(new Map());
   const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [dropping, setDropping] = useState(false);
@@ -123,7 +122,7 @@ export function MediaBin({
             reason: "missing",
           }),
         );
-        let state: ItemState;
+        let state: MediaState;
         if (resolved.status === "offline") state = resolved;
         else {
           const probed = await getProber().probe(resolved.file, { thumbnail: false });
@@ -134,16 +133,18 @@ export function MediaBin({
               : !probed.video && probed.audio && !probed.audio.decodable
                 ? `This browser cannot decode ${codecName(probed.audio.codec)} audio.`
                 : undefined;
-          state = unsupported ? { status: "online", unsupported } : { status: "online" };
+          state = unsupported
+            ? { status: "online", file: resolved.file, unsupported }
+            : { status: "online", file: resolved.file };
         }
-        setStates((all) => new Map(all).set(item.id, state));
+        status.set(item.id, state);
         if (!thumbs.has(item.id)) {
           const file = await readThumbnail(session.dir, item.id);
           if (file) setThumbs((all) => new Map(all).set(item.id, URL.createObjectURL(file)));
         }
       }
     },
-    [session.dir, projectId, thumbs],
+    [session.dir, projectId, thumbs, status],
   );
 
   // Check items as they appear (on open, and after each import).
@@ -239,11 +240,7 @@ export function MediaBin({
   });
 
   const recheck = async (items: readonly MediaItem[]) => {
-    setStates((all) => {
-      const next = new Map(all);
-      for (const item of items) next.set(item.id, { status: "checking" });
-      return next;
-    });
+    for (const item of items) status.set(item.id, { status: "checking" });
     await check(items);
   };
 
@@ -420,7 +417,12 @@ export function MediaBin({
                 : "";
             const thumb = thumbs.get(item.id);
             return (
-              <li key={item.id} className="r-bin__item">
+              <li
+                key={item.id}
+                className="r-bin__item"
+                draggable={!readOnly}
+                onDragStart={(event) => startMediaDrag(event.nativeEvent, item.id)}
+              >
                 <div className="r-bin__thumb">
                   {thumb && state.status !== "offline" ? (
                     <img src={thumb} alt="" />

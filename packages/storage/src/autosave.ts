@@ -208,7 +208,7 @@ export class Autosave {
         this.emit("conflict");
         return;
       }
-      const project = this.store.project;
+      const project = this.store.committed;
       const text = serialiseProject(project);
       this.emit("saving");
       const now = this.now();
