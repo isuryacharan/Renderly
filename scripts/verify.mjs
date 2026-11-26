@@ -1,8 +1,9 @@
 // Everything CI checks, run locally before a push, in CI's order, under conditions that catch what
 // a fast, warm machine hides:
 // - a cold Vite cache (CI always starts cold; dependency discovery at run time reloads pages);
-// - the timeline and viewer suite again with every decoder seek slowed down (races that only
-//   open when exact seeks are slow, as with software decoding on CI);
+// - the timeline and viewer suite again as on a slow machine: every decoder seek slowed down and
+//   the engine's first load held back (races that only open when those are slow, as with software
+//   decoding and rendering on CI);
 // - optionally several runs, so a check that fails one time in three is seen before merging.
 //
 //   pnpm verify                     all checks once, browser suites in Chrome (as CI)
@@ -27,6 +28,9 @@ const browser = arg("browser", "chrome");
 // 800 ms: slower than CI's software decoding, which 300 ms was not (a fixed 500 ms wait in a check
 // passed locally at 300 ms and failed on CI).
 const slowSeek = Number(arg("slow-seek", "800"));
+// 3 s: the engine's first load held back, as with software rendering on CI. A check that pressed
+// a key before the engine was up passed locally and failed on CI (2026-11-27).
+const slowStart = Number(arg("slow-start", "3000"));
 const from = arg("from", null);
 
 const log = (...parts) => console.log(new Date().toISOString().slice(11, 19), ...parts);
@@ -73,8 +77,8 @@ for (let i = 1; i <= repeat; i++) {
   );
   if (slowSeek > 0)
     steps.push({
-      name: `timeline, seeks +${slowSeek} ms${pass}`,
-      command: `pnpm test:timeline --browser ${browser} --slow-seek ${slowSeek}`,
+      name: `timeline, slow machine${pass}`,
+      command: `pnpm test:timeline --browser ${browser} --slow-seek ${slowSeek} --slow-start ${slowStart}`,
     });
 }
 steps.push({ name: "build", command: "pnpm build" });

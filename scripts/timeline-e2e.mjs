@@ -32,6 +32,16 @@ const only = arg("only", null);
 const slowdown = Number(arg("cpu-slowdown", "1"));
 // --slow-seek MS: every decoder seek waits MS first, as on a slow machine (see testSeekDelayMs).
 const slowSeek = Number(arg("slow-seek", "0"));
+// --slow-start MS: the viewer's engine starts MS later, as on a slow machine.
+const slowStart = Number(arg("slow-start", "0"));
+/** The query that slows the editor down, for pages opened on the editor. */
+const slowQuery = () => {
+  const parts = [
+    ...(slowSeek > 0 ? [`slow-seek=${slowSeek}`] : []),
+    ...(slowStart > 0 ? [`slow-start=${slowStart}`] : []),
+  ];
+  return parts.length ? `?${parts.join("&")}` : "";
+};
 const PORT = Number(process.env.PORT ?? 5183);
 const BASE = `http://localhost:${PORT}`;
 const SECOND = 705_600_000;
@@ -110,7 +120,13 @@ async function stop(server) {
  * condition was already true; interval checks do not stall.
  */
 function until(target, fn, arg, options = {}) {
-  return target.waitForFunction(fn, arg, { polling: 100, ...options });
+  return target.waitForFunction(fn, arg, { polling: 100, ...options }).catch((error) => {
+    // Say which condition never came true: a bare timeout does not.
+    const condition = String(fn).replace(/\s+/g, " ").slice(0, 160);
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)} — waiting for: ${condition}`,
+    );
+  });
 }
 
 class Failure extends Error {}
@@ -142,9 +158,7 @@ async function openEditor(context, folder) {
     log("page error:", error.message);
     pageErrors.push(error.message);
   });
-  await page.goto(
-    `${BASE}/${slowSeek > 0 ? `?slow-seek=${slowSeek}` : ""}#/project/browser/${folder}`,
-  );
+  await page.goto(`${BASE}/${slowQuery()}#/project/browser/${folder}`);
   await until(page, () => window.renderlyTimeline !== undefined, null, {
     timeout: 20_000,
   });
@@ -538,7 +552,7 @@ const scenarios = {
       log("page error:", error.message);
       pageErrors.push(error.message);
     });
-    await page.goto(`${BASE}/`);
+    await page.goto(`${BASE}/${slowQuery()}`);
     await until(page, () => window.appReadyAt !== undefined);
     const keys = async (...list) => {
       for (const key of list) await page.keyboard.press(key);
@@ -653,7 +667,11 @@ const scenarios = {
     await keys("Control+Shift+z");
     check((await clips())[1].start === SECOND, "Ctrl+Shift+Z redid it");
 
-    // Play from the start with Space, pause with K.
+    // Play from the start with Space (once the engine is up: on a slow machine it loads for a
+    // while; moving the playhead did not need it), pause with K.
+    await until(page, () => window.renderlyActions.isEnabled("playback.toggle"), null, {
+      timeout: 20_000,
+    });
     await keys("Home");
     await until(page, () => window.renderlyTimeline["options"].view.get().playhead === 0);
     await keys("Space");

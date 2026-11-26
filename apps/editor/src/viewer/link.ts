@@ -34,6 +34,8 @@ export class EngineLink {
   private seekChain: Promise<unknown> = Promise.resolve();
   private seekWanted: number | null = null;
   private frameId = 0;
+  /** The engine's first (empty) load is done: updates can be sent. */
+  private loaded = false;
   /** The renderer has reported playing since the last play request. */
   private started = false;
   /** The renderer's refresh count when the last play was requested. */
@@ -106,6 +108,9 @@ export class EngineLink {
     const sequence = this.sequence();
     if (!sequence) return;
     await this.preview.load([], [], { width: sequence.width, height: sequence.height });
+    // Edits made while the engine was loading were not sent (the load would have wiped them):
+    // send the project as it is now.
+    this.loaded = true;
     await this.sync();
   }
 
@@ -130,7 +135,7 @@ export class EngineLink {
 
   /** Sends the newest edit list if it changed. Coalesces: one update in flight at a time. */
   async sync(): Promise<void> {
-    if (this.closed) return;
+    if (this.closed || !this.loaded) return;
     if (this.syncing) {
       this.again = true;
       return;

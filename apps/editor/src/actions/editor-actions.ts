@@ -1,7 +1,13 @@
 // Every editor action and its default keys. Buttons and menus show these labels and shortcuts;
 // the shortcuts list (?) shows this whole table.
 
-import { sequenceDuration, flicksPerFrame, FLICKS_PER_SECOND } from "@renderly/core";
+import {
+  cutPoints,
+  evaluateSequence,
+  flicksPerFrame,
+  FLICKS_PER_SECOND,
+  sequenceDuration,
+} from "@renderly/core";
 import type { Action, ActionContext } from "./registry";
 
 const writable = (ctx: ActionContext) => !ctx.readOnly;
@@ -16,12 +22,33 @@ const editSelection = (ctx: ActionContext) =>
 const playable = (ctx: ActionContext) => ctx.link !== null && hasClips(ctx);
 
 /** Moves the playhead (pausing first), by frames or to a time. */
-function seekBy(ctx: ActionContext, frames: number) {
-  const link = ctx.link;
-  if (link) void link.step(frames);
-}
+/**
+ * Moving the playhead needs only the timeline, not the engine: these keys work while the engine is
+ * still loading (on a slow machine that takes a while), and pause playback first when it plays.
+ */
+const canMove = (ctx: ActionContext) => ctx.timeline !== null;
 function seekTo(ctx: ActionContext, t: number) {
   void (ctx.link?.pause() ?? Promise.resolve()).then(() => ctx.timeline?.movePlayhead(t));
+}
+function seekBy(ctx: ActionContext, frames: number) {
+  const sequence = sequenceOf(ctx);
+  if (!sequence) return;
+  const frame = flicksPerFrame(sequence.fps);
+  void (ctx.link?.pause() ?? Promise.resolve()).then(() => {
+    const at = Math.round(ctx.view.get().playhead / frame) * frame;
+    ctx.timeline?.movePlayhead(at + frames * frame);
+  });
+}
+/** The previous or next cut on any drawing layer, from the project itself. */
+function jump(ctx: ActionContext, direction: -1 | 1) {
+  const sequence = sequenceOf(ctx);
+  if (!sequence) return;
+  const graph = evaluateSequence(ctx.store.project, sequence.id);
+  const points = [...cutPoints(graph), graph.duration];
+  const t = ctx.view.get().playhead;
+  const target =
+    direction > 0 ? points.find((p) => p > t) : [...points].reverse().find((p) => p < t);
+  if (target !== undefined) seekTo(ctx, target);
 }
 
 export const EDITOR_ACTIONS: Action[] = [
@@ -111,7 +138,7 @@ export const EDITOR_ACTIONS: Action[] = [
     group: "Playback",
     icon: "to-start",
     keys: ["Home"],
-    enabled: (ctx) => ctx.link !== null,
+    enabled: canMove,
     run: (ctx) => seekTo(ctx, 0),
   },
   {
@@ -120,7 +147,7 @@ export const EDITOR_ACTIONS: Action[] = [
     group: "Playback",
     icon: "to-end",
     keys: ["End"],
-    enabled: (ctx) => ctx.link !== null,
+    enabled: canMove,
     run: (ctx) => {
       const sequence = sequenceOf(ctx);
       if (sequence) seekTo(ctx, sequenceDuration(sequence));
@@ -133,7 +160,7 @@ export const EDITOR_ACTIONS: Action[] = [
     icon: "frame-back",
     keys: ["ArrowLeft"],
     repeat: true,
-    enabled: (ctx) => ctx.link !== null,
+    enabled: canMove,
     run: (ctx) => seekBy(ctx, -1),
   },
   {
@@ -143,7 +170,7 @@ export const EDITOR_ACTIONS: Action[] = [
     icon: "frame-forward",
     keys: ["ArrowRight"],
     repeat: true,
-    enabled: (ctx) => ctx.link !== null,
+    enabled: canMove,
     run: (ctx) => seekBy(ctx, 1),
   },
   {
@@ -152,7 +179,7 @@ export const EDITOR_ACTIONS: Action[] = [
     group: "Playback",
     keys: ["Shift+ArrowLeft"],
     repeat: true,
-    enabled: (ctx) => ctx.link !== null,
+    enabled: canMove,
     run: (ctx) => seekBy(ctx, -10),
   },
   {
@@ -161,7 +188,7 @@ export const EDITOR_ACTIONS: Action[] = [
     group: "Playback",
     keys: ["Shift+ArrowRight"],
     repeat: true,
-    enabled: (ctx) => ctx.link !== null,
+    enabled: canMove,
     run: (ctx) => seekBy(ctx, 10),
   },
   {
@@ -171,8 +198,8 @@ export const EDITOR_ACTIONS: Action[] = [
     icon: "previous-cut",
     keys: ["ArrowUp"],
     repeat: true,
-    enabled: (ctx) => ctx.link !== null,
-    run: (ctx) => ctx.link?.jump(-1),
+    enabled: canMove,
+    run: (ctx) => jump(ctx, -1),
   },
   {
     id: "playback.nextCut",
@@ -181,8 +208,8 @@ export const EDITOR_ACTIONS: Action[] = [
     icon: "next-cut",
     keys: ["ArrowDown"],
     repeat: true,
-    enabled: (ctx) => ctx.link !== null,
-    run: (ctx) => ctx.link?.jump(1),
+    enabled: canMove,
+    run: (ctx) => jump(ctx, 1),
   },
   {
     id: "playback.loop",
