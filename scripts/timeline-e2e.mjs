@@ -21,6 +21,7 @@ const arg = (name, fallback) => {
 };
 const channel = arg("browser", "msedge");
 const only = arg("only", null);
+const slowdown = Number(arg("cpu-slowdown", "1"));
 const PORT = Number(process.env.PORT ?? 5183);
 const BASE = `http://localhost:${PORT}`;
 const SECOND = 705_600_000;
@@ -66,6 +67,11 @@ async function openLab(context) {
 
 async function openEditor(context, folder) {
   const page = await context.newPage();
+  // --cpu-slowdown N: throttle the editor page N times, as a slow CI runner would be.
+  if (slowdown > 1)
+    await (
+      await context.newCDPSession(page)
+    ).send("Emulation.setCPUThrottlingRate", { rate: slowdown });
   page.on("pageerror", (error) => log("page error:", error.message));
   await page.goto(`${BASE}/#/project/browser/${folder}`);
   await page.waitForFunction(() => window.renderlyTimeline !== undefined, null, {
@@ -438,6 +444,19 @@ const scenarios = {
     });
     await page.getByRole("button", { name: "Pause", exact: true }).click();
     const wraps = seen.filter((time, i) => i > 0 && time < seen[i - 1]).length;
+    if (wraps === 0)
+      log(
+        "  debug: loop",
+        JSON.stringify({
+          samples: seen.length,
+          first: seen[0] / SECOND,
+          last: seen.at(-1) / SECOND,
+          min: Math.min(...seen) / SECOND,
+          max: Math.max(...seen) / SECOND,
+          engine: await page.evaluate(() => window.renderlyViewer.preview.readPlayhead()),
+          view: await view(),
+        }),
+      );
     check(wraps >= 1, `looped back ${wraps} times`);
     check(
       seen.every((time) => time >= t(2) - FRAME && time <= t(3) + FRAME),
