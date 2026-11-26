@@ -3,8 +3,9 @@
 The automated scenarios (`pnpm test:storage`, `pnpm test:media`) cover browser storage. Real
 folders and files on disk run the same code on different handles, but choosing them opens native
 dialogs that automation cannot drive, and keeping access across a browser restart needs a real
-restart. Part 1 checks projects in a disk folder (S1.4); part 2 checks media files on disk (S1.6).
-Together they take about twenty minutes.
+restart. Part 1 checks projects in a disk folder (S1.4); part 2 checks media files on disk (S1.6);
+part 3 is the M1 exit in a disk folder (its browser-storage half runs in `pnpm test:timeline`).
+Together they take about thirty minutes.
 
 Use Chrome or Edge on a desktop.
 
@@ -69,6 +70,23 @@ Write down **pass** or **fail** for each step. Any step that fails: note what yo
 17. **One click.** If the files show **Offline** with a **Reconnect** button, click it once and allow
     access: every file comes back. If they are already online (the browser kept the permission),
     write "no prompt": that also passes.
+
+## Part 3: the M1 exit in a disk folder
+
+The same scenario `pnpm test:timeline` runs by keyboard in browser storage, here in a disk folder,
+with the mouse or the keyboard as you like. Use the media folder from part 2.
+
+1. **Create.** On the home screen, switch to the disk-folder location, create a project called
+   `M1 exit`, and open it.
+2. **Import.** Import two of the video files from part 2 (Ctrl+I, or **Import**).
+3. **Cut.** Put both files on the timeline (drag them in, or focus one in the library and press
+   Enter). Split the first clip (move the playhead into it and press S), select the right half
+   and ripple delete it (Shift+Delete): the second clip moves left to close the gap. Trim the
+   second clip's end (drag its right edge, or press `]` with the playhead inside it).
+4. **Play.** Press Space. The picture and the sound play from the playhead and stop at the end;
+   the timeline playhead moves with them.
+5. **Close and reopen.** Wait for **Saved**, close the tab, open http://localhost:5180/ again and
+   open `M1 exit`. The clips are exactly where you left them; play it again.
 
 ## Report
 
