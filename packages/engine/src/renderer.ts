@@ -475,6 +475,8 @@ export function serveRenderer(scope: RendererScope): void {
   async function showExactNow(t: number): Promise<number | null> {
     let bottom: number | null = null;
     for (const [i] of timeline.layers.entries()) {
+      // Playback started while this seek was decoding: its frames would be stale.
+      if (playing) return bottom;
       const state = layers[i] as LayerState;
       const id = runIdAt(timeline, i, t);
       state.currentRun = id;
@@ -483,6 +485,10 @@ export function serveRenderer(scope: RendererScope): void {
       if (reserved.source !== run.source && !(await openOn(reserved, run.source)).ok) continue;
       const decoded = await reserved.client.seek(sourceTime(run, t), "exact");
       if (!decoded) continue;
+      if (playing) {
+        decoded.release();
+        return bottom;
+      }
       const time = timelineTime(run, decoded.time);
       show(i, decoded, id, time, decoded.duration);
       if (i === 0) bottom = time;
@@ -1122,8 +1128,12 @@ export function serveRenderer(scope: RendererScope): void {
       schedule(playhead);
       composite();
     } else if (scrubbing) {
+      for (const job of scrubJobs) job.cancel();
       scrubJobs = timeline.layers.map((_, i) => new LatestWins(scrubJob(i)));
       lastKeyframeSeek = timeline.layers.map(() => -Infinity);
+      // The layers waiting for an exact frame are the new ones; otherwise a scrub that is
+      // settling would wait for layers that no longer exist and never end.
+      if (settled) layerExactAt = timeline.layers.map(() => null);
       for (const job of scrubJobs) job.request({ t: scrubTarget, exact: settled });
     } else {
       await showExact(playhead);

@@ -21,7 +21,8 @@ const arg = (name, fallback) => {
 };
 const channel = arg("browser", "msedge");
 const only = arg("only", null);
-const PORT = 5183;
+const slowdown = Number(arg("cpu-slowdown", "1"));
+const PORT = Number(process.env.PORT ?? 5183);
 const BASE = `http://localhost:${PORT}`;
 const SECOND = 705_600_000;
 const FRAME = SECOND / 30;
@@ -66,6 +67,11 @@ async function openLab(context) {
 
 async function openEditor(context, folder) {
   const page = await context.newPage();
+  // --cpu-slowdown N: throttle the editor page N times, as a slow CI runner would be.
+  if (slowdown > 1)
+    await (
+      await context.newCDPSession(page)
+    ).send("Emulation.setCPUThrottlingRate", { rate: slowdown });
   page.on("pageerror", (error) => log("page error:", error.message));
   await page.goto(`${BASE}/#/project/browser/${folder}`);
   await page.waitForFunction(() => window.renderlyTimeline !== undefined, null, {
@@ -423,22 +429,74 @@ const scenarios = {
       tl["options"].view.set({ selection: [top.id], loop: true });
     });
     await page.getByRole("button", { name: "Play", exact: true }).click();
+    // Watch until it has wrapped twice (a slow machine takes longer to start each pass), at most 8 s.
     const seen = await page.evaluate(async () => {
       const times = [];
-      const end = performance.now() + 2500;
-      while (performance.now() < end) {
-        times.push(window.renderlyTimeline["options"].view.get().playhead);
+      let wraps = 0;
+      const end = performance.now() + 8000;
+      while (performance.now() < end && wraps < 2) {
+        const t = window.renderlyTimeline["options"].view.get().playhead;
+        if (times.length && t < times[times.length - 1]) wraps++;
+        times.push(t);
         await new Promise((r) => requestAnimationFrame(r));
       }
       return times;
     });
     await page.getByRole("button", { name: "Pause", exact: true }).click();
     const wraps = seen.filter((time, i) => i > 0 && time < seen[i - 1]).length;
+    if (wraps === 0)
+      log(
+        "  debug: loop",
+        JSON.stringify({
+          samples: seen.length,
+          first: seen[0] / SECOND,
+          last: seen.at(-1) / SECOND,
+          min: Math.min(...seen) / SECOND,
+          max: Math.max(...seen) / SECOND,
+          engine: await page.evaluate(() => window.renderlyViewer.preview.readPlayhead()),
+          stats: await page.evaluate(() => {
+            const st = window.renderlyViewer.stats;
+            return (
+              st && {
+                playing: st.playing,
+                audioClock: st.audioClock,
+                startLatencyMs: st.startLatencyMs,
+                presented: st.presented,
+                late: st.late,
+                fps: st.fps,
+              }
+            );
+          }),
+          errors: await page.evaluate(() => window.renderlyViewer.errors),
+          view: await view(),
+        }),
+      );
     check(wraps >= 1, `looped back ${wraps} times`);
     check(
       seen.every((time) => time >= t(2) - FRAME && time <= t(3) + FRAME),
       `stayed in the 2-3 s loop: ${Math.min(...seen) / SECOND}-${Math.max(...seen) / SECOND}`,
     );
+
+    // Quick playhead jumps, then Play at once: seeks still queued must not stop the playback.
+    await page.evaluate(() =>
+      window.renderlyTimeline["options"].view.set({ loop: false, selection: [] }),
+    );
+    await page.evaluate(async (S) => {
+      const view = window.renderlyTimeline["options"].view;
+      for (let i = 0; i < 20; i++) view.set({ playhead: Math.round(((i % 7) + 0.5) * S) });
+      window.renderlyViewer.play();
+    }, SECOND);
+    await page.waitForTimeout(2500);
+    const afterJumps = await page.evaluate(() => ({
+      engine: window.renderlyViewer.preview.readPlayhead(),
+      view: window.renderlyTimeline["options"].view.get().playing,
+    }));
+    check(
+      afterJumps.engine.playing && afterJumps.view,
+      `still playing after quick seeks then Play: ${JSON.stringify(afterJumps)}`,
+    );
+    await page.getByRole("button", { name: "Pause", exact: true }).click();
+    await page.waitForFunction(() => !window.renderlyViewer.preview.readPlayhead().playing);
 
     // Playing to the end stops there.
     await page.evaluate(() => window.renderlyTimeline["options"].view.set({ loop: false }));
