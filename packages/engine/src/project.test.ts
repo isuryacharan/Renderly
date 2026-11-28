@@ -9,6 +9,7 @@ const graph: SequenceGraph = {
   width: 1920,
   height: 1080,
   fps: [30, 1],
+  background: { kind: "color", color: "#000000", blur: 0.5 },
   duration: 300,
   skipped: [],
   layers: [

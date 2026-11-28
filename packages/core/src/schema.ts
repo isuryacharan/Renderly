@@ -1,4 +1,4 @@
-// Project schema, version 1. Defined once here: the runtime validator and the generated JSON
+// Project schema (version in CURRENT_VERSION). Defined once here: the runtime validator and the generated JSON
 // Schema (docs/schema/) both come from it. Field order here is the order in which a project is
 // written, so a canonical document round-trips byte for byte.
 //
@@ -9,7 +9,7 @@ import { componentSchema, registryVersion } from "./components";
 import { ID_PATTERN } from "./ids";
 import { isMediaRate, isSupportedRate, MEDIA_SAMPLE_RATES, SUPPORTED_SAMPLE_RATES } from "./time";
 
-export const CURRENT_VERSION = 2;
+export const CURRENT_VERSION = 3;
 
 export const Id = z.string().regex(ID_PATTERN, "must be a 16-character id");
 export const Flicks = z.int().min(0);
@@ -84,7 +84,8 @@ function clipSchema() {
       duration: Duration,
       /** Source time at the clip's start. */
       in: Flicks,
-      speed: z.number().positive().default(1),
+      /** Source time per timeline time. 0 holds the frame at `in`: a freeze frame. */
+      speed: z.number().min(0).default(1),
       enabled: z.boolean().default(true),
       components: z.array(componentSchema()).default([]),
     })
@@ -107,6 +108,20 @@ function trackSchema() {
   });
 }
 
+/**
+ * What fills the canvas behind the clips (schema version 3): a colour, or the bottom clip at the
+ * playhead blurred to fill the frame (`blur` 0 to 1 sets how much). `color` is `#rrggbb` and is
+ * also what shows where there is no clip, in either kind.
+ */
+export const Background = z.strictObject({
+  kind: z.enum(["color", "blur"]).default("color"),
+  color: z
+    .string()
+    .regex(/^#[0-9a-f]{6}$/, "must be a colour like #1a2b3c")
+    .default("#000000"),
+  blur: z.number().min(0).max(1).default(0.5),
+});
+
 export const Marker = z.strictObject({
   id: Id,
   t: Flicks,
@@ -122,6 +137,7 @@ function sequenceSchema() {
     height: z.int().min(16).max(16384),
     fps: Rate,
     sampleRate: SampleRate.default(48_000),
+    background: Background.default(() => ({ kind: "color" as const, color: "#000000", blur: 0.5 })),
     tracks: z.array(trackSchema()).default([]),
     markers: z.array(Marker).default([]),
   });
@@ -206,6 +222,7 @@ export type Sequence = Project["sequences"][number];
 export type Track = Sequence["tracks"][number];
 export type Clip = Track["clips"][number];
 export type MediaItem = z.infer<typeof Media>;
+export type BackgroundSettings = z.infer<typeof Background>;
 
 /** `sequences[0].tracks[1].clips[2].start` from a path array. */
 export function formatPath(path: readonly PropertyKey[]): string {

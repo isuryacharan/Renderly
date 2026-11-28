@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { containRect, containUvScale, rotatedSize, viewRect, workingSize } from "./layout";
+import {
+  containRect,
+  containUvScale,
+  fitUvScale,
+  pictureBox,
+  rotatedSize,
+  viewRect,
+  workingSize,
+} from "./layout";
 
 describe("workingSize", () => {
   it("scales the sequence and keeps sizes even", () => {
@@ -49,6 +57,21 @@ describe("containUvScale", () => {
     const [sx, sy] = containUvScale({ width: 1080, height: 1920 }, { width: 1920, height: 1080 });
     expect(sy).toBe(1);
     expect(sx).toBeCloseTo(1920 / 1080 / (1080 / 1920));
+  });
+});
+
+describe("fitUvScale and pictureBox", () => {
+  const wide = { width: 1920, height: 1080 };
+  const tall = { width: 1080, height: 1920 };
+  it("letterboxes with fit, crops with fill, and covers exactly with stretch", () => {
+    const fit = fitUvScale(wide, tall, "fit");
+    expect(pictureBox(fit)[0]).toBe(1);
+    expect(pictureBox(fit)[1]).toBeCloseTo((1080 * 1080) / 1920 / 1920, 9);
+    const fill = fitUvScale(wide, tall, "fill");
+    expect(fill[0]).toBeCloseTo((1080 / 1920) ** 2, 9); // only the middle of the width shows
+    expect(pictureBox(fill)).toEqual([1, 1]);
+    expect(fitUvScale(wide, tall, "stretch")).toEqual([1, 1]);
+    expect(fitUvScale(wide, wide, "fill")).toEqual([1, 1]);
   });
 });
 

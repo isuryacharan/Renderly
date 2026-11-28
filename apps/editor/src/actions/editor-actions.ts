@@ -2,11 +2,15 @@
 // the shortcuts list (?) shows this whole table.
 
 import {
+  createId,
   cutPoints,
   evaluateSequence,
   flicksPerFrame,
   FLICKS_PER_SECOND,
   sequenceDuration,
+  valueAt,
+  type Clip,
+  type Key,
 } from "@renderly/core";
 import type { Action, ActionContext } from "./registry";
 
@@ -20,6 +24,44 @@ const hasClips = (ctx: ActionContext) =>
 const editSelection = (ctx: ActionContext) =>
   writable(ctx) && (ctx.timeline?.canEditSelection ?? false);
 const playable = (ctx: ActionContext) => ctx.link !== null && hasClips(ctx);
+
+/** Selected clips on unlocked video tracks: what mirror and rotate change. */
+function pictureSelection(ctx: ActionContext): Clip[] {
+  const selected = new Set(ctx.view.get().selection);
+  return (
+    sequenceOf(ctx)
+      ?.tracks.filter((track) => track.kind === "video" && !track.locked)
+      .flatMap((track) => track.clips)
+      .filter((clip) => selected.has(clip.id)) ?? []
+  );
+}
+const canTransform = (ctx: ActionContext) => writable(ctx) && pictureSelection(ctx).length > 0;
+
+interface TransformFields {
+  rotation?: number;
+  flipX?: boolean;
+  keys?: Record<string, Key[]>;
+}
+const transformOf = (clip: Clip) =>
+  (clip.components.find((c) => (c as { type: string }).type === "transform") ??
+    {}) as TransformFields;
+
+/** The video clip a freeze frame comes from: a selected one under the playhead, else the top one. */
+function freezeSource(ctx: ActionContext): Clip | null {
+  const t = ctx.view.get().playhead;
+  const selected = new Set(ctx.view.get().selection);
+  const under = (sequenceOf(ctx)?.tracks ?? [])
+    .filter((track) => track.kind === "video" && !track.locked && !track.hidden)
+    .flatMap((track) =>
+      track.clips.filter(
+        (clip) => clip.media !== undefined && clip.start <= t && t < clip.start + clip.duration,
+      ),
+    );
+  return under.find((clip) => selected.has(clip.id)) ?? under[under.length - 1] ?? null;
+}
+
+/** How long a new freeze frame holds. */
+const FREEZE_SECONDS = 2;
 
 /** Moves the playhead (pausing first), by frames or to a time. */
 /**
@@ -289,6 +331,80 @@ export const EDITOR_ACTIONS: Action[] = [
     keys: ["S"],
     enabled: (ctx) => writable(ctx) && hasClips(ctx),
     run: (ctx) => ctx.timeline?.splitAtPlayhead(),
+  },
+  {
+    id: "clip.freeze",
+    label: "Freeze frame: hold the frame at the playhead for 2 seconds",
+    group: "Timeline",
+    icon: "freeze",
+    enabled: (ctx) => writable(ctx) && freezeSource(ctx) !== null,
+    run: (ctx) => {
+      const clip = freezeSource(ctx);
+      if (!clip) return;
+      void (ctx.link?.pause() ?? Promise.resolve()).then(() => {
+        const id = createId();
+        const result = ctx.store.dispatch({
+          type: "clip.freeze",
+          payload: {
+            clip: clip.id,
+            t: ctx.view.get().playhead,
+            duration: FREEZE_SECONDS * FLICKS_PER_SECOND,
+            id,
+          },
+        });
+        if (result.ok) ctx.view.set({ selection: [id] });
+      });
+    },
+  },
+  {
+    id: "clip.mirror",
+    label: "Mirror the selected clips left to right",
+    group: "Timeline",
+    icon: "flip-x",
+    enabled: canTransform,
+    run: (ctx) => {
+      const clips = pictureSelection(ctx);
+      const all = clips.every((clip) => transformOf(clip).flipX === true);
+      ctx.store.dispatch({
+        type: "component.setMany",
+        payload: {
+          clips: clips.map((c) => c.id),
+          component: "transform",
+          field: "flipX",
+          value: !all,
+        },
+      });
+    },
+  },
+  {
+    id: "clip.rotate",
+    label: "Turn the selected clips a quarter clockwise",
+    group: "Timeline",
+    icon: "rotate",
+    enabled: canTransform,
+    run: (ctx) => {
+      const clips = pictureSelection(ctx);
+      const t = ctx.view.get().playhead;
+      // An animated rotation turns at its key at the playhead, like an inspector edit.
+      const values = clips.map((clip) => {
+        const transform = transformOf(clip);
+        const keys = transform.keys?.["rotation"];
+        const now = keys?.length
+          ? (valueAt(keys, t - clip.start) as number)
+          : (transform.rotation ?? 0);
+        return (((now + 90) % 360) + 360) % 360;
+      });
+      ctx.store.dispatch({
+        type: "component.setMany",
+        payload: {
+          clips: clips.map((c) => c.id),
+          component: "transform",
+          field: "rotation",
+          values,
+          time: t,
+        },
+      });
+    },
   },
   {
     id: "timeline.delete",

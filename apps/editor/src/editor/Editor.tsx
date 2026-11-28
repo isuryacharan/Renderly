@@ -155,6 +155,8 @@ function Frame({
       view.select((s) => s.selection, refresh),
       view.select((s) => s.playing, refresh),
       view.select((s) => s.loop, refresh),
+      // Freeze frame needs a video clip under the playhead: refresh only when that changes.
+      view.select(() => actions.isEnabled("clip.freeze"), refresh),
     ];
     return () => stops.forEach((stop) => stop());
   }, [actions, session, view]);

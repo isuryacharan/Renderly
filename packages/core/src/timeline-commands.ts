@@ -14,7 +14,7 @@ import { z } from "zod";
 import { CommandError, defineCommand } from "./commands";
 import { deriveId } from "./ids";
 import { Flicks, Id, type Clip, type Project, type Sequence, type Track } from "./schema";
-import { shiftKeys as shiftKeyList, type Key } from "./keyframes";
+import { shiftKeys as shiftKeyList, valueAt, type Key } from "./keyframes";
 import { clipEnd, sourceDuration, sourceSpan } from "./timeline";
 import { flicksPerFrame } from "./time";
 
@@ -443,13 +443,16 @@ export const TrimClips = defineCommand({
       const end = clipEnd(clip);
       if (edge === "start") {
         // Earliest: where the source begins, the previous clip's end, or 0.
-        let earliest = clip.start - snap(clip.in / clip.speed, frame, "floor");
+        // A freeze frame (speed 0) reads no more source as it grows: only neighbours stop it.
+        let earliest =
+          clip.speed === 0 ? -Infinity : clip.start - snap(clip.in / clip.speed, frame, "floor");
         if (!track.magnetic) earliest = Math.max(earliest, previous ? clipEnd(previous) : 0);
         const start = Math.min(Math.max(clip.start + step, earliest), end - frame);
         if (start !== clip.start) trimStartTo(clip, start);
       } else {
         const room = sourceDuration(project as Project, clip) - clip.in;
-        let latest = clip.start + snap(room / clip.speed, frame, "floor");
+        let latest =
+          clip.speed === 0 ? Infinity : clip.start + snap(room / clip.speed, frame, "floor");
         if (next) latest = Math.min(latest, next.start);
         const newEnd = Math.max(Math.min(end + step, latest), clip.start + frame);
         if (newEnd !== end) clip.duration = newEnd - clip.start;
@@ -473,6 +476,59 @@ export const SplitClips = defineCommand({
       }
     }
     if (cut === 0) throw new CommandError("rejected", "None of the clips spans that time", "t");
+  },
+});
+
+/**
+ * Freezes the frame at `t`: the clip is cut there and a still of that frame, `duration` long, is
+ * inserted, pushing the rest of the track later (other tracks do not move). The still is a clip at
+ * speed 0 over the same media, its components as they are at that frame: animated fields take
+ * their value there and lose their keys.
+ */
+export const FreezeFrame = defineCommand({
+  type: "clip.freeze",
+  payload: z.strictObject({
+    clip: Id,
+    t: Flicks,
+    /** Length of the still; snapped to the frame grid, at least one frame. */
+    duration: z.int().positive(),
+    /** Id of the new still. */
+    id: Id,
+  }),
+  label: () => "Freeze frame",
+  apply: (project, { clip: clipId, t, duration, id }) => {
+    const { sequence, track, clip } = locateClip(project, clipId);
+    unlocked(track);
+    if (track.kind !== "video" || clip.media === undefined)
+      throw new CommandError("rejected", "Only video clips can freeze a frame", "clip");
+    if (idTaken(project, id)) throw new CommandError("rejected", `Id ${id} is in use`, "id");
+    const frame = frameOf(sequence);
+    const at = snap(t, frame, "floor");
+    if (at < clip.start || at >= clipEnd(clip))
+      throw new CommandError("rejected", "The clip is not at that time", "t");
+    const length = Math.max(frame, snap(duration, frame));
+    const local = at - clip.start;
+    const still = clone(clip);
+    still.id = id;
+    still.start = at;
+    still.duration = length;
+    still.in = clip.in + Math.round(local * clip.speed);
+    still.speed = 0;
+    for (const component of still.components as Record<string, unknown>[]) {
+      const keys = component["keys"] as Keyframes | undefined;
+      if (!keys) continue;
+      for (const [field, list] of Object.entries(keys))
+        if (list.length > 0) {
+          const value = valueAt(list, local);
+          component[field] = Array.isArray(value) ? [...value] : value;
+        }
+      delete component["keys"];
+    }
+    if (at > clip.start) splitAt(project, track, clip, at);
+    for (const other of track.clips) if (other.start >= at) other.start += length;
+    track.clips.push(still as DClip);
+    sortClips(track);
+    pack(track);
   },
 });
 

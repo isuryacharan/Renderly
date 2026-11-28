@@ -1,10 +1,11 @@
 // Golden-frame cases (`pnpm test:golden`): each renders test pictures through the compositor on
 // this machine's GPU and compares them with the CPU reference. New cases go in CASES; later
-// slices add blend modes, colour and masks.
+// slices add colour and masks.
 
 import "@renderly/ui/fonts.css";
 import "@renderly/ui/styles.css";
 import "./spike.css";
+import { BLEND_MODES, type BackgroundSettings } from "@renderly/core";
 import {
   compare,
   referenceComposite,
@@ -13,7 +14,7 @@ import {
   testPattern,
   toTransform,
   type Image,
-  type Transform,
+  type ReferenceLayer,
 } from "@renderly/engine";
 
 const WIDTH = 320;
@@ -21,11 +22,50 @@ const HEIGHT = 180;
 
 interface Case {
   /** Layers bottom first. */
-  layers: { image: Image; transform: Transform }[];
+  layers: ReferenceLayer[];
+  background?: BackgroundSettings;
 }
 
 const base = testPattern(WIDTH, HEIGHT);
 const overlay = testPattern(WIDTH, HEIGHT, true);
+
+/**
+ * A picture fitted into the frame with bars above and below, as the uploader leaves a wider clip:
+ * the test pattern squeezed into the middle `share` of the rows, transparent outside.
+ */
+function letterboxed(share: number): Image {
+  const picture = testPattern(WIDTH, Math.round(HEIGHT * share));
+  const data = new Float32Array(WIDTH * HEIGHT * 4);
+  const top = Math.round((HEIGHT - picture.height) / 2);
+  data.set(picture.data, top * WIDTH * 4);
+  return { width: WIDTH, height: HEIGHT, data };
+}
+
+/** A smaller, turned, part-transparent layer over the base, combined by `mode`. */
+const blendCase = (mode: (typeof BLEND_MODES)[number]): Case => ({
+  layers: [
+    { image: base, transform: toTransform({}) },
+    {
+      image: overlay,
+      transform: toTransform({
+        x: 0.08,
+        y: -0.05,
+        scaleX: 0.8,
+        scaleY: 0.75,
+        rotation: 12,
+        flipX: true,
+        opacity: 0.9,
+        blend: mode,
+      }),
+    },
+  ],
+});
+const blendCases = Object.fromEntries(
+  BLEND_MODES.filter((mode) => mode !== "normal").map((mode) => [
+    `blend: ${mode}`,
+    blendCase(mode),
+  ]),
+);
 
 const S = 705_600_000;
 
@@ -102,6 +142,55 @@ const CASES: Record<string, Case> = {
       { image: overlay, transform: animated },
     ],
   },
+  ...blendCases,
+  "blend: two blended layers in a row": {
+    layers: [
+      { image: base, transform: toTransform({}) },
+      { image: overlay, transform: toTransform({ scale: 0.7, blend: "screen" }) },
+      {
+        image: overlay,
+        transform: toTransform({ x: 0.2, scale: 0.5, rotation: -20, blend: "difference" }),
+      },
+    ],
+  },
+  "crop: edges cut, then moved and turned": {
+    layers: [
+      { image: base, transform: toTransform({}) },
+      {
+        image: overlay,
+        transform: toTransform({
+          x: -0.1,
+          scale: 0.7,
+          rotation: 15,
+          cropLeft: 0.1,
+          cropTop: 0.2,
+          cropRight: 0.25,
+          cropBottom: 0.05,
+        }),
+      },
+    ],
+  },
+  "crop: within a letterboxed picture": {
+    layers: [
+      {
+        image: letterboxed(0.6),
+        transform: toTransform({ cropTop: 0.25, cropLeft: 0.1 }),
+        box: [1, 0.6],
+      },
+    ],
+    background: { kind: "color", color: "#2a6f97", blur: 0.5 },
+  },
+  "background: colour behind a smaller clip": {
+    layers: [{ image: base, transform: toTransform({ scale: 0.6, rotation: 8 }) }],
+    background: { kind: "color", color: "#d4a017", blur: 0.5 },
+  },
+  "background: the bottom picture blurred to fill the frame": {
+    layers: [
+      { image: letterboxed(0.5), transform: toTransform({}), box: [1, 0.5] },
+      { image: overlay, transform: toTransform({ x: 0.3, scale: 0.3 }) },
+    ],
+    background: { kind: "blur", color: "#000000", blur: 0.6 },
+  },
 };
 
 /** 8-bit RGBA, rows top first, as a PNG data URL (for failure reports). */
@@ -118,8 +207,14 @@ function png(rgba: Uint8ClampedArray): string {
 function run(name: string, tolerance: number, images = false) {
   const test = CASES[name];
   if (!test) throw new Error(`No case ${name}`);
-  const gpu = renderGolden(document.createElement("canvas"), WIDTH, HEIGHT, test.layers);
-  const reference = referenceComposite(WIDTH, HEIGHT, test.layers);
+  const gpu = renderGolden(
+    document.createElement("canvas"),
+    WIDTH,
+    HEIGHT,
+    test.layers,
+    test.background,
+  );
+  const reference = referenceComposite(WIDTH, HEIGHT, test.layers, test.background);
   const difference = compare(gpu, reference, tolerance);
   const result: Record<string, unknown> = { name, ...difference };
   if (images) {

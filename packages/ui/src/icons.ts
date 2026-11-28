@@ -115,6 +115,10 @@ export const ICONS = {
   "flip-x": [["path",{"d":"M3 12l18 0"}],["path",{"d":"M7 16l10 0l-10 5l0 -5"}],["path",{"d":"M7 8l10 0l-10 -5l0 5"}]],
   /** Mirror top to bottom. Tabler: flip-horizontal. */
   "flip-y": [["path",{"d":"M12 3l0 18"}],["path",{"d":"M16 7l0 10l5 0l-5 -10"}],["path",{"d":"M8 7l0 10l-5 0l5 -10"}]],
+  /** Turn a quarter clockwise. Tabler: rotate-clockwise. */
+  "rotate": [["path",{"d":"M4.05 11a8 8 0 1 1 .5 4m-.5 5v-5h5"}]],
+  /** Freeze frame: hold one frame as a still. Tabler: snowflake. */
+  "freeze": [["path",{"d":"M10 4l2 1l2 -1"}],["path",{"d":"M12 2v6.5l3 1.72"}],["path",{"d":"M17.928 6.268l.134 2.232l1.866 1.232"}],["path",{"d":"M20.66 7l-5.629 3.25l.01 3.458"}],["path",{"d":"M19.928 14.268l-1.866 1.232l-.134 2.232"}],["path",{"d":"M20.66 17l-5.629 -3.25l-2.99 1.738"}],["path",{"d":"M14 20l-2 -1l-2 1"}],["path",{"d":"M12 22v-6.5l-3 -1.72"}],["path",{"d":"M6.072 17.732l-.134 -2.232l-1.866 -1.232"}],["path",{"d":"M3.34 17l5.629 -3.25l-.01 -3.458"}],["path",{"d":"M4.072 9.732l1.866 -1.232l.134 -2.232"}],["path",{"d":"M3.34 7l5.629 3.25l2.99 -1.738"}]],
   /** Show the title and action safe areas. Tabler: focus-centered. */
   "safe-area": [["path",{"d":"M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0"}],["path",{"d":"M4 8v-2a2 2 0 0 1 2 -2h2"}],["path",{"d":"M4 16v2a2 2 0 0 0 2 2h2"}],["path",{"d":"M16 4h2a2 2 0 0 1 2 2v2"}],["path",{"d":"M16 20h2a2 2 0 0 0 2 -2v-2"}]],
   /** Show a rule-of-thirds grid. Tabler: grid-3x3. */

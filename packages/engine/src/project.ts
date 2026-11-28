@@ -25,8 +25,10 @@ export function cutsFromGraph(
         start: clip.start,
         layer: index,
         transform: clip.transform,
-        muted: layer.muted,
+        // A freeze frame is silent.
+        muted: layer.muted || clip.freeze === true,
         ...(clip.keys ? { keys: clip.keys } : {}),
+        ...(clip.freeze ? { freeze: true } : {}),
       });
     }
   });

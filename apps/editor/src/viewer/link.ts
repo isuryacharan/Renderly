@@ -181,10 +181,12 @@ export class EngineLink {
     });
     const started = performance.now();
     const before = this.preview.readPlayhead();
-    const loaded = await this.preview.update(added, cuts, {
-      width: graph.width,
-      height: graph.height,
-    });
+    const loaded = await this.preview.update(
+      added,
+      cuts,
+      { width: graph.width, height: graph.height },
+      graph.background,
+    );
     // Applied before the refresh after `before`: the next frame on screen has the edit (1).
     if (before.playing && this.preview.readPlayhead().playing && loaded.refresh !== undefined)
       this.updateRefreshes.push(Math.max(0, loaded.refresh - before.refreshes) + 1);

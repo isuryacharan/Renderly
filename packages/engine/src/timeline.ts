@@ -4,42 +4,27 @@
 // layer (0 is the bottom) with a static transform. Consecutive cuts on a layer that continue the
 // same footage (same file and transform, next in = previous out, no gap) are merged into one
 // run, so the decoder plays straight through split points instead of seeking. Each run needs
-// its own decoder stream.
+// its own decoder stream. A freeze frame is a run of its own that shows one source frame (`in`)
+// for its whole length.
 
-import { transformAt, type TransformKeys } from "@renderly/core";
+import {
+  IDENTITY_TRANSFORM,
+  transformAt,
+  type LayerTransform,
+  type TransformKeys,
+} from "@renderly/core";
 import type { Flicks } from "@renderly/media";
 
 /**
- * Where a layer sits in the frame: core's `LayerTransform`. `x` and `y` place the anchor as a
- * fraction of the frame from its centre (right and down); `scaleX`/`scaleY` 1 fit the layer to the
- * frame; `rotation` is degrees clockwise about the anchor; `anchorX`/`anchorY` are a fraction of
- * the layer from its centre; `flipX`/`flipY` mirror it; `opacity` is 0 to 1.
+ * How a layer is drawn: core's `LayerTransform`. `x` and `y` place the anchor as a fraction of the
+ * frame from its centre (right and down); `scaleX`/`scaleY` 1 fit the layer to the frame;
+ * `rotation` is degrees clockwise about the anchor; `anchorX`/`anchorY` are a fraction of the
+ * layer from its centre; `flipX`/`flipY` mirror it; `opacity` is 0 to 1; `fit` is how the picture
+ * fills the frame; the crop edges are fractions of the fitted picture; `blend` is the blend mode.
  */
-export interface Transform {
-  x: number;
-  y: number;
-  scaleX: number;
-  scaleY: number;
-  rotation: number;
-  anchorX: number;
-  anchorY: number;
-  flipX: boolean;
-  flipY: boolean;
-  opacity: number;
-}
+export type Transform = LayerTransform;
 
-export const IDENTITY: Transform = {
-  x: 0,
-  y: 0,
-  scaleX: 1,
-  scaleY: 1,
-  rotation: 0,
-  anchorX: 0,
-  anchorY: 0,
-  flipX: false,
-  flipY: false,
-  opacity: 1,
-};
+export const IDENTITY: Transform = IDENTITY_TRANSFORM;
 
 /** A transform given in part; `scale` sets both axes. Everything left out is the identity. */
 export type TransformInput = Partial<Transform> & { scale?: number };
@@ -67,6 +52,8 @@ export interface Cut {
   muted?: boolean;
   /** Keyframes of the transform, in time from this cut's start (a cut is one whole clip). */
   keys?: TransformKeys;
+  /** A freeze frame: shows source time `in` for `out - in`. */
+  freeze?: boolean;
 }
 
 export interface Run {
@@ -79,6 +66,8 @@ export interface Run {
   transform: Transform;
   /** Animated transform fields, in time from `start` (see `runTransformAt`). */
   keys?: TransformKeys;
+  /** A freeze frame: shows source time `in` throughout. */
+  freeze?: true;
 }
 
 /** A run's transform at timeline time `t`: animated fields evaluated, the rest as set. */
@@ -107,6 +96,8 @@ export function toRuns(cuts: readonly Cut[]): Run[] {
       last &&
       !last.keys &&
       !cut.keys &&
+      !last.freeze &&
+      !cut.freeze &&
       last.source === cut.source &&
       last.out === cut.in &&
       last.end === cut.start &&
@@ -125,6 +116,7 @@ export function toRuns(cuts: readonly Cut[]): Run[] {
         layer,
         transform,
         ...(cut.keys ? { keys: cut.keys } : {}),
+        ...(cut.freeze ? { freeze: true as const } : {}),
       });
     }
   }
@@ -175,7 +167,7 @@ export function plan(runs: readonly Run[], t: Flicks, options: PlanOptions): num
 
 /** Source time shown at timeline time `t` within `run`. */
 export function sourceTime(run: Run, t: Flicks): Flicks {
-  return run.in + (t - run.start);
+  return run.freeze ? run.in : run.in + (t - run.start);
 }
 
 /** Timeline time of source time `s` within `run`. */

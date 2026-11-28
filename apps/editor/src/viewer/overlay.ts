@@ -180,6 +180,24 @@ export class ViewerOverlay {
     };
   }
 
+  /**
+   * A point of the clip's visible box on screen: (x, y) from -0.5 (left, top) to 0.5, over its
+   * layer less the crop. The crop is cut from the picture, so a mirrored clip loses its left
+   * crop on the right.
+   */
+  private boxPoint(t: LayerTransform, x: number, y: number): Point | null {
+    const span = (low: number, high: number, flip: boolean, at: number) => {
+      const [a, b] = flip ? [high - 0.5, 0.5 - low] : [low - 0.5, 0.5 - high];
+      return a + (b - a) * (at + 0.5);
+    };
+    return this.toScreen(
+      t,
+      span(t.cropLeft, t.cropRight, t.flipX, x),
+      span(t.cropTop, t.cropBottom, t.flipY, y),
+    );
+  }
+
+  /** The clip's outline. */
   private corners(t: LayerTransform): Point[] {
     return (
       [
@@ -189,7 +207,7 @@ export class ViewerOverlay {
         [-0.5, 0.5],
       ] as const
     )
-      .map(([x, y]) => this.toScreen(t, x, y))
+      .map(([x, y]) => this.boxPoint(t, x, y))
       .filter((p): p is Point => p !== null);
   }
 
@@ -205,11 +223,11 @@ export class ViewerOverlay {
       ["scale-w", -0.5, 0],
     ];
     const out = list
-      .map(([handle, x, y]) => ({ handle, at: this.toScreen(t, x, y) }))
+      .map(([handle, x, y]) => ({ handle, at: this.boxPoint(t, x, y) }))
       .filter((h): h is { handle: Handle; at: Point } => h.at !== null);
     // The rotate handle sits above the top edge, along the clip's own up.
-    const top = this.toScreen(t, 0, -0.5);
-    const centre = this.toScreen(t, 0, 0);
+    const top = this.boxPoint(t, 0, -0.5);
+    const centre = this.boxPoint(t, 0, 0);
     if (top && centre) {
       const dx = top.x - centre.x;
       const dy = top.y - centre.y;
@@ -501,7 +519,7 @@ export class ViewerOverlay {
     if (selected.length === 1 && selected[0]) {
       const t = selected[0].transform;
       const handles = this.handles(t);
-      const top = this.toScreen(t, 0, -0.5);
+      const top = this.boxPoint(t, 0, -0.5);
       const rotate = handles.find((h) => h.handle === "rotate");
       if (top && rotate) {
         ctx.beginPath();

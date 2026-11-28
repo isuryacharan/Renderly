@@ -35,6 +35,13 @@
   font-size: 12px;
   line-height: 16px;
 }
+/* A choice (a select or a small segmented control) in the same label column as numeric rows. */
+.r-property-row--choice {
+  grid-template-columns: 68px minmax(0, 1fr);
+}
+.r-property-row--choice > .r-segmented {
+  justify-self: start;
+}
 .r-property-row__label {
   overflow: hidden;
   color: var(--text-secondary);

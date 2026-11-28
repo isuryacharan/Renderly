@@ -75,6 +75,9 @@ export function componentSchema(): z.ZodType {
  *   as a fraction of the clip's (fitted) picture from its centre.
  * - `flipX`, `flipY`: mirror the picture.
  * - `opacity`: 0 to 1.
+ * - `fit` (version 3): how a picture of another shape fills the frame at scale 1: `fit` shows
+ *   all of it (letterboxed), `fill` covers the frame (cutting off the overflow), `stretch` covers
+ *   it exactly (distorting).
  */
 registerComponent("transform", {
   position: z.tuple([z.number(), z.number()]).default([0, 0]),
@@ -85,4 +88,44 @@ registerComponent("transform", {
   flipX: z.boolean().default(false),
   flipY: z.boolean().default(false),
   opacity: z.number().min(0).max(1).default(1),
+  fit: z.enum(["fit", "fill", "stretch"]).default("fit"),
+});
+
+/**
+ * Blend modes (spec §9.2, tier 1), as defined by W3C Compositing and Blending Level 1. `add` is
+ * the sum, clamped to 1.
+ */
+export const BLEND_MODES = [
+  "normal",
+  "multiply",
+  "screen",
+  "overlay",
+  "softLight",
+  "add",
+  "darken",
+  "lighten",
+  "difference",
+  "colorDodge",
+  "colorBurn",
+  "hue",
+  "saturation",
+  "color",
+  "luminosity",
+] as const;
+export type BlendMode = (typeof BLEND_MODES)[number];
+
+/** How a picture clip combines with what is under it (version 3). */
+registerComponent("blend", {
+  mode: z.enum(BLEND_MODES).default("normal"),
+});
+
+/**
+ * Cuts the picture back from each edge, as a fraction of the fitted picture (version 3). The
+ * transform then applies to what is left, about the same anchor. Edges that meet show nothing.
+ */
+registerComponent("crop", {
+  left: z.number().min(0).max(1).default(0),
+  top: z.number().min(0).max(1).default(0),
+  right: z.number().min(0).max(1).default(0),
+  bottom: z.number().min(0).max(1).default(0),
 });

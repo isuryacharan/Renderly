@@ -1,5 +1,6 @@
 // Messages between the main thread and the render worker. Times are integer flicks.
 
+import type { BackgroundSettings } from "@renderly/core";
 import type { Flicks, MediaInput, OpenResult } from "@renderly/media";
 import type { PreviewScale, Size, ViewerView } from "./layout";
 import type { Cut } from "./timeline";
@@ -122,12 +123,21 @@ export type ToRenderer =
       cuts: Cut[] | null;
       /** The sequence's size; left out, the first source's size. */
       size?: Size;
+      /** What fills the frame behind the clips; black when left out. */
+      canvasBackground?: BackgroundSettings;
     }
   /**
    * Changes the edit list in place: `added` sources are appended to the ones already loaded, and
    * `cuts` refer to all of them. Replies with "loaded"; the result lists the added sources only.
    */
-  | { type: "update"; id: number; added: MediaInput[]; cuts: Cut[]; size: Size }
+  | {
+      type: "update";
+      id: number;
+      added: MediaInput[];
+      cuts: Cut[];
+      size: Size;
+      canvasBackground?: BackgroundSettings;
+    }
   /** How the picture sits in the canvas, and the colour around it (0xRRGGBB). */
   | { type: "view"; view: ViewerView; background: number }
   /** `session` is the audio session to follow, or 0 to run on the display refresh. */

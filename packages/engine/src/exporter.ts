@@ -24,7 +24,9 @@ import {
   VideoSample,
   VideoSampleSource,
 } from "mediabunny";
+import type { BackgroundSettings } from "@renderly/core";
 import * as THREE from "three";
+import { BLACK_BACKGROUND } from "./blend";
 import { Compositor } from "./compositor";
 import { FrameQueue } from "./frame-queue";
 import { FrameUploader } from "./frame-upload";
@@ -50,6 +52,8 @@ export interface ExportSettings {
   fps: number;
   videoBitrate: number;
   audioBitrate: number;
+  /** What fills the frame behind the clips; black when left out. */
+  background?: BackgroundSettings;
 }
 
 export type ExportResult =
@@ -175,6 +179,7 @@ export function serveExporter(endpoint: Endpoint): void {
       this.uploader = new FrameUploader(this.renderer);
       this.compositor = new Compositor(this.renderer, this.budget);
       this.compositor.resize({ width: settings.width, height: settings.height });
+      this.compositor.setBackground(settings.background ?? BLACK_BACKGROUND);
       this.presenter = new Presenter(this.renderer);
     }
 
@@ -241,6 +246,17 @@ export function serveExporter(endpoint: Endpoint): void {
         slot.source = run.source;
       }
       if (stream.stopped) return;
+      if (run.freeze) {
+        // A freeze frame: one exact frame, shown for the whole run.
+        const decoded = await slot.client.seek(run.in, "exact");
+        if (decoded && !stream.stopped)
+          stream.queue.push({ decoded, time: run.start, duration: run.end - run.start });
+        else decoded?.release();
+        stream.ended = true;
+        stream.wake?.();
+        slot.busy = false;
+        return;
+      }
       const playback = slot.client.play(from, run.out, (decoded) => {
         if (stream.stopped) {
           decoded.release();
@@ -309,7 +325,11 @@ export function serveExporter(endpoint: Endpoint): void {
           const run = this.timeline.runs[id] as Run;
           const info = this.infos[run.source];
           const target = this.compositor.layerTarget(layer);
-          if (info && target) this.uploader.upload(frame.decoded.frame, info.rotation, target);
+          if (info && target)
+            this.compositor.setPictureBox(
+              layer,
+              this.uploader.upload(frame.decoded.frame, info.rotation, target, run.transform.fit),
+            );
           this.shown[i] = { run: id, time: frame.time, duration: frame.duration };
         } finally {
           frame.decoded.release();
@@ -372,7 +392,7 @@ export function serveExporter(endpoint: Endpoint): void {
     output.addVideoTrack(video, { frameRate: settings.fps });
 
     // Audio: the bottom layer's cuts, decoded by the same code as playback into a small ring.
-    const audioCuts = cuts.filter((cut) => (cut.layer ?? 0) === 0);
+    const audioCuts = cuts.filter((cut) => (cut.layer ?? 0) === 0 && !cut.muted);
     const audioChannel = new MessageChannel();
     serveAudioDecoder(audioChannel.port1 as unknown as Endpoint);
     const audioPort = audioChannel.port2;

@@ -80,7 +80,30 @@ export function upgrade1to2(document: Record<string, unknown>): Record<string, u
   });
 }
 
-const UPGRADES: Record<number, Upgrade> = { 1: upgrade1to2 };
+/**
+ * 2 → 3: every transform says how it fits (`fit`, "fit" as before), and every sequence has a
+ * background (black, as before). Blend and crop components and speed 0 are new, not changed.
+ */
+export function upgrade2to3(document: Record<string, unknown>): Record<string, unknown> {
+  const next = mapComponents(document, (component) =>
+    component["type"] === "transform" && !("fit" in component)
+      ? { ...component, fit: "fit" }
+      : component,
+  );
+  const sequences = next["sequences"];
+  return {
+    ...next,
+    sequences: Array.isArray(sequences)
+      ? sequences.map((sequence: unknown) =>
+          isObject(sequence) && !("background" in sequence)
+            ? { ...sequence, background: { kind: "color", color: "#000000", blur: 0.5 } }
+            : sequence,
+        )
+      : sequences,
+  };
+}
+
+const UPGRADES: Record<number, Upgrade> = { 1: upgrade1to2, 2: upgrade2to3 };
 
 export function migrate(raw: unknown): MigrateResult {
   const invalid = (path: string, message: string): MigrateResult => ({

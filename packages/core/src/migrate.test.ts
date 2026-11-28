@@ -7,6 +7,7 @@ import {
   parseProject,
   serialiseProject,
   upgrade1to2,
+  upgrade2to3,
   type MigrateResult,
 } from "./migrate";
 import { newProject } from "./new-project";
@@ -62,10 +63,62 @@ describe("upgrades", () => {
     "utf8",
   );
 
-  it("upgrade a version 1 project to exactly the current fixture", () => {
-    const result = parseProject(v1);
+  const v2 = readFileSync(
+    join(import.meta.dirname, "..", "fixtures", "holiday-edit.v2.project.json"),
+    "utf8",
+  );
+
+  it("upgrade version 1 and version 2 projects to exactly the current fixture", () => {
+    for (const old of [v1, v2]) {
+      const result = parseProject(old);
+      if (!result.ok) throw new Error(JSON.stringify(result));
+      expect(serialiseProject(result.project)).toBe(fixture);
+    }
+  });
+
+  it("2 → 3 adds the transform's fit and the sequence background, without touching the input", () => {
+    const document = JSON.parse(v2) as Record<string, unknown>;
+    const before = JSON.stringify(document);
+    const upgraded = upgrade2to3(document) as {
+      sequences: {
+        background: unknown;
+        tracks: { clips: { components: Record<string, unknown>[] }[] }[];
+      }[];
+    };
+    expect(upgraded.sequences[0]?.background).toEqual({
+      kind: "color",
+      color: "#000000",
+      blur: 0.5,
+    });
+    expect(upgraded.sequences[0]?.tracks[0]?.clips[0]?.components[0]?.["fit"]).toBe("fit");
+    expect(JSON.stringify(document)).toBe(before);
+  });
+
+  it("round-trips the version 3 additions: blend, crop, fill, a background and a freeze frame", () => {
+    const document = JSON.parse(fixture) as {
+      sequences: {
+        background: unknown;
+        tracks: { clips: { speed: number; components: Record<string, unknown>[] }[] }[];
+      }[];
+    };
+    const sequence = document.sequences[0];
+    const clip = sequence?.tracks[0]?.clips[0];
+    if (!sequence || !clip) throw new Error("fixture has no clip");
+    sequence.background = { kind: "blur", color: "#1a2b3c", blur: 0.8 };
+    clip.speed = 0;
+    (clip.components[0] as Record<string, unknown>)["fit"] = "fill";
+    clip.components.push(
+      { type: "blend", mode: "softLight" },
+      { type: "crop", left: 0.1, top: 0, right: 0.2, bottom: 0.05 },
+    );
+    const text = `${JSON.stringify(document, null, 2)}
+`;
+    const result = parseProject(text);
     if (!result.ok) throw new Error(JSON.stringify(result));
-    expect(serialiseProject(result.project)).toBe(fixture);
+    expect(serialiseProject(result.project)).toBe(text);
+    const bad = JSON.parse(text) as typeof document;
+    (bad.sequences[0] as { background: unknown }).background = { kind: "color", color: "red" };
+    expect(problems(migrate(bad))[0]?.path).toBe("sequences[0].background.color");
   });
 
   it("1 → 2 makes the transform's scale and its keyframes per axis, without touching the input", () => {
@@ -121,10 +174,10 @@ describe("invalid documents fail with a path and a reason", () => {
   });
 
   it("refuses a project from a newer version instead of half-loading it", () => {
-    expect(migrate(changed("version", setTo(3)))).toEqual({
+    expect(migrate(changed("version", setTo(4)))).toEqual({
       ok: false,
       reason: "newer",
-      version: 3,
+      version: 4,
     });
   });
 

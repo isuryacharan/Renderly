@@ -1,0 +1,255 @@
+{
+  "format": "renderly",
+  "version": 2,
+  "id": "0j8kd2m4n6p8r0t2",
+  "name": "Holiday edit",
+  "revision": 412,
+  "packs": [
+    {
+      "id": "builtin.transitions",
+      "version": "1.2.0",
+      "hash": "sha256-q2nPbXk1mN9vY7wQeZx0r6Lh3G8sT5uC4aD2fB1jK0M="
+    }
+  ],
+  "media": [
+    {
+      "id": "m0a1b2c3d4e5f6g7",
+      "name": "beach.mp4",
+      "link": "handle",
+      "path": "media/beach.mp4",
+      "fingerprint": {
+        "size": 6012345678,
+        "modified": 1795000000000,
+        "head": "sha256-9f8e7d6c5b4a39281706f5e4d3c2b1a0"
+      },
+      "duration": 296352000000,
+      "video": {
+        "width": 3840,
+        "height": 2160,
+        "fps": [
+          60,
+          1
+        ],
+        "codec": "hevc",
+        "rotation": 0
+      },
+      "audio": {
+        "sampleRate": 48000,
+        "channels": 2,
+        "codec": "aac"
+      }
+    },
+    {
+      "id": "m1h2j3k4m5n6p7q8",
+      "name": "phone-clip.mov",
+      "link": "copy",
+      "path": "media/phone-clip.mov",
+      "fingerprint": {
+        "size": 81234567,
+        "modified": 1794990000000,
+        "head": "sha256-0a1b2c3d4e5f60718293a4b5c6d7e8f9"
+      },
+      "duration": 14112000000,
+      "video": {
+        "width": 1920,
+        "height": 1080,
+        "fps": [
+          30000,
+          1001
+        ],
+        "codec": "avc",
+        "rotation": 90
+      }
+    }
+  ],
+  "sequences": [
+    {
+      "id": "s0a1b2c3d4e5f6g7",
+      "name": "Main",
+      "width": 1920,
+      "height": 1080,
+      "fps": [
+        30,
+        1
+      ],
+      "sampleRate": 48000,
+      "tracks": [
+        {
+          "id": "t0a1b2c3d4e5f6g7",
+          "kind": "video",
+          "name": "V1",
+          "locked": false,
+          "hidden": false,
+          "muted": false,
+          "magnetic": true,
+          "clips": [
+            {
+              "id": "c0a1b2c3d4e5f6g7",
+              "media": "m0a1b2c3d4e5f6g7",
+              "start": 0,
+              "duration": 2116800000,
+              "in": 705600000,
+              "speed": 1,
+              "enabled": true,
+              "components": [
+                {
+                  "type": "transform",
+                  "position": [
+                    0,
+                    0
+                  ],
+                  "scale": [
+                    1.1,
+                    1.1
+                  ],
+                  "uniform": true,
+                  "rotation": 0,
+                  "anchor": [
+                    0,
+                    0
+                  ],
+                  "flipX": false,
+                  "flipY": false,
+                  "opacity": 1,
+                  "keys": {
+                    "position": [
+                      {
+                        "t": 0,
+                        "v": [
+                          0,
+                          0
+                        ],
+                        "ease": "auto"
+                      },
+                      {
+                        "t": 1411200000,
+                        "v": [
+                          0.1,
+                          -0.05
+                        ],
+                        "ease": "bezier",
+                        "in": [
+                          -235200000,
+                          0
+                        ],
+                        "out": [
+                          235200000,
+                          0
+                        ]
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "id": "c1h2j3k4m5n6p7q8",
+              "media": "m1h2j3k4m5n6p7q8",
+              "start": 2116800000,
+              "duration": 1411200000,
+              "in": 0,
+              "speed": 1,
+              "enabled": true,
+              "components": []
+            }
+          ]
+        },
+        {
+          "id": "t1h2j3k4m5n6p7q8",
+          "kind": "video",
+          "name": "V2",
+          "locked": false,
+          "hidden": false,
+          "muted": false,
+          "magnetic": false,
+          "clips": [
+            {
+              "id": "c2r3s4t5v6w7x8y9",
+              "sequence": "s1h2j3k4m5n6p7q8",
+              "start": 705600000,
+              "duration": 705600000,
+              "in": 0,
+              "speed": 2,
+              "enabled": true,
+              "components": [
+                {
+                  "type": "transform",
+                  "position": [
+                    0.25,
+                    0.25
+                  ],
+                  "scale": [
+                    0.45,
+                    0.45
+                  ],
+                  "uniform": true,
+                  "rotation": 0,
+                  "anchor": [
+                    0,
+                    0
+                  ],
+                  "flipX": false,
+                  "flipY": false,
+                  "opacity": 0.85
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "t2r3s4t5v6w7x8y9",
+          "kind": "audio",
+          "name": "A1",
+          "locked": false,
+          "hidden": false,
+          "muted": true,
+          "magnetic": false,
+          "clips": []
+        }
+      ],
+      "markers": [
+        {
+          "id": "k0a1b2c3d4e5f6g7",
+          "t": 1058400000,
+          "name": "Beat drop",
+          "color": "accent"
+        }
+      ]
+    },
+    {
+      "id": "s1h2j3k4m5n6p7q8",
+      "name": "Intro titles",
+      "width": 1920,
+      "height": 1080,
+      "fps": [
+        30000,
+        1001
+      ],
+      "sampleRate": 48000,
+      "tracks": [
+        {
+          "id": "t3z0a1b2c3d4e5f6",
+          "kind": "video",
+          "name": "",
+          "locked": false,
+          "hidden": false,
+          "muted": false,
+          "magnetic": true,
+          "clips": [
+            {
+              "id": "c3z0a1b2c3d4e5f6",
+              "media": "m1h2j3k4m5n6p7q8",
+              "start": 0,
+              "duration": 1411200000,
+              "in": 0,
+              "speed": 1,
+              "enabled": true,
+              "components": []
+            }
+          ]
+        }
+      ],
+      "markers": []
+    }
+  ]
+}

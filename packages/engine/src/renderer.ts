@@ -21,7 +21,9 @@ import {
   type MediaInput,
   type OpenResult,
 } from "@renderly/media";
+import type { BackgroundSettings } from "@renderly/core";
 import * as THREE from "three";
+import { BLACK_BACKGROUND } from "./blend";
 import { Compositor, FrameCache } from "./compositor";
 import { FrameQueue } from "./frame-queue";
 import { FrameUploader } from "./frame-upload";
@@ -190,6 +192,8 @@ export function serveRenderer(scope: RendererScope): void {
   /** How the picture sits in the canvas, and the colour around it. */
   let view: ViewerView = { zoom: null, pan: { x: 0, y: 0 } };
   let background = 0x000000;
+  /** The sequence's background (behind the clips; `background` is the viewer's, around them). */
+  let canvasBackground: BackgroundSettings = BLACK_BACKGROUND;
   /** Written every refresh: [playhead, playing (1 or 0), refresh count]. Read by the main thread. */
   let playheadOut: Float64Array | null = null;
   let refreshCount = 0;
@@ -289,6 +293,7 @@ export function serveRenderer(scope: RendererScope): void {
       scrubCompositor: new Compositor(renderer, budget, "scrub "),
       fastUploader: new FrameUploader(renderer, false),
     };
+    setCanvasBackground(canvasBackground);
     resize(size);
     const pool = ports.map((port) => ({
       client: new DecodeClient(port),
@@ -380,6 +385,21 @@ export function serveRenderer(scope: RendererScope): void {
       if (!result.ok) throw new Error(`Cannot open source ${run.source}`);
     }
     if (stream.stopped) return;
+    if (run.freeze) {
+      // A freeze frame: one exact frame, shown for the whole run.
+      const decoded = await slot.client.seek(run.in, "exact");
+      if (decoded && !stream.stopped)
+        stream.queue.push({
+          decoded,
+          run: stream.run,
+          time: run.start,
+          duration: run.end - run.start,
+        });
+      else decoded?.release();
+      stream.ended = true;
+      if (slot.stream === stream) slot.stream = null;
+      return;
+    }
     const playback = slot.client.play(
       from,
       run.out,
@@ -442,7 +462,11 @@ export function serveRenderer(scope: RendererScope): void {
       const layer = timeline.layers[layerIndex]?.layer ?? 0;
       const target = gpu?.compositor.layerTarget(layer);
       if (!gpu || !info || !target || contextLost) return false;
-      gpu.uploader.upload(decoded.frame, info.rotation, target);
+      const fit = runInfo?.transform.fit ?? "fit";
+      gpu.compositor.setPictureBox(
+        layer,
+        gpu.uploader.upload(decoded.frame, info.rotation, target, fit),
+      );
       budget.set(
         "upload",
         mipmappedTextureBytes(decoded.frame.codedWidth, decoded.frame.codedHeight),
@@ -597,7 +621,10 @@ export function serveRenderer(scope: RendererScope): void {
       const layer = timeline.layers[layerIndex]?.layer ?? 0;
       const target = gpu?.scrubCompositor.layerTarget(layer);
       if (!gpu || !info || !target || contextLost) return false;
-      gpu.fastUploader.upload(decoded.frame, info.rotation, target);
+      gpu.scrubCompositor.setPictureBox(
+        layer,
+        gpu.fastUploader.upload(decoded.frame, info.rotation, target, run.transform.fit),
+      );
       const draws = timeline.layers.flatMap(({ layer: l }, i) => {
         const current = runIdAt(timeline, i, scrubTarget);
         return current < 0
@@ -1031,7 +1058,20 @@ export function serveRenderer(scope: RendererScope): void {
 
   // --- loading ---
 
-  async function load(inputs: MediaInput[], cuts: Cut[] | null, size?: Size): Promise<LoadResult> {
+  /** What fills the frame behind the clips, in the preview and the scrub pictures alike. */
+  function setCanvasBackground(next: BackgroundSettings): void {
+    canvasBackground = next;
+    gpu?.compositor.setBackground(next);
+    gpu?.scrubCompositor.setBackground(next);
+  }
+
+  async function load(
+    inputs: MediaInput[],
+    cuts: Cut[] | null,
+    size?: Size,
+    background?: BackgroundSettings,
+  ): Promise<LoadResult> {
+    setCanvasBackground(background ?? BLACK_BACKGROUND);
     if (!reserved) throw new Error("Renderer is not initialised");
     stopPlayback();
     endScrub();
@@ -1070,7 +1110,12 @@ export function serveRenderer(scope: RendererScope): void {
    * carry over. Playback keeps going; a layer whose run changed shows its last frame until the
    * new run's first frame is decoded. When paused, the exact frame at the playhead is redrawn.
    */
-  async function update(added: MediaInput[], cuts: Cut[], size: Size): Promise<LoadResult> {
+  async function update(
+    added: MediaInput[],
+    cuts: Cut[],
+    size: Size,
+    background?: BackgroundSettings,
+  ): Promise<LoadResult> {
     if (!reserved) throw new Error("Renderer is not initialised");
     const results: OpenResult[] = [];
     // New files open on the reserved decoder, which exact seeks also use: take turns with them
@@ -1099,6 +1144,7 @@ export function serveRenderer(scope: RendererScope): void {
         run.layer,
         JSON.stringify(run.transform),
         JSON.stringify(run.keys ?? null),
+        run.freeze ?? false,
       ].join("|");
     const newIds = new Map(next.runs.map((run, id) => [key(run), id]));
     const remap = (id: number) => {
@@ -1136,6 +1182,7 @@ export function serveRenderer(scope: RendererScope): void {
     timeline = next;
     layers = nextLayers;
     const appliedAt = refreshCount;
+    if (background) setCanvasBackground(background);
     if (size.width !== sequence.width || size.height !== sequence.height) {
       sequence = size;
       rebuildTargets();
@@ -1178,14 +1225,14 @@ export function serveRenderer(scope: RendererScope): void {
         post({
           type: "loaded",
           id: message.id,
-          result: await load(message.sources, message.cuts, message.size),
+          result: await load(message.sources, message.cuts, message.size, message.canvasBackground),
         });
         return;
       case "update":
         post({
           type: "loaded",
           id: message.id,
-          result: await update(message.added, message.cuts, message.size),
+          result: await update(message.added, message.cuts, message.size, message.canvasBackground),
         });
         return;
       case "view":

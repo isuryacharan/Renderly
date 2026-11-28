@@ -78,6 +78,8 @@
     { "name": "unlinked", "tabler": "unlink", "usage": "Values set separately" },
     { "name": "flip-x", "tabler": "flip-vertical", "usage": "Mirror left to right" },
     { "name": "flip-y", "tabler": "flip-horizontal", "usage": "Mirror top to bottom" },
+    { "name": "rotate", "tabler": "rotate-clockwise", "usage": "Turn a quarter clockwise" },
+    { "name": "freeze", "tabler": "snowflake", "usage": "Freeze frame: hold one frame as a still" },
     {
       "name": "safe-area",
       "tabler": "focus-centered",

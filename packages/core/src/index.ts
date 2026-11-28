@@ -3,6 +3,7 @@
 export * from "./time";
 export { createId, deriveId, ID_LENGTH, ID_PATTERN, type RandomBytes } from "./ids";
 export {
+  BLEND_MODES,
   componentDefaults,
   componentSchema,
   componentTypes,
@@ -10,14 +11,17 @@ export {
   Keyframe,
   Keys,
   registerComponent,
+  type BlendMode,
 } from "./components";
 export {
+  Background,
   CURRENT_VERSION,
   formatPath,
   Marker,
   Media,
   PackRef,
   projectSchema,
+  type BackgroundSettings,
   type Clip,
   type MediaItem,
   type Project,
@@ -79,6 +83,7 @@ export {
   AddTrack,
   CloseGaps,
   DeleteClips,
+  FreezeFrame,
   MoveClips,
   RemoveTracks,
   RippleDeleteClips,
@@ -87,6 +92,7 @@ export {
   deleteClips,
   TrimClips,
 } from "./timeline-commands";
+export { SetSequence } from "./sequence-commands";
 export { newProject, type NewProjectOptions } from "./new-project";
 export { AddKeyframes, EaseKeyframe, MoveKeyframe, RemoveKeyframes } from "./keyframe-commands";
 export { ImportMedia, RemoveMedia } from "./media-commands";

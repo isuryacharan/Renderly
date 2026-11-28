@@ -1,6 +1,9 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import "./timeline-commands";
+import "./sequence-commands";
+import "./basic-commands";
+import "./keyframe-commands";
 import type { Command } from "./commands";
 import { valueAt, type Key } from "./keyframes";
 import { serialiseProject } from "./migrate";
@@ -56,7 +59,7 @@ const track = (trackId: string, kind: Track["kind"], clips: Clip[], magnetic = f
 function project(): Project {
   return projectSchema().parse({
     format: "renderly",
-    version: 2,
+    version: 3,
     id: id("pj"),
     name: "Timeline",
     revision: 0,
@@ -535,6 +538,110 @@ describe("queries", () => {
   });
 });
 
+describe("clip.freeze", () => {
+  it("cuts the clip and inserts a still of the frame there, pushing the rest of the track", () => {
+    const { store, ok, layout } = setup();
+    ok({
+      type: "clip.freeze",
+      payload: { clip: id("cc"), t: s(2), duration: s(1.5), id: id("cz") },
+    });
+    // c [1,3) from 5 s in: [1,2) from 5, the still [2,3.5) of source 6 s, the rest [3.5,4.5) from 6.
+    const v2 = layout(V2);
+    expect(v2[0]).toEqual(["c", 1, 2, 5]);
+    expect(v2[1]).toEqual(["z", 2, 3.5, 6]);
+    expect(v2[2]?.slice(1)).toEqual([3.5, 4.5, 6]);
+    expect(v2[3]).toEqual(["d", 6.5, 7.5, 0]);
+    const still = store.project.sequences[0]?.tracks[1]?.clips[1];
+    expect(still?.speed).toBe(0);
+    expect(layout(V1)).toEqual([
+      ["a", 0, 2, 0],
+      ["b", 2, 5, 10],
+    ]); // other tracks stay
+  });
+
+  it("freezes at a clip's first frame without a cut, and ripples a magnetic track", () => {
+    const { ok, layout } = setup();
+    ok({ type: "clip.freeze", payload: { clip: id("cb"), t: s(2), duration: s(1), id: id("cz") } });
+    expect(layout(V1)).toEqual([
+      ["a", 0, 2, 0],
+      ["z", 2, 3, 10],
+      ["b", 3, 6, 10],
+    ]);
+  });
+
+  it("holds animated fields at their value there, without keys", () => {
+    const { store, ok } = setup();
+    ok({
+      type: "keyframe.add",
+      payload: { clips: [id("cc")], component: "transform", fields: ["opacity"], time: s(1) },
+    });
+    ok({
+      type: "component.setMany",
+      payload: {
+        clips: [id("cc")],
+        component: "transform",
+        field: "opacity",
+        value: 0,
+        time: s(3) - F,
+      },
+    });
+    ok({ type: "clip.freeze", payload: { clip: id("cc"), t: s(2), duration: s(1), id: id("cz") } });
+    const still = store.project.sequences[0]?.tracks[1]?.clips[1];
+    const transform = still?.components[0] as { opacity: number; keys?: unknown };
+    expect(transform.keys).toBeUndefined();
+    expect(transform.opacity).toBeGreaterThan(0.4);
+    expect(transform.opacity).toBeLessThan(0.6);
+  });
+
+  it("a still can be trimmed longer than its media, and refuses audio and wrong times", () => {
+    const { ok, fails, layout } = setup();
+    ok({ type: "clip.freeze", payload: { clip: id("cd"), t: s(5), duration: s(1), id: id("cz") } });
+    ok({ type: "clip.delete", payload: { clips: [id("cd")] } });
+    // Past the media's 60 s: a still reads no more of it.
+    ok({ type: "clip.trim", payload: { clips: [id("cz")], edge: "end", delta: s(100) } });
+    expect(layout(V2).find((c) => c[0] === "z")).toEqual(["z", 5, 106, 0]);
+    ok({ type: "clip.trim", payload: { clips: [id("cz")], edge: "start", delta: s(-10) } });
+    expect(layout(V2).find((c) => c[0] === "z")).toEqual(["z", 3, 106, 0]);
+    const audio = { clip: id("ce"), t: s(1), duration: s(1), id: id("cy") };
+    expect(fails({ type: "clip.freeze", payload: audio })?.code).toBe("rejected");
+    const outside = { clip: id("ca"), t: s(9), duration: s(1), id: id("cy") };
+    expect(fails({ type: "clip.freeze", payload: outside })?.code).toBe("rejected");
+  });
+});
+
+describe("sequence.set", () => {
+  it("changes the canvas size and background, leaving clips centred and fitted", () => {
+    const { store, ok, fails } = setup();
+    const before = JSON.stringify(store.project.sequences[0]?.tracks);
+    ok({ type: "sequence.set", payload: { sequence: SEQ, width: 1080, height: 1920 } });
+    ok({ type: "sequence.set", payload: { sequence: SEQ, background: { kind: "blur" } } });
+    const sequence = store.project.sequences[0];
+    expect([sequence?.width, sequence?.height]).toEqual([1080, 1920]);
+    expect(sequence?.background).toEqual({ kind: "blur", color: "#000000", blur: 0.5 });
+    expect(JSON.stringify(sequence?.tracks)).toBe(before);
+    const odd = { sequence: SEQ, width: 1081 };
+    expect(fails({ type: "sequence.set", payload: odd })?.code).toBe("invalid-payload");
+    const colour = { sequence: SEQ, background: { color: "blue" } };
+    expect(fails({ type: "sequence.set", payload: colour })?.code).toBe("invalid-payload");
+  });
+
+  it("moves every clip edge and marker onto the new frame grid", () => {
+    const { store, ok } = setup();
+    // Put one clip edge off the 25 fps grid: 30 fps frame 31 is 1.0333 s.
+    ok({ type: "clip.trim", payload: { clips: [id("cd")], edge: "end", delta: F } });
+    ok({ type: "sequence.set", payload: { sequence: SEQ, fps: [25, 1] } });
+    const frame = SEC / 25;
+    const sequence = store.project.sequences[0];
+    for (const clip of sequence?.tracks.flatMap((t) => t.clips) ?? []) {
+      expect(clip.start % frame).toBe(0);
+      expect(clip.duration % frame).toBe(0);
+    }
+    expect(sequence?.markers[0]?.t).toBe(s(7));
+    const d = sequence?.tracks[1]?.clips[1];
+    expect([d?.start, (d?.start ?? 0) + (d?.duration ?? 0)]).toEqual([s(5), s(6.04)]);
+  });
+});
+
 // --- fuzz: random edits never break a timeline rule, and undo restores everything ---
 
 type Pick = { a: number; b: number; c: number };
@@ -554,6 +661,8 @@ const editArb = fc.tuple(
     "closeGap",
     "magnetic",
     "lock",
+    "freeze",
+    "fps",
     "undo",
   ),
   pickArb,
@@ -624,6 +733,28 @@ function toCommand(
       return { type: "track.closeGap", payload: { tracks: [track.id], t } };
     case "magnetic":
       return { type: "track.set", payload: { tracks: [track.id], magnetic: flag } };
+    case "freeze":
+      return {
+        type: "clip.freeze",
+        payload: {
+          clip: some()[0] as string,
+          t,
+          duration: 1 + ((pick.b * F) % s(3)),
+          id: id(`z${serial.toString(32).replace(/[ilou]/g, "x")}`),
+        },
+      };
+    case "fps": {
+      const rates: [number, number][] = [
+        [24, 1],
+        [25, 1],
+        [30, 1],
+        [60, 1],
+      ];
+      return {
+        type: "sequence.set",
+        payload: { sequence: SEQ, fps: rates[pick.c % rates.length] as [number, number] },
+      };
+    }
     case "lock":
       return {
         type: "track.set",
@@ -668,6 +799,8 @@ it("no random sequence of edits breaks a timeline rule, and undo restores the st
     "clip.split",
     "clip.delete",
     "clip.rippleDelete",
+    "clip.freeze",
+    "sequence.set",
     "track.closeGap",
   ])
     expect(counts.get(`${type} ok`) ?? 0).toBeGreaterThan(20);
