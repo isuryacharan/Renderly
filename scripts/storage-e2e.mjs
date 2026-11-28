@@ -282,9 +282,26 @@ Object.assign(scenarios, {
       const status = await page.evaluate(() => lab.status());
       step(`round ${round}: crash while ${status}`);
       const cdp = await context.newCDPSession(page);
-      const crashed = page.waitForEvent("crash", { timeout: 10_000 });
-      void cdp.send("Page.crash").catch(() => undefined); // never answers: the renderer is gone
-      await crashed;
+      const crash = () => {
+        const crashed = page.waitForEvent("crash", { timeout: 10_000 }).then(
+          () => true,
+          () => false,
+        );
+        void cdp.send("Page.crash").catch(() => undefined); // never answers: the renderer is gone
+        return crashed;
+      };
+      if (!(await crash())) {
+        // Once on CI (2026-11-28) the browser never reported the crash. Say what the page was
+        // doing, then crash it again: what this checks is the project after a kill, not how
+        // quickly the browser reports one.
+        const alive = await Promise.race([
+          page.evaluate(() => `still running, ${lab.status()}`).catch((e) => `gone (${e.message})`),
+          new Promise((r) => setTimeout(() => r("not answering for 2 s"), 2_000)),
+        ]);
+        log(`  round ${round}: no crash reported 10 s after Page.crash; page ${alive}; again`);
+        if (!(await crash()))
+          throw new Failure(`round ${round} (${status}): the page did not crash; page ${alive}`);
+      }
       await page.close().catch(() => undefined);
       const reader = await openTab(context);
       const loaded = await reader.evaluate((f) => lab.load(f), folder);
