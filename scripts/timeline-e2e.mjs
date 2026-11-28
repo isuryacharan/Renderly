@@ -8,6 +8,8 @@
 // Escape cancels one, and an edit with several clips selected changes all of them in one step.
 // S2.2: keyframes from the inspector (add, edit at another time, previous key, ease menu), retimed
 // by dragging their diamond on the timeline, and played back without engine errors.
+// S2.3: blend mode, crop and fit from the inspector; a 9:16 canvas keeps the picture centred and
+// the clips unchanged; a blurred background fills the bars; freeze frame, mirror and rotate.
 // S1.8: the viewer plays what the timeline says (transport, frame step, cuts, loop), edits during
 // playback reach the engine within a frame and never break it, and trimming shows the edge frame.
 // The media lab makes the test files (see media-e2e.mjs).
@@ -309,6 +311,204 @@ async function playbackProject(context, name) {
 }
 
 const scenarios = {
+  async "compositing: blend, crop and fit, a 9:16 canvas stays centred, blur fill, freeze, mirror, rotate"({
+    context,
+  }) {
+    const page = await playbackProject(context, "Compositing");
+    const view = (change) =>
+      page.evaluate((c) => window.renderlyTimeline["options"].view.set(c), change);
+    const project = () =>
+      page.evaluate(() => {
+        const { store } = window.renderlyTimeline["options"];
+        const sequence = store.project.sequences[0];
+        return {
+          width: sequence.width,
+          height: sequence.height,
+          background: sequence.background,
+          tracks: sequence.tracks.map((t) =>
+            t.clips.map((c) => ({
+              id: c.id,
+              start: c.start,
+              duration: c.duration,
+              in: c.in,
+              speed: c.speed,
+              components: c.components,
+            })),
+          ),
+          undo: store.undoLabels,
+        };
+      });
+    const component = (clip, type) => clip.components.find((c) => c.type === type);
+    const errors = () => page.evaluate(() => window.renderlyViewer.errors.length);
+    /** Rows and columns of the composite at `t` that are not the background colour (black). */
+    const picture = (t) =>
+      page.evaluate(async (t) => {
+        const link = window.renderlyViewer;
+        const sequence = window.renderlyTimeline.sequence;
+        const pixels = await link.preview.readFrame(t);
+        const n = pixels.length / 4;
+        const height = Math.round(Math.sqrt((n * sequence.height) / sequence.width));
+        const width = n / height;
+        const lit = (x, y) => {
+          const o = (y * width + x) * 4;
+          return pixels[o] + pixels[o + 1] + pixels[o + 2] > 24;
+        };
+        const rows = [];
+        for (let y = 0; y < height; y++) if (lit(width >> 1, y)) rows.push(y);
+        const columns = [];
+        for (let x = 0; x < width; x++) if (lit(x, height >> 1)) columns.push(x);
+        const corner = [...pixels.slice(0, 3)];
+        return {
+          width,
+          height,
+          top: rows[0] ?? -1,
+          bottom: rows.length ? height - 1 - rows[rows.length - 1] : -1,
+          left: columns[0] ?? -1,
+          right: columns.length ? width - 1 - columns[columns.length - 1] : -1,
+          corner,
+          sum: pixels.reduce((s, v, i) => (i % 97 === 0 ? s + v : s), 0),
+        };
+      }, t);
+
+    // The upper clip (V2, 2-3 s) blended, cropped and filling the frame, through the inspector.
+    const before = await project();
+    const top = before.tracks[1][0];
+    await view({ selection: [top.id], playhead: 2.5 * SECOND });
+    await page.waitForSelector("#inspector-blend");
+    await page.selectOption("#inspector-blend", "screen");
+    const left = page.locator('section[aria-label="Crop"] input[aria-label="Left value"]');
+    await left.fill("20");
+    await left.press("Enter");
+    await page.click('section[aria-label="Transform"] button:has-text("Fill")');
+    await until(page, () => {
+      const clip = window.renderlyTimeline.sequence.tracks[1].clips[0];
+      const of = (type) => clip.components.find((c) => c.type === type);
+      return (
+        of("blend")?.mode === "screen" &&
+        of("crop")?.left === 0.2 &&
+        of("transform")?.fit === "fill"
+      );
+    });
+    const edited = await project();
+    check(
+      edited.undo.length === before.undo.length + 3,
+      `three edits, three undo steps: ${edited.undo.slice(-3)}`,
+    );
+    await page.screenshot({ path: "test-results/compositing-inspector-dark.png" });
+    await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
+    // Colours ease into the new theme: let them finish before the picture is taken.
+    await page.waitForTimeout(500);
+    await page.screenshot({ path: "test-results/compositing-inspector-light.png" });
+    await page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"));
+
+    // A 16:9 picture in a 16:9 frame fills it; in 9:16 it is centred with equal bars.
+    await view({ selection: [], playhead: SECOND });
+    const wide = await picture(SECOND);
+    check(wide.top === 0 && wide.bottom === 0, `16:9 fills the frame: ${JSON.stringify(wide)}`);
+    await page.waitForSelector("#canvas-ratio");
+    await page.selectOption("#canvas-ratio", { label: "9:16 portrait" });
+    await until(
+      page,
+      () => window.renderlyTimeline.sequence.width < window.renderlyTimeline.sequence.height,
+    );
+    const portrait = await project();
+    check(
+      portrait.width === before.height &&
+        portrait.height === Math.round((before.height * 16) / 9 / 2) * 2,
+      `9:16 keeps the short side: ${portrait.width} × ${portrait.height}`,
+    );
+    check(
+      JSON.stringify(portrait.tracks) === JSON.stringify(edited.tracks),
+      "changing the canvas leaves every clip as it was",
+    );
+    let tall = await picture(SECOND);
+    for (let i = 0; i < 50 && tall.top <= 0; i++) {
+      await page.waitForTimeout(100);
+      tall = await picture(SECOND);
+    }
+    check(tall.top > tall.height / 4, `bars above and below: ${JSON.stringify(tall)}`);
+    check(
+      Math.abs(tall.top - tall.bottom) <= 2,
+      `the picture is centred: ${tall.top} vs ${tall.bottom}`,
+    );
+    check(tall.left === 0 && tall.right === 0, `and as wide as the frame: ${JSON.stringify(tall)}`);
+    await page.screenshot({ path: "test-results/compositing-portrait.png" });
+
+    // A blurred fill puts the picture behind the bars.
+    await page.click('section[aria-label="Canvas"] button:has-text("Blur")');
+    await until(page, () => window.renderlyTimeline.sequence.background.kind === "blur");
+    let blurred = await picture(SECOND);
+    for (let i = 0; i < 50 && blurred.top > 0; i++) {
+      await page.waitForTimeout(100);
+      blurred = await picture(SECOND);
+    }
+    check(
+      blurred.top === 0 && blurred.bottom === 0,
+      `the bars are filled: ${JSON.stringify(blurred)}`,
+    );
+    await page.screenshot({ path: "test-results/compositing-blur.png" });
+    await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
+    await page.waitForTimeout(500);
+    await page.screenshot({ path: "test-results/compositing-canvas-light.png" });
+    await page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"));
+
+    // Freeze the bottom clip at 1 s: a 2 s still, the rest of V1 pushed later, the frames held.
+    const bottom = edited.tracks[0][0];
+    await view({ selection: [bottom.id], playhead: SECOND });
+    await page.click('button[aria-label^="Freeze frame"]');
+    await until(page, () =>
+      window.renderlyTimeline.sequence.tracks[0].clips.some((c) => c.speed === 0),
+    );
+    const frozen = await project();
+    const still = frozen.tracks[0].find((c) => c.speed === 0);
+    check(
+      still.start === SECOND && still.duration === 2 * SECOND,
+      `a 2 s still at 1 s: ${JSON.stringify(still)}`,
+    );
+    check(still.in === bottom.in + SECOND, `of the frame at 1 s: ${still.in}`);
+    const end = (list) => Math.max(...list.map((c) => c.start + c.duration));
+    check(
+      end(frozen.tracks[0]) === end(edited.tracks[0]) + 2 * SECOND,
+      "the rest of V1 moved 2 s later",
+    );
+    check(JSON.stringify(frozen.tracks[1]) === JSON.stringify(edited.tracks[1]), "V2 did not move");
+    await until(page, () => window.renderlyViewer.updates > 0);
+    const early = await picture(1.2 * SECOND);
+    const late = await picture(1.8 * SECOND);
+    check(early.sum === late.sum, `the still shows one frame: ${early.sum} vs ${late.sum}`);
+    // Play through the still and out of it.
+    await view({ playhead: 0.5 * SECOND });
+    await page.evaluate(() => window.renderlyViewer.play());
+    await until(
+      page,
+      (limit) => window.renderlyTimeline["options"].view.get().playhead > limit,
+      3.5 * SECOND,
+      {
+        timeout: 15_000,
+      },
+    );
+    await page.evaluate(() => window.renderlyViewer.pause());
+
+    // Mirror and rotate the upper clip from the toolbar: one undo step each.
+    await view({ selection: [top.id], playhead: 2.5 * SECOND });
+    const steps = (await project()).undo.length;
+    await page.click('button[aria-label="Mirror the selected clips left to right"]');
+    await page.click('button[aria-label="Turn the selected clips a quarter clockwise"]');
+    await until(page, () => {
+      const t = window.renderlyTimeline.sequence.tracks[1].clips[0].components.find(
+        (c) => c.type === "transform",
+      );
+      return t?.flipX === true && t?.rotation === 90;
+    });
+    check((await project()).undo.length === steps + 2, "mirror and rotate are one undo step each");
+    check(
+      (await errors()) === 0,
+      `no engine errors: ${await page.evaluate(() => window.renderlyViewer.errors)}`,
+    );
+    const transform = component((await project()).tracks[1][0], "transform");
+    return `9:16 bars ${tall.top}/${tall.bottom} px, blur fills them, still holds one frame, rotation ${transform.rotation}°`;
+  },
+
   async "keyframes: add, edit, ease and retime, then play through the motion"({ context }) {
     const page = await playbackProject(context, "Keys");
     const view = (change) =>

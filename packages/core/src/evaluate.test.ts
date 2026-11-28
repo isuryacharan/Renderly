@@ -51,7 +51,7 @@ const media = (mediaId: string) => ({
 function fixture(): Project {
   return projectSchema().parse({
     format: "renderly",
-    version: 2,
+    version: 3,
     id: id("pj"),
     name: "Evaluate",
     revision: 0,
@@ -77,7 +77,10 @@ function fixture(): Project {
                   anchor: [0.1, -0.2],
                   flipX: true,
                   opacity: 0.8,
+                  fit: "fill",
                 },
+                { type: "blend", mode: "multiply" },
+                { type: "crop", left: 0.1, right: 0.2 },
               ],
             }),
             clip("d", 6, 1, { enabled: false }),
@@ -110,8 +113,48 @@ describe("evaluateSequence", () => {
       flipX: true,
       flipY: false,
       opacity: 0.8,
+      fit: "fill",
+      cropLeft: 0.1,
+      cropTop: 0,
+      cropRight: 0.2,
+      cropBottom: 0,
+      blend: "multiply",
     });
     expect(graph.duration).toBe(s(8)); // the audio track is the longest
+    expect(graph.background).toEqual({ kind: "color", color: "#000000", blur: 0.5 });
+  });
+
+  it("plays a freeze frame (speed 0) as its first source frame throughout", () => {
+    const project = fixture();
+    const first = project.sequences[0]?.tracks[0]?.clips[1];
+    if (!first) throw new Error("no clip");
+    first.speed = 0;
+    const graph = evaluateSequence(project, SEQ);
+    const frozen = graph.layers[0]?.clips[1];
+    expect(frozen?.freeze).toBe(true);
+    expect([frozen?.in, frozen?.out, frozen?.start]).toEqual([s(10), s(13), s(2)]);
+    expect(frameAt(graph, s(2)).layers[0]?.sourceTime).toBe(s(10));
+    expect(frameAt(graph, s(4.5)).layers[0]?.sourceTime).toBe(s(10));
+    expect(frameAt(graph, s(3.2)).hash).toBe(frameAt(graph, s(4.5)).hash); // only the still shows
+    expect(graph.skipped).toEqual([]);
+  });
+
+  it("animates the crop's edges from their keys", () => {
+    const project = fixture();
+    const c = project.sequences[0]?.tracks[2]?.clips[0];
+    const crop = c?.components[2] as Record<string, unknown> | undefined;
+    if (!crop) throw new Error("no crop");
+    crop["keys"] = {
+      left: [
+        { t: 0, v: 0, ease: "linear" },
+        { t: s(1), v: 0.4, ease: "linear" },
+      ],
+    };
+    const graph = evaluateSequence(project, SEQ);
+    expect(graph.layers[1]?.clips[0]?.keys?.cropLeft).toHaveLength(2);
+    const at = frameAt(graph, s(1.5)).layers[1]?.transform;
+    expect(at?.cropLeft).toBeCloseTo(0.2, 9);
+    expect(at?.cropRight).toBe(0.2);
   });
 
   it("leaves out media that cannot be read, and says so", () => {

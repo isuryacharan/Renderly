@@ -5,20 +5,25 @@
 // - `frameAt` is the frame graph at one time: which media, at which source time, on which layer,
 //   with which transform. Its `hash` is stable: two times that show the same thing hash the same.
 //
-// M1 scope: video tracks only (text and effect tracks draw nothing yet), static transforms
-// (keyframes are not evaluated yet), clips at speed 1, no compound clips. Hidden tracks and
-// disabled clips draw nothing. Layer 0 is the bottom video track; its sound is what plays until
+// Scope so far: video tracks only (text and effect tracks draw nothing yet), clips at speed 1 or
+// frozen (speed 0), no compound clips. Hidden tracks and disabled clips draw nothing. Layer 0 is the bottom video track; its sound is what plays until
 // the audio engine mixes tracks (M2), unless the track is muted.
 
+import type { BlendMode } from "./components";
 import { valueAt, type Key } from "./keyframes";
 import { sequenceDuration } from "./timeline";
-import type { Clip, Project, Sequence } from "./schema";
+import type { BackgroundSettings, Clip, Project, Sequence } from "./schema";
 import type { Rate } from "./time";
 
+/** How a picture of another shape fills the frame at scale 1 (the transform's `fit`). */
+export type Fit = "fit" | "fill" | "stretch";
+
 /**
- * Where a layer sits (the transform component, flattened): the anchor's place as a fraction of the
- * frame from its centre (x right, y down), scale per axis (1 fits), rotation in degrees clockwise
- * about the anchor, the anchor as a fraction of the layer from its centre, mirroring, opacity.
+ * How a layer is drawn: the transform component flattened (the anchor's place as a fraction of
+ * the frame from its centre, x right and y down; scale per axis, 1 fits; rotation in degrees
+ * clockwise about the anchor; the anchor as a fraction of the layer from its centre; mirroring;
+ * opacity; how it fits the frame), then the crop component (each edge as a fraction of the fitted
+ * picture) and the blend component's mode.
  */
 export interface LayerTransform {
   x: number;
@@ -31,6 +36,12 @@ export interface LayerTransform {
   flipX: boolean;
   flipY: boolean;
   opacity: number;
+  fit: Fit;
+  cropLeft: number;
+  cropTop: number;
+  cropRight: number;
+  cropBottom: number;
+  blend: BlendMode;
 }
 
 export const IDENTITY_TRANSFORM: LayerTransform = {
@@ -44,20 +55,42 @@ export const IDENTITY_TRANSFORM: LayerTransform = {
   flipX: false,
   flipY: false,
   opacity: 1,
+  fit: "fit",
+  cropLeft: 0,
+  cropTop: 0,
+  cropRight: 0,
+  cropBottom: 0,
+  blend: "normal",
 };
 
-/** The transform's animated fields: keyframes per field, in clip time. */
+/** Animated fields: keyframes per field, in clip time (the crop's edges as cropLeft and so on). */
 export type TransformKeys = Partial<
-  Record<"position" | "scale" | "rotation" | "anchor" | "opacity", Key[]>
+  Record<
+    | "position"
+    | "scale"
+    | "rotation"
+    | "anchor"
+    | "opacity"
+    | "cropLeft"
+    | "cropTop"
+    | "cropRight"
+    | "cropBottom",
+    Key[]
+  >
 >;
 
 export interface GraphClip {
   clip: string;
   media: string;
-  /** Source time at the clip's start, and where its source span ends. */
+  /**
+   * Source time at the clip's start, and where its source span ends. For a freeze frame only `in`
+   * is shown, and `out - in` is just its length on the timeline.
+   */
   in: number;
   out: number;
   start: number;
+  /** A freeze frame (speed 0): shows source time `in` throughout. */
+  freeze?: true;
   /** The transform without animation (and where nothing is keyed). */
   transform: LayerTransform;
   /** Keyframes of the transform's fields, when it is animated. */
@@ -82,6 +115,10 @@ export function transformAt(
   const anchor = pair(at("anchor"), [transform.anchorX, transform.anchorY]);
   const rotation = at("rotation");
   const opacity = at("opacity");
+  const edge = (field: keyof TransformKeys, fallback: number) => {
+    const value = at(field);
+    return typeof value === "number" ? Math.min(1, Math.max(0, value)) : fallback;
+  };
   return {
     ...transform,
     x: position[0] ?? transform.x,
@@ -92,6 +129,10 @@ export function transformAt(
     anchorY: anchor[1] ?? transform.anchorY,
     rotation: typeof rotation === "number" ? rotation : transform.rotation,
     opacity: typeof opacity === "number" ? Math.min(1, Math.max(0, opacity)) : transform.opacity,
+    cropLeft: edge("cropLeft", transform.cropLeft),
+    cropTop: edge("cropTop", transform.cropTop),
+    cropRight: edge("cropRight", transform.cropRight),
+    cropBottom: edge("cropBottom", transform.cropBottom),
   };
 }
 
@@ -107,6 +148,7 @@ export interface SequenceGraph {
   width: number;
   height: number;
   fps: Rate;
+  background: BackgroundSettings;
   /** Bottom first. Only tracks that draw something. */
   layers: GraphLayer[];
   /** The sequence's length, including tracks that draw nothing (audio). */
@@ -129,37 +171,65 @@ interface TransformComponent {
   flipX?: boolean;
   flipY?: boolean;
   opacity?: number;
+  fit?: Fit;
+}
+
+interface CropComponent {
+  keys?: Record<string, Key[]>;
+  left?: number;
+  top?: number;
+  right?: number;
+  bottom?: number;
+}
+
+function componentOf<T>(clip: Clip, type: string): T | undefined {
+  return (clip.components as { type: string }[]).find((x) => x.type === type) as T | undefined;
 }
 
 function transformOf(clip: Clip): LayerTransform {
-  const c = (clip.components as { type: string }[]).find((x) => x.type === "transform") as
-    TransformComponent | undefined;
-  if (!c) return IDENTITY_TRANSFORM;
+  const c = componentOf<TransformComponent>(clip, "transform");
+  const crop = componentOf<CropComponent>(clip, "crop");
+  const blend = componentOf<{ mode?: BlendMode }>(clip, "blend")?.mode ?? "normal";
   return {
-    x: c.position?.[0] ?? 0,
-    y: c.position?.[1] ?? 0,
-    scaleX: c.scale?.[0] ?? 1,
-    scaleY: c.scale?.[1] ?? 1,
-    rotation: c.rotation ?? 0,
-    anchorX: c.anchor?.[0] ?? 0,
-    anchorY: c.anchor?.[1] ?? 0,
-    flipX: c.flipX ?? false,
-    flipY: c.flipY ?? false,
-    opacity: c.opacity ?? 1,
+    x: c?.position?.[0] ?? 0,
+    y: c?.position?.[1] ?? 0,
+    scaleX: c?.scale?.[0] ?? 1,
+    scaleY: c?.scale?.[1] ?? 1,
+    rotation: c?.rotation ?? 0,
+    anchorX: c?.anchor?.[0] ?? 0,
+    anchorY: c?.anchor?.[1] ?? 0,
+    flipX: c?.flipX ?? false,
+    flipY: c?.flipY ?? false,
+    opacity: c?.opacity ?? 1,
+    fit: c?.fit ?? "fit",
+    cropLeft: crop?.left ?? 0,
+    cropTop: crop?.top ?? 0,
+    cropRight: crop?.right ?? 0,
+    cropBottom: crop?.bottom ?? 0,
+    blend,
   };
 }
 
 const ANIMATABLE = ["position", "scale", "rotation", "anchor", "opacity"] as const;
+const CROP_EDGES = [
+  ["left", "cropLeft"],
+  ["top", "cropTop"],
+  ["right", "cropRight"],
+  ["bottom", "cropBottom"],
+] as const;
 
-/** The transform's keyframes, when any field is animated. */
+/** The keyframes of the transform and the crop, when any field is animated. */
 function keysOf(clip: Clip): TransformKeys | undefined {
-  const c = (clip.components as { type: string }[]).find((x) => x.type === "transform") as
-    TransformComponent | undefined;
-  if (!c?.keys) return undefined;
   const keys: TransformKeys = {};
+  const transform = componentOf<TransformComponent>(clip, "transform")?.keys;
   for (const field of ANIMATABLE) {
-    const list = c.keys[field];
+    const list = transform?.[field];
     if (list && list.length > 0) keys[field] = list;
+  }
+  const crop = componentOf<CropComponent>(clip, "crop")?.keys;
+  for (const [field, name] of CROP_EDGES) {
+    const list = crop?.[field];
+    if (list && list.length > 0) keys[name] = list;
   }
   return Object.keys(keys).length > 0 ? keys : undefined;
 }
@@ -183,7 +253,7 @@ export function evaluateSequence(
         skipped.push({ clip: clip.id, reason: "compound" });
         continue;
       }
-      if (clip.speed !== 1) {
+      if (clip.speed !== 1 && clip.speed !== 0) {
         skipped.push({ clip: clip.id, reason: "speed" });
         continue;
       }
@@ -199,6 +269,7 @@ export function evaluateSequence(
         out: clip.in + clip.duration,
         start: clip.start,
         transform: transformOf(clip),
+        ...(clip.speed === 0 ? { freeze: true as const } : {}),
         ...(keys ? { keys } : {}),
       });
     }
@@ -209,6 +280,7 @@ export function evaluateSequence(
     width: sequence.width,
     height: sequence.height,
     fps: sequence.fps,
+    background: { ...sequence.background },
     layers,
     duration: sequenceDuration(sequence as Sequence),
     skipped,
@@ -261,7 +333,7 @@ export function frameAt(graph: SequenceGraph, t: number): FrameGraph {
       track: layer.track,
       clip: clip.clip,
       media: clip.media,
-      sourceTime: clip.in + (t - clip.start),
+      sourceTime: clip.freeze ? clip.in : clip.in + (t - clip.start),
       transform: transformAt(clip.transform, clip.keys, t - clip.start),
     });
   });
@@ -269,6 +341,7 @@ export function frameAt(graph: SequenceGraph, t: number): FrameGraph {
   const hash = stableHash([
     graph.width,
     graph.height,
+    graph.background,
     layers.map((l) => [l.layer, l.media, l.sourceTime, l.transform]),
   ]);
   return { t, width: graph.width, height: graph.height, layers, sources, hash };
@@ -281,9 +354,18 @@ export function graphHash(graph: SequenceGraph): string {
     graph.height,
     graph.fps,
     graph.duration,
+    graph.background,
     graph.layers.map((l) => [
       l.muted,
-      l.clips.map((c) => [c.media, c.in, c.out, c.start, c.transform, c.keys ?? null]),
+      l.clips.map((c) => [
+        c.media,
+        c.in,
+        c.out,
+        c.start,
+        c.freeze ?? false,
+        c.transform,
+        c.keys ?? null,
+      ]),
     ]),
   ]);
 }

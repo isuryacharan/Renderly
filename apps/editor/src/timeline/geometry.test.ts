@@ -60,6 +60,7 @@ function sequence(tracks: Track[]): Sequence {
     height: 1080,
     fps: [30, 1],
     sampleRate: 48_000,
+    background: { kind: "color", color: "#000000", blur: 0.5 },
     tracks,
     markers: [],
   };

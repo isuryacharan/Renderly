@@ -14,9 +14,12 @@ With several clips selected and differing values, the field shows an en dash, th
 
 The consumer provides the label, value, range, step, unit, default, the keyframe state and the change handlers (begin, preview, commit).
 
+A property that is a choice, not a number (a blend mode, how a clip fits), uses the **choice row**: the same label column, then a select field or a small segmented control at `control-sm`. A choice has no slider and no keyframe.
+
 ## In code
 
 - **React**: `PropertyRow`, `PropertySection` and `KeyframeControl` in `@renderly/ui/react`. A row reports a drag as `onBegin`, `onPreview` and one `onCommit` (make it one undo step), and typing or reset as a single `onCommit`. Dragging the label moves one step per pixel (at least 1/2000 of the range); Shift is ten times finer.
 - **Styles**: `packages/ui/src/styles/components/property-row.css`
-- **Classes**: `.r-property-section`, `.r-property-row`, `.r-property-row__label`, `.r-keyframe` (with `--animated`, `--on`)
+- **Classes**: `.r-property-section`, `.r-property-row` (`.r-property-row--choice` for a choice), `.r-property-row__label`, `.r-keyframe` (with `--animated`, `--on`)
+- **React** (choice): `PropertyChoice` takes the label and the control as children.
 - **Preview**: `docs/design-system/preview/index.html`

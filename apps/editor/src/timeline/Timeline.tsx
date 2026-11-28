@@ -102,6 +102,9 @@ export function Timeline({
         <h2 className="text-body-strong timeline__title">Timeline</h2>
         <ActionSegment ids={["timeline.selectTool", "timeline.bladeTool"]} label="Tool" />
         <ActionButton id="timeline.split" />
+        <ActionButton id="clip.freeze" />
+        <ActionButton id="clip.mirror" />
+        <ActionButton id="clip.rotate" />
         <ActionButton id="timeline.delete" />
         <ActionButton id="timeline.snapping" />
         <span className="r-toolbar__spacer" />

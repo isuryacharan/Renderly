@@ -2,12 +2,12 @@
 // (no video decoding), composited with the real shader, read back as 8-bit RGBA (rows bottom
 // first). `pnpm test:golden` compares the result with the CPU reference (reference.ts).
 
+import type { BackgroundSettings } from "@renderly/core";
 import * as THREE from "three";
 import { Compositor } from "./compositor";
 import { Pass } from "./gpu";
 import { MemoryBudget } from "./memory";
-import type { Image } from "./reference";
-import type { Transform } from "./timeline";
+import type { ReferenceLayer } from "./reference";
 
 const COPY = /* glsl */ `
 uniform sampler2D tImage;
@@ -17,12 +17,13 @@ void main() {
   fragColor = texture(tImage, vUv);
 }`;
 
-/** Renders `layers` (bottom first) at `width` × `height` with the compositor. */
+/** Renders `layers` (bottom first) over `background` at `width` × `height` with the compositor. */
 export function renderGolden(
   canvas: HTMLCanvasElement | OffscreenCanvas,
   width: number,
   height: number,
-  layers: readonly { image: Image; transform: Transform }[],
+  layers: readonly ReferenceLayer[],
+  background?: BackgroundSettings,
 ): Uint8Array {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false });
   renderer.setPixelRatio(1);
@@ -31,7 +32,9 @@ export function renderGolden(
   const copy = new Pass(COPY, { tImage: { value: null } });
   try {
     compositor.resize({ width, height });
-    layers.forEach(({ image }, layer) => {
+    if (background) compositor.setBackground(background);
+    layers.forEach(({ image, box }, layer) => {
+      if (box) compositor.setPictureBox(layer, box);
       const target = compositor.layerTarget(layer);
       if (!target) throw new Error("No layer target");
       // GL rows go bottom first: flip the picture's rows on the way in.

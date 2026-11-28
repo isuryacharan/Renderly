@@ -2,18 +2,18 @@
 //
 // The decoder's frame (3840×2160 for 4K) is uploaded once into a texture (the browser imports it
 // directly), a mipmap chain is built, and one pass samples it trilinearly into the working target
-// while applying the clip rotation and the contain fit. The result is premultiplied: opaque inside
+// while applying the clip rotation and its fit (contain, cover or stretch). The result is premultiplied: opaque inside
 // the picture, transparent outside it. Scaling large frames through a 2D canvas
 // instead was measured in the POC to load the GPU far more for the same quality.
 
 import * as THREE from "three";
 import { Pass } from "./gpu";
-import { containUvScale, rotatedSize } from "./layout";
+import { fitUvScale, pictureBox, rotatedSize, type Fit } from "./layout";
 
 const FRAGMENT = /* glsl */ `
 uniform sampler2D tFrame;
 uniform int uRotation;   // clockwise quarter turns
-uniform vec2 uScale;     // contain fit, about the centre
+uniform vec2 uScale;     // the fit, about the centre
 in vec2 vUv;
 out vec4 fragColor;
 
@@ -57,20 +57,28 @@ export class FrameUploader {
   }
 
   /**
-   * Draws `frame` into `target`, upright and contain-fitted. The caller closes the frame right
-   * after: the pixels are on the GPU once this returns.
+   * Draws `frame` into `target`, upright and fitted. The caller closes the frame right after: the
+   * pixels are on the GPU once this returns. Returns the share of the target the picture covers
+   * per axis (the compositor crops within it).
    */
-  upload(frame: VideoFrame, rotation: number, target: THREE.WebGLRenderTarget): void {
+  upload(
+    frame: VideoFrame,
+    rotation: number,
+    target: THREE.WebGLRenderTarget,
+    fit: Fit = "fit",
+  ): [number, number] {
     const display = rotatedSize(
       { width: frame.displayWidth, height: frame.displayHeight },
       rotation,
     );
-    const [sx, sy] = containUvScale(display, { width: target.width, height: target.height });
+    const scale = fitUvScale(display, { width: target.width, height: target.height }, fit);
+    const [sx, sy] = scale;
     const u = this.pass.uniforms;
     (u["uScale"]?.value as THREE.Vector2).set(sx, sy);
     (u["uRotation"] as THREE.IUniform).value = Math.round(rotation / 90) % 4;
     this.texture.setFrame(frame);
     this.pass.run(this.renderer, target);
+    return pictureBox(scale);
   }
 
   dispose(): void {

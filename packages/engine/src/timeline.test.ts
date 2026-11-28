@@ -54,6 +54,14 @@ describe("runAt and sourceTime", () => {
     expect(sourceTime(runs[1]!, 13)).toBe(3);
     expect(sourceTime(runs[2]!, 35)).toBe(305);
   });
+
+  it("holds a freeze frame's first source time, and never merges it", () => {
+    const frozen = toRuns([cut(0, 0, 10, 0), { ...cut(0, 10, 40, 10), freeze: true }]);
+    expect(frozen).toHaveLength(2);
+    expect(frozen[1]?.end).toBe(40);
+    expect(sourceTime(frozen[1]!, 10)).toBe(10);
+    expect(sourceTime(frozen[1]!, 39)).toBe(10);
+  });
 });
 
 describe("plan", () => {

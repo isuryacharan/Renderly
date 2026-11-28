@@ -38,6 +38,13 @@
   pointer-events: none;
 }
 
+/* Small: inside an inspector row, the same height as the row's other controls. */
+.r-segmented--sm button {
+  height: calc(var(--control-sm) - 2 * var(--space-2));
+  padding: 0 var(--space-8);
+  font-size: 12px;
+}
+
 /* Tabs: switch the content of a panel. The current tab has an accent underline. */
 .r-tabs {
   display: flex;

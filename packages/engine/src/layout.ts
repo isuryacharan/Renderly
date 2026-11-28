@@ -56,6 +56,29 @@ export function containUvScale(content: Size, target: Size): [number, number] {
     : [targetAspect / contentAspect, 1];
 }
 
+/** How a picture fills a frame of another shape: all of it (`fit`), covering it (`fill`), or exactly (`stretch`). */
+export type Fit = "fit" | "fill" | "stretch";
+
+/**
+ * Texture-coordinate scale (about the centre) that puts content into a target with `fit`: contain
+ * for `fit` (coordinates past 0..1 are letterbox), cover for `fill` (only the middle of the content
+ * shows), none for `stretch`.
+ */
+export function fitUvScale(content: Size, target: Size, fit: Fit): [number, number] {
+  if (fit === "fit") return containUvScale(content, target);
+  if (fit === "stretch") return [1, 1];
+  const contentAspect = content.width / content.height;
+  const targetAspect = target.width / target.height;
+  return contentAspect > targetAspect
+    ? [targetAspect / contentAspect, 1]
+    : [1, contentAspect / targetAspect];
+}
+
+/** The share of the target, per axis, that a picture drawn with `uvScale` covers (1: all of it). */
+export function pictureBox(uvScale: readonly [number, number]): [number, number] {
+  return [Math.min(1, 1 / uvScale[0]), Math.min(1, 1 / uvScale[1])];
+}
+
 /** How the viewer shows the picture: fitted, or at a zoom (1 = one picture pixel per device pixel) with a pan. */
 export interface ViewerView {
   zoom: number | null;

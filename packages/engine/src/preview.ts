@@ -3,6 +3,7 @@
 // audio clock to the renderer. After that the main thread only forwards commands, receives a stats
 // message once a second, and lets the audio output refresh its timing mapping.
 
+import type { BackgroundSettings } from "@renderly/core";
 import { createAudioOutput, type AudioOpenResult, type AudioOutput } from "@renderly/audio";
 import { startDecodeWorker, type Flicks, type MediaInput, type OpenResult } from "@renderly/media";
 import type { PreviewScale, Size, ViewerView } from "./layout";
@@ -37,7 +38,12 @@ export interface Preview {
    * (layer 0) changed during playback, playback restarts at the playhead so picture and sound
    * stay in sync.
    */
-  update(added: MediaInput[], cuts: Cut[], size: Size): Promise<LoadedTimeline>;
+  update(
+    added: MediaInput[],
+    cuts: Cut[],
+    size: Size,
+    background?: BackgroundSettings,
+  ): Promise<LoadedTimeline>;
   /** Fitted (zoom null) or zoomed and panned; `background` (0xRRGGBB) fills around the picture. */
   setView(view: ViewerView, background: number): void;
   /** The playhead and whether it is playing, as of the renderer's last refresh. Cheap. */
@@ -229,7 +235,7 @@ export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview>
     async load(sources, list, size) {
       return loadTimeline(sources, list, size);
     },
-    async update(added, list, size) {
+    async update(added, list, size, background) {
       const before = JSON.stringify(soundCuts(cuts));
       const wasPlaying = playheadView[1] === 1;
       if (added.length > 0) {
@@ -243,6 +249,7 @@ export async function createPreview(canvas: HTMLCanvasElement): Promise<Preview>
         added,
         cuts: list,
         size,
+        ...(background ? { canvasBackground: background } : {}),
       }));
       setTimeline(reply.result.cuts, reply.result.duration);
       const soundChanged = added.length > 0 || JSON.stringify(soundCuts(cuts)) !== before;

@@ -261,6 +261,35 @@ export function PropertyRow({
   );
 }
 
+/**
+ * A choice in the inspector (a select field or a small segmented control), in the same label
+ * column as the numeric rows. `id` labels a select: give the control that id.
+ */
+export function PropertyChoice({
+  label,
+  id,
+  children,
+}: {
+  label: string;
+  id?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="r-property-row r-property-row--choice">
+      {id ? (
+        <label className="r-property-row__label" htmlFor={id} title={label}>
+          {label}
+        </label>
+      ) : (
+        <span className="r-property-row__label" title={label}>
+          {label}
+        </span>
+      )}
+      {children}
+    </div>
+  );
+}
+
 /** A titled group of property rows, with a reset for the whole section. */
 export function PropertySection({
   title,
